@@ -310,30 +310,39 @@ func (s *Scanner) findWorktrees(mainRepoPath string) []DiscoveredWorktree {
 	}
 
 	var currentPath, currentBranch string
+	var isPrunable bool
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 
 		if strings.HasPrefix(line, "worktree ") {
-			// Save previous worktree if we have one
-			if currentPath != "" && currentPath != mainRepoPath {
-				worktrees = append(worktrees, DiscoveredWorktree{
-					Path:   currentPath,
-					Branch: currentBranch,
-				})
+			// Save previous worktree if we have one (and it's valid)
+			if currentPath != "" && currentPath != mainRepoPath && !isPrunable {
+				// Verify the worktree actually exists before adding
+				if _, err := os.Stat(currentPath); err == nil {
+					worktrees = append(worktrees, DiscoveredWorktree{
+						Path:   currentPath,
+						Branch: currentBranch,
+					})
+				}
 			}
 			currentPath = strings.TrimPrefix(line, "worktree ")
 			currentBranch = ""
+			isPrunable = false
 		} else if strings.HasPrefix(line, "branch ") {
 			currentBranch = strings.TrimPrefix(line, "branch refs/heads/")
+		} else if line == "prunable" {
+			isPrunable = true
 		}
 	}
 
-	// Don't forget the last one
-	if currentPath != "" && currentPath != mainRepoPath {
-		worktrees = append(worktrees, DiscoveredWorktree{
-			Path:   currentPath,
-			Branch: currentBranch,
-		})
+	// Don't forget the last one (if valid)
+	if currentPath != "" && currentPath != mainRepoPath && !isPrunable {
+		if _, err := os.Stat(currentPath); err == nil {
+			worktrees = append(worktrees, DiscoveredWorktree{
+				Path:   currentPath,
+				Branch: currentBranch,
+			})
+		}
 	}
 
 	return worktrees

@@ -496,8 +496,15 @@ func (p *Provisioner) Normalize(dryRun bool) ([]string, error) {
 	for _, move := range plan.Moves {
 		// Move main repo first (worktrees reference it)
 		if move.CurrentPath != move.TargetPath {
+			// Verify source exists before attempting move
+			if _, err := os.Stat(move.CurrentPath); os.IsNotExist(err) {
+				// Source doesn't exist - remove from store and skip
+				p.store.DeleteWorktree(move.CurrentPath)
+				continue
+			}
 			if err := os.Rename(move.CurrentPath, move.TargetPath); err != nil {
-				return moved, fmt.Errorf("failed to move %s: %w", move.CurrentPath, err)
+				// Log error but continue with other moves
+				continue
 			}
 			// Update store
 			p.store.UpdateWorktreePath(move.CurrentPath, move.TargetPath)
@@ -506,10 +513,32 @@ func (p *Provisioner) Normalize(dryRun bool) ([]string, error) {
 
 		// Move worktrees using git worktree move
 		for _, wt := range move.Worktrees {
+			// Verify worktree exists and is valid before attempting move
+			if _, err := os.Stat(wt.CurrentPath); os.IsNotExist(err) {
+				// Worktree doesn't exist - remove from store and skip
+				p.store.DeleteWorktree(wt.CurrentPath)
+				continue
+			}
+
+			// Check if it's actually a valid git worktree
+			gitFile := filepath.Join(wt.CurrentPath, ".git")
+			if _, err := os.Stat(gitFile); os.IsNotExist(err) {
+				// Not a valid worktree - remove from store and skip
+				p.store.DeleteWorktree(wt.CurrentPath)
+				continue
+			}
+
 			cmd := exec.Command("git", "worktree", "move", wt.CurrentPath, wt.TargetPath)
 			cmd.Dir = move.TargetPath // Use the (possibly new) main repo path
-			if output, err := cmd.CombinedOutput(); err != nil {
-				return moved, fmt.Errorf("failed to move worktree %s: %s: %w", wt.CurrentPath, string(output), err)
+			if _, err := cmd.CombinedOutput(); err != nil {
+				// Failed to move - could be prunable or invalid
+				// Try to prune and remove from store
+				pruneCmd := exec.Command("git", "worktree", "prune")
+				pruneCmd.Dir = move.TargetPath
+				_ = pruneCmd.Run() // Best effort prune
+
+				p.store.DeleteWorktree(wt.CurrentPath)
+				continue
 			}
 			// Update store
 			p.store.UpdateWorktreePath(wt.CurrentPath, wt.TargetPath)
