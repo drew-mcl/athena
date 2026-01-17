@@ -187,7 +187,7 @@ func (m *Model) updateContent() {
 func (m Model) styleForEventType(eventType string) lipgloss.Style {
 	switch eventType {
 	case "thinking":
-		return lipgloss.NewStyle().Foreground(tui.ColorPlanning)
+		return lipgloss.NewStyle().Foreground(tui.ColorInfo)
 	case "tool_use":
 		return lipgloss.NewStyle().Foreground(tui.ColorAccent)
 	case "tool_result":
@@ -195,9 +195,9 @@ func (m Model) styleForEventType(eventType string) lipgloss.Style {
 	case "text":
 		return lipgloss.NewStyle().Foreground(tui.ColorFg)
 	case "error":
-		return lipgloss.NewStyle().Foreground(tui.ColorCrashed)
+		return lipgloss.NewStyle().Foreground(tui.ColorDanger)
 	case "result":
-		return lipgloss.NewStyle().Foreground(tui.ColorRunning)
+		return lipgloss.NewStyle().Foreground(tui.ColorSuccess)
 	default:
 		return lipgloss.NewStyle().Foreground(tui.ColorFgMuted)
 	}

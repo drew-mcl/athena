@@ -41,7 +41,67 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// migrateWorktreeColumns adds new columns to the worktrees table if they don't exist.
+// This handles schema upgrades for existing databases.
+func (s *Store) migrateWorktreeColumns() error {
+	// Check if worktrees table exists
+	var tableName string
+	err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='worktrees'").Scan(&tableName)
+	if err != nil {
+		// Table doesn't exist yet, will be created by main schema
+		return nil
+	}
+
+	// Get existing columns
+	rows, err := s.db.Query("PRAGMA table_info(worktrees)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultVal *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		existingCols[name] = true
+	}
+
+	// Define new columns that may need to be added
+	newColumns := []struct {
+		name       string
+		definition string
+	}{
+		{"ticket_id", "TEXT"},
+		{"ticket_hash", "TEXT"},
+		{"description", "TEXT"},
+		{"project_name", "TEXT"},
+		{"status", "TEXT DEFAULT 'active'"},
+	}
+
+	// Add missing columns
+	for _, col := range newColumns {
+		if !existingCols[col.name] {
+			query := "ALTER TABLE worktrees ADD COLUMN " + col.name + " " + col.definition
+			if _, err := s.db.Exec(query); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) migrate() error {
+	// First, run any ALTER TABLE migrations for existing databases
+	if err := s.migrateWorktreeColumns(); err != nil {
+		return err
+	}
+
 	schema := `
 	-- Core agent registry
 	CREATE TABLE IF NOT EXISTS agents (
@@ -117,6 +177,12 @@ func (s *Store) migrate() error {
 		agent_id    TEXT,
 		job_id      TEXT,
 		discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		-- New fields for ticket-based workflow
+		ticket_id     TEXT,                      -- External ticket ID (e.g., ENG-123)
+		ticket_hash   TEXT,                      -- 4-char hash for uniqueness
+		description   TEXT,                      -- Worktree description/purpose
+		project_name  TEXT,                      -- Cached from git remote origin
+		status        TEXT DEFAULT 'active',     -- active | merged | stale
 
 		FOREIGN KEY (agent_id) REFERENCES agents(id),
 		FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -152,6 +218,9 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 	CREATE INDEX IF NOT EXISTS idx_events_agent ON agent_events(agent_id, timestamp);
 	CREATE INDEX IF NOT EXISTS idx_worktrees_project ON worktrees(project);
+	CREATE INDEX IF NOT EXISTS idx_worktrees_ticket ON worktrees(ticket_id);
+	CREATE INDEX IF NOT EXISTS idx_worktrees_status ON worktrees(status);
+	CREATE INDEX IF NOT EXISTS idx_worktrees_project_name ON worktrees(project_name);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -246,6 +315,15 @@ type Job struct {
 	PropagationResults []PropagationResult // Status per worktree
 }
 
+// WorktreeStatus represents the lifecycle state of a worktree.
+type WorktreeStatus string
+
+const (
+	WorktreeStatusActive WorktreeStatus = "active"
+	WorktreeStatusMerged WorktreeStatus = "merged"
+	WorktreeStatusStale  WorktreeStatus = "stale"
+)
+
 // Worktree represents a git worktree.
 type Worktree struct {
 	Path         string
@@ -255,6 +333,12 @@ type Worktree struct {
 	AgentID      *string
 	JobID        *string
 	DiscoveredAt time.Time
+	// New fields for ticket-based workflow
+	TicketID    *string        // External ticket ID (e.g., ENG-123)
+	TicketHash  *string        // 4-char hash for uniqueness
+	Description *string        // Worktree description/purpose
+	ProjectName *string        // Cached from git remote origin
+	Status      WorktreeStatus // active | merged | stale
 }
 
 // AgentEvent represents a logged event from an agent.

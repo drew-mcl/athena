@@ -117,3 +117,39 @@ The daemon handles:
 - `SIGHUP` - Config reload (hot reload)
 
 All goroutines use `safeGo()` or `safeLoop()` for panic recovery.
+
+## UX Design Principles
+
+### Core User Flows
+
+1. **Quick Question** - Global, fire-and-forget Q&A (replaces googling)
+2. **New Feature** - Ticket ID → API pulls details → Sonnet summarizes → Worktree + .todo → Agent starts
+3. **Check on Work** - Agents tab shows status, "awaiting" means needs attention
+4. **Notes Pipeline** - Capture idea → Sonnet fleshes out → Creates Jira/Linear ticket
+
+### Key Decisions
+
+- **Questions**: Always global scope
+- **Worktree naming**: Always `<ticket-id>-<short-description>` from ticket summary
+- **Stale worktrees**: Merged branch = closed
+- **One agent per worktree**: No multi-agent on same worktree
+
+### Dashboard Tabs
+
+| Tab | Purpose |
+|-----|---------|
+| Worktrees | All workspaces, launch pad for work |
+| Agents | Active workers, what needs attention |
+| Questions | Quick Q&A history |
+| Notes | Idea capture, promote to features |
+
+## Future Ideas
+
+### Multi-Agent Orchestration
+
+For large features that are too big for a single agent:
+- Sub-worktrees with hash suffix feeding into orchestrator agent
+- Parent agent coordinates, child agents do focused work
+- Core infrastructure work - not MVP scope
+
+This is a significant architectural addition - explore when base system is stable.

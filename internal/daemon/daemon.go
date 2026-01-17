@@ -31,6 +31,7 @@ type Daemon struct {
 	server      *control.Server
 	scanner     *worktree.Scanner
 	provisioner *worktree.Provisioner
+	migrator    *worktree.Migrator
 	executor    *JobExecutor
 
 	agents   map[string]*AgentProcess
@@ -72,6 +73,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		server:      control.NewServer(cfg.Daemon.Socket),
 		scanner:     worktree.NewScanner(cfg, st),
 		provisioner: worktree.NewProvisioner(cfg, st),
+		migrator:    worktree.NewMigrator(cfg, st),
 		agents:      make(map[string]*AgentProcess),
 		jobQueue:    make(chan string, 100),
 		ctx:         ctx,
@@ -350,11 +352,15 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("spawn_agent", d.handleSpawnAgent)
 	d.server.Handle("kill_agent", d.handleKillAgent)
 	d.server.Handle("list_worktrees", d.handleListWorktrees)
+	d.server.Handle("create_worktree", d.handleCreateWorktree)
 	d.server.Handle("list_jobs", d.handleListJobs)
 	d.server.Handle("create_job", d.handleCreateJob)
 	d.server.Handle("rescan", d.handleRescan)
 	d.server.Handle("normalize_plan", d.handleNormalizePlan)
 	d.server.Handle("normalize", d.handleNormalize)
+	// Migration
+	d.server.Handle("migrate_plan", d.handleMigratePlan)
+	d.server.Handle("migrate_worktrees", d.handleMigrateWorktrees)
 	// Notes
 	d.server.Handle("list_notes", d.handleListNotes)
 	d.server.Handle("create_note", d.handleCreateNote)
@@ -517,16 +523,29 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 	var result []*control.WorktreeInfo
 	for _, wt := range worktrees {
 		info := &control.WorktreeInfo{
-			Path:    wt.Path,
-			Project: wt.Project,
-			Branch:  wt.Branch,
-			IsMain:  wt.IsMain,
+			Path:     wt.Path,
+			Project:  wt.Project,
+			Branch:   wt.Branch,
+			IsMain:   wt.IsMain,
+			WTStatus: string(wt.Status),
 		}
 		if wt.AgentID != nil {
 			info.AgentID = *wt.AgentID
 		}
+		if wt.TicketID != nil {
+			info.TicketID = *wt.TicketID
+		}
+		if wt.TicketHash != nil {
+			info.TicketHash = *wt.TicketHash
+		}
+		if wt.Description != nil {
+			info.Description = *wt.Description
+		}
+		if wt.ProjectName != nil {
+			info.ProjectName = *wt.ProjectName
+		}
 
-		// Get status
+		// Get git status
 		status, _ := d.provisioner.GetStatus(wt.Path)
 		if status != nil {
 			if status.Clean {
@@ -949,4 +968,109 @@ func changelogToInfo(e *store.ChangelogEntry) *control.ChangelogInfo {
 		info.AgentID = *e.AgentID
 	}
 	return info
+}
+
+// Migration handlers
+
+func (d *Daemon) handleMigratePlan(_ json.RawMessage) (any, error) {
+	plan, err := d.migrator.PlanMigration()
+	if err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func (d *Daemon) handleMigrateWorktrees(params json.RawMessage) (any, error) {
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		// No params is fine, use defaults
+		req.DryRun = false
+	}
+
+	migrated, err := d.migrator.Migrate(req.DryRun)
+	if err != nil {
+		return nil, err
+	}
+
+	// Rescan to update store
+	d.scanner.ScanAndStore()
+
+	// Broadcast update
+	d.server.Broadcast(control.Event{
+		Type:    "worktrees_migrated",
+		Payload: map[string]any{"migrated": migrated, "dry_run": req.DryRun},
+	})
+
+	return map[string]any{"migrated": migrated, "dry_run": req.DryRun}, nil
+}
+
+// Worktree creation handler
+
+func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
+	var req control.CreateWorktreeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Validate main repo exists
+	mainRepo, err := d.store.GetWorktree(req.MainRepoPath)
+	if err != nil {
+		return nil, err
+	}
+	if mainRepo == nil || !mainRepo.IsMain {
+		return nil, fmt.Errorf("main repo not found: %s", req.MainRepoPath)
+	}
+
+	// Create worktree
+	opts := worktree.CreateWorktreeOptions{
+		MainRepoPath: req.MainRepoPath,
+		Branch:       req.Branch,
+		TicketID:     req.TicketID,
+		Description:  req.Description,
+	}
+
+	path, err := d.migrator.CreateWorktree(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the created worktree from store
+	wt, err := d.store.GetWorktree(path)
+	if err != nil || wt == nil {
+		// Return basic info if store fetch fails
+		return &control.WorktreeInfo{
+			Path:     path,
+			Project:  mainRepo.Project,
+			Branch:   req.Branch,
+			TicketID: req.TicketID,
+		}, nil
+	}
+
+	// Build response
+	info := &control.WorktreeInfo{
+		Path:     wt.Path,
+		Project:  wt.Project,
+		Branch:   wt.Branch,
+		IsMain:   wt.IsMain,
+		WTStatus: string(wt.Status),
+	}
+	if wt.TicketID != nil {
+		info.TicketID = *wt.TicketID
+	}
+	if wt.TicketHash != nil {
+		info.TicketHash = *wt.TicketHash
+	}
+	if wt.Description != nil {
+		info.Description = *wt.Description
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "worktree_created",
+		Payload: info,
+	})
+
+	return info, nil
 }

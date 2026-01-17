@@ -23,6 +23,7 @@ type Config struct {
 // ReposConfig defines repository discovery settings.
 type ReposConfig struct {
 	BaseDirs     []string      `yaml:"base_dirs"`
+	WorktreeDir  string        `yaml:"worktree_dir"`  // Dedicated directory for worktrees
 	Exclude      []string      `yaml:"exclude"`
 	Include      []string      `yaml:"include"`
 	ScanInterval time.Duration `yaml:"scan_interval"`
@@ -125,7 +126,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		Repos: ReposConfig{
 			BaseDirs:     []string{filepath.Join(homeDir, "repos")},
-			Exclude:      []string{"**/node_modules", "**/vendor", "**/.git", "**/target"},
+			WorktreeDir:  filepath.Join(homeDir, "repos/worktrees"),
+			Exclude:      []string{"**/node_modules", "**/vendor", "**/.git", "**/target", "**/worktrees"},
 			ScanInterval: 5 * time.Minute,
 		},
 		Agents: AgentsConfig{

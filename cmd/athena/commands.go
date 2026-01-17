@@ -142,3 +142,81 @@ func categoryIcon(category string) string {
 		return "•"
 	}
 }
+
+// Migration commands
+
+func runMigratePlan() error {
+	client, err := control.NewClient(cfg.Daemon.Socket)
+	if err != nil {
+		return fmt.Errorf("failed to connect to daemon: %w\n\nIs athenad running?", err)
+	}
+	defer client.Close()
+
+	plan, err := client.MigratePlan()
+	if err != nil {
+		return fmt.Errorf("failed to get migration plan: %w", err)
+	}
+
+	if len(plan.Migrations) == 0 {
+		fmt.Println("No worktrees need migration.")
+		fmt.Printf("Worktree directory: %s\n", plan.WorktreeDir)
+		return nil
+	}
+
+	fmt.Printf("Migration Plan\n")
+	fmt.Printf("==============\n")
+	fmt.Printf("Target directory: %s\n\n", plan.WorktreeDir)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TICKET\tCURRENT\tTARGET")
+	fmt.Fprintln(w, "------\t-------\t------")
+
+	for _, m := range plan.Migrations {
+		current := shortenPath(m.CurrentPath)
+		target := shortenPath(m.TargetPath)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", m.TicketID, current, target)
+	}
+	w.Flush()
+
+	fmt.Printf("\n%d worktree(s) will be migrated.\n", len(plan.Migrations))
+	fmt.Println("Run 'athena migrate --execute' to perform the migration.")
+
+	return nil
+}
+
+func runMigrate(execute bool) error {
+	client, err := control.NewClient(cfg.Daemon.Socket)
+	if err != nil {
+		return fmt.Errorf("failed to connect to daemon: %w\n\nIs athenad running?", err)
+	}
+	defer client.Close()
+
+	if !execute {
+		return runMigratePlan()
+	}
+
+	migrated, err := client.MigrateWorktrees(false)
+	if err != nil {
+		return fmt.Errorf("migration failed: %w", err)
+	}
+
+	if len(migrated) == 0 {
+		fmt.Println("No worktrees needed migration.")
+		return nil
+	}
+
+	fmt.Printf("Successfully migrated %d worktree(s):\n", len(migrated))
+	for _, path := range migrated {
+		fmt.Printf("  %s\n", shortenPath(path))
+	}
+
+	return nil
+}
+
+func shortenPath(path string) string {
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
