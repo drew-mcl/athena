@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/data"
+	"github.com/drewfead/athena/internal/eventlog"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/pkg/claudecode"
@@ -15,8 +17,9 @@ import (
 
 // Spawner manages the creation and tracking of Claude Code agent processes.
 type Spawner struct {
-	config *config.Config
-	store  *store.Store
+	config   *config.Config
+	store    *store.Store
+	pipeline *eventlog.Pipeline
 
 	processes map[string]*ManagedProcess
 	mu        sync.RWMutex
@@ -30,13 +33,24 @@ type ManagedProcess struct {
 	Cancel    context.CancelFunc
 }
 
-// NewSpawner creates a new agent spawner.
+// NewSpawner creates a new agent spawner with default pipeline.
 func NewSpawner(cfg *config.Config, st *store.Store) *Spawner {
+	return NewSpawnerWithPipeline(cfg, st, eventlog.NewSQLitePipeline(st, 100))
+}
+
+// NewSpawnerWithPipeline creates a spawner with a custom pipeline.
+func NewSpawnerWithPipeline(cfg *config.Config, st *store.Store, pipeline *eventlog.Pipeline) *Spawner {
 	return &Spawner{
 		config:    cfg,
 		store:     st,
+		pipeline:  pipeline,
 		processes: make(map[string]*ManagedProcess),
 	}
+}
+
+// Pipeline returns the event pipeline for external subscriptions.
+func (s *Spawner) Pipeline() *eventlog.Pipeline {
+	return s.pipeline
 }
 
 // SpawnSpec defines how to spawn an agent.
@@ -102,6 +116,12 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	s.mu.Lock()
 	s.processes[agentID] = mp
 	s.mu.Unlock()
+
+	// Record initial prompt in data plane
+	promptMsg := data.NewPromptMessage(uuid.NewString(), agentID, sessionID, spec.Prompt, 0)
+	if err := s.pipeline.Ingest(ctx, promptMsg); err != nil {
+		logging.Error("failed to record prompt", "agent_id", agentID, "error", err)
+	}
 
 	// Start event handler
 	go s.handleEvents(mp)
@@ -193,7 +213,16 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 }
 
 func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
-	// Log the event
+	// Convert to unified message and ingest through pipeline
+	msg := data.FromClaudeEvent(mp.AgentID, 0, event) // Sequence assigned by pipeline
+	msg.SessionID = mp.SessionID
+
+	ctx := context.Background()
+	if err := s.pipeline.Ingest(ctx, msg); err != nil {
+		logging.Error("failed to ingest event", "agent_id", mp.AgentID, "error", err)
+	}
+
+	// Legacy: also log to agent_events for backwards compat
 	payload := fmt.Sprintf(`{"type":"%s","subtype":"%s"}`, event.Type, event.Subtype)
 	s.store.LogAgentEvent(mp.AgentID, string(event.Type), payload)
 

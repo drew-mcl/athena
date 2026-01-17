@@ -1,129 +1,26 @@
 # Athena
 
-Kubernetes-like orchestration platform for Claude Code agents.
+**The Intelligence Orchestrator**
 
-## Overview
+Athena orchestrates AI coding agents (Claude Code, Codex, and whatever comes next) for maximum developer productivity. It's not another harness - it's the control plane that coordinates the racing products in this space while keeping *your* data yours.
 
-Athena manages Claude Code agent lifecycles, worktrees, and provides a TUI dashboard for monitoring and interacting with your AI-assisted development workflow.
+![Athena TUI Dashboard](docs/screenshot.png)
 
-**Core metaphor:**
-- **Agent = Pod** - isolated execution unit with lifecycle
-- **Worktree = Node** - execution environment for agents
-- **Context = Volume** - persistent state across restarts
-- **Athena = Control Plane** - scheduling, health, orchestration
+## Philosophy
 
-## Installation
+**Sell shovels, not gold.** The harnesses (Claude Code, Codex) are great and improving fast. Athena doesn't compete - it orchestrates across them, letting you leverage whichever is best for each task.
 
-```bash
-make install
-```
-
-This installs three binaries:
-- `athena` - TUI dashboard
-- `athenad` - Background daemon
-- `wt` - Worktree management
+**Your data, your context.** Every prompt, response, tool call, and decision flows through Athena's data plane and persists in your storage. Not locked in a vendor's session history. This is the foundation for context systems, RAG, memory, and whatever comes next.
 
 ## Quick Start
 
 ```bash
-# Start everything (daemon + TUI)
-make dev
-
-# Or with launchd (macOS, persistent)
-make launchd-install
-athena
+make install    # Install athena, athenad, wt
+athenad &       # Start daemon
+athena          # Launch TUI
 ```
 
-## Usage
-
-### athena (TUI Dashboard)
-
-```bash
-athena              # Launch TUI (requires daemon running)
-athena view <id>    # View live agent output
-```
-
-### wt (Worktree Management)
-
-```bash
-wt                  # List all worktrees
-wt list             # Same as above
-wt add <project> <name>  # Create worktree
-wt remove <path>    # Remove worktree
-wt prune [project]  # Clean up merged worktrees
-```
-
-### athenad (Daemon)
-
-The daemon runs in the background managing agent lifecycles. Start it with:
-
-```bash
-athenad             # Run in foreground
-make launchd-install  # Install as macOS service
-```
-
-## Development
-
-```bash
-make dev      # Build, start daemon, launch TUI
-make stop     # Stop development daemon
-make daemon   # Run daemon in foreground (for debugging)
-make build    # Build all binaries
-make test     # Run tests
-```
-
-## Neovim Live Reload
-
-For live reload when agents edit files, add this to your neovim config:
-
-```lua
-vim.o.autoread = true
-
-vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold" }, {
-  callback = function()
-    if vim.fn.getcmdwintype() == "" then
-      vim.cmd("checktime")
-    end
-  end,
-})
-```
-
-## Configuration
-
-Config file: `~/.config/athena/config.yaml`
-
-```yaml
-repos:
-  base_dirs:
-    - ~/repos
-    - ~/work
-
-agents:
-  restart_policy: on-failure
-  max_restarts: 3
-
-terminal:
-  provider: ghostty
-
-daemon:
-  socket: /tmp/athena.sock
-  database: ~/.local/share/athena/athena.db
-```
-
-## TUI Keybindings
-
-| Key | Action |
-|-----|--------|
-| `j/k` | Navigate |
-| `e` | Open nvim in worktree |
-| `s` | Open shell in worktree |
-| `a` | Attach to agent session |
-| `v` | View agent live output |
-| `n` | New job |
-| `x` | Kill agent |
-| `r` | Refresh |
-| `?` | Help |
-| `q` | Quit |
+See [docs/development.md](docs/development.md) for building from source.
 
 ## License
 

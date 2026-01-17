@@ -3,6 +3,7 @@ package control
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -106,7 +107,7 @@ func (c *Client) ListAgents() ([]*AgentInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var agents []*AgentInfo
@@ -122,7 +123,7 @@ func (c *Client) GetAgent(id string) (*AgentInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var agent AgentInfo
@@ -141,7 +142,7 @@ func (c *Client) GetAgentLogs(agentID string, limit int) ([]*AgentEventInfo, err
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var events []*AgentEventInfo
@@ -157,7 +158,7 @@ func (c *Client) SpawnAgent(req SpawnAgentRequest) (*AgentInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var agent AgentInfo
@@ -173,7 +174,7 @@ func (c *Client) KillAgent(id string) error {
 		return err
 	}
 	if resp.Error != "" {
-		return fmt.Errorf(resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
@@ -185,7 +186,7 @@ func (c *Client) ListWorktrees() ([]*WorktreeInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var worktrees []*WorktreeInfo
@@ -201,7 +202,7 @@ func (c *Client) ListJobs() ([]*JobInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var jobs []*JobInfo
@@ -217,7 +218,7 @@ func (c *Client) CreateJob(req CreateJobRequest) (*JobInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var job JobInfo
@@ -233,7 +234,7 @@ func (c *Client) NormalizePlan() (*NormalizePlan, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var plan NormalizePlan
@@ -249,7 +250,7 @@ func (c *Client) Normalize() ([]string, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var result struct {
@@ -267,7 +268,7 @@ func (c *Client) MigratePlan() (*MigrationPlan, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var plan MigrationPlan
@@ -283,7 +284,7 @@ func (c *Client) MigrateWorktrees(dryRun bool) ([]string, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var result struct {
@@ -301,7 +302,7 @@ func (c *Client) CreateWorktree(req CreateWorktreeRequest) (*WorktreeInfo, error
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	var wt WorktreeInfo
@@ -317,7 +318,7 @@ func (c *Client) ListNotes() ([]*NoteInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	data, _ := json.Marshal(resp.Data)
@@ -333,7 +334,7 @@ func (c *Client) CreateNote(req CreateNoteRequest) (*NoteInfo, error) {
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	data, _ := json.Marshal(resp.Data)
@@ -349,7 +350,7 @@ func (c *Client) UpdateNote(req UpdateNoteRequest) error {
 		return err
 	}
 	if resp.Error != "" {
-		return fmt.Errorf(resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
@@ -361,7 +362,7 @@ func (c *Client) DeleteNote(id string) error {
 		return err
 	}
 	if resp.Error != "" {
-		return fmt.Errorf(resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
@@ -376,7 +377,7 @@ func (c *Client) ListChangelog(project string, limit int) ([]*ChangelogInfo, err
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	data, _ := json.Marshal(resp.Data)
@@ -392,7 +393,7 @@ func (c *Client) CreateChangelog(req CreateChangelogRequest) (*ChangelogInfo, er
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	data, _ := json.Marshal(resp.Data)
@@ -408,7 +409,7 @@ func (c *Client) DeleteChangelog(id string) error {
 		return err
 	}
 	if resp.Error != "" {
-		return fmt.Errorf(resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
