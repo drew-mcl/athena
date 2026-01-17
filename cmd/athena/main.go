@@ -57,6 +57,24 @@ var viewCmd = &cobra.Command{
 	},
 }
 
+// Migration commands
+var migrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Migrate worktrees to the standard directory structure",
+	Long: `Migrate existing worktrees to the centralized ~/repos/worktrees/ directory.
+
+By default, shows a plan of what would be migrated.
+Use --execute to perform the actual migration.
+
+Examples:
+  athena migrate           # Show migration plan
+  athena migrate --execute # Perform the migration`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		execute, _ := cmd.Flags().GetBool("execute")
+		return runMigrate(execute)
+	},
+}
+
 // Changelog commands
 var changelogCmd = &cobra.Command{
 	Use:   "changelog",
@@ -99,6 +117,9 @@ Examples:
 }
 
 func init() {
+	// Migration flags
+	migrateCmd.Flags().BoolP("execute", "e", false, "Execute the migration (default: show plan only)")
+
 	// Changelog flags
 	changelogListCmd.Flags().StringP("project", "p", "", "Filter by project")
 	changelogListCmd.Flags().IntP("limit", "l", 20, "Maximum entries to show")
@@ -110,5 +131,5 @@ func init() {
 	changelogCmd.AddCommand(changelogListCmd, changelogAddCmd)
 
 	daemonCmd.AddCommand(daemonStatusCmd)
-	rootCmd.AddCommand(daemonCmd, viewCmd, changelogCmd)
+	rootCmd.AddCommand(daemonCmd, viewCmd, changelogCmd, migrateCmd)
 }

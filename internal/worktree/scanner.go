@@ -5,11 +5,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/store"
 )
+
+// Ticket ID patterns to extract from branch names
+// Supports: ENG-123, ATH-456, PROJ-789, etc.
+var ticketIDPattern = regexp.MustCompile(`(?i)([A-Z]+-\d+)`)
 
 // Scanner discovers git repositories and worktrees.
 type Scanner struct {
@@ -75,12 +80,21 @@ func (s *Scanner) ScanAndStore() error {
 	}
 
 	for _, repo := range repos {
+		// Get project name from git remote (cached)
+		projectName := GetProjectNameFromRemote(repo.Path)
+		var projectNamePtr *string
+		if projectName != "" {
+			projectNamePtr = &projectName
+		}
+
 		// Store main repo
 		wt := &store.Worktree{
-			Path:    repo.Path,
-			Project: repo.Project,
-			Branch:  repo.Branch,
-			IsMain:  repo.IsMain,
+			Path:        repo.Path,
+			Project:     repo.Project,
+			Branch:      repo.Branch,
+			IsMain:      repo.IsMain,
+			ProjectName: projectNamePtr,
+			Status:      store.WorktreeStatusActive,
 		}
 		if err := s.store.UpsertWorktree(wt); err != nil {
 			continue
@@ -88,15 +102,136 @@ func (s *Scanner) ScanAndStore() error {
 
 		// Store worktrees
 		for _, worktree := range repo.Worktrees {
+			// Extract ticket ID from branch name
+			ticketID := ExtractTicketID(worktree.Branch)
+			var ticketIDPtr *string
+			if ticketID != "" {
+				ticketIDPtr = &ticketID
+			}
+
+			// Extract hash from path if it follows our naming convention
+			ticketHash := ExtractTicketHashFromPath(worktree.Path)
+			var ticketHashPtr *string
+			if ticketHash != "" {
+				ticketHashPtr = &ticketHash
+			}
+
+			// Check if branch is merged (stale detection)
+			status := store.WorktreeStatusActive
+			if isBranchMerged(repo.Path, worktree.Branch) {
+				status = store.WorktreeStatusMerged
+			}
+
 			wt := &store.Worktree{
-				Path:    worktree.Path,
-				Project: repo.Project,
-				Branch:  worktree.Branch,
-				IsMain:  false,
+				Path:        worktree.Path,
+				Project:     repo.Project,
+				Branch:      worktree.Branch,
+				IsMain:      false,
+				TicketID:    ticketIDPtr,
+				TicketHash:  ticketHashPtr,
+				ProjectName: projectNamePtr,
+				Status:      status,
 			}
 			if err := s.store.UpsertWorktree(wt); err != nil {
 				continue
 			}
+		}
+	}
+
+	// Also scan the dedicated worktree directory
+	if s.config.Repos.WorktreeDir != "" {
+		if err := s.scanWorktreeDir(); err != nil {
+			// Log but don't fail - worktree dir may not exist yet
+			_ = err
+		}
+	}
+
+	return nil
+}
+
+// scanWorktreeDir scans the dedicated worktree directory.
+func (s *Scanner) scanWorktreeDir() error {
+	wtDir := expandPath(s.config.Repos.WorktreeDir)
+
+	// Check if directory exists
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return nil // Not an error, just nothing to scan
+	}
+
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		path := filepath.Join(wtDir, entry.Name())
+
+		// Check if this is a git worktree
+		gitDir := filepath.Join(path, ".git")
+		info, err := os.Stat(gitDir)
+		if err != nil {
+			continue
+		}
+
+		// .git file (not directory) indicates a worktree
+		if info.IsDir() {
+			continue // This is a main repo, not a worktree
+		}
+
+		branch := getCurrentBranch(path)
+		projectName := GetProjectNameFromRemote(path)
+
+		// Extract ticket ID from directory name or branch
+		dirName := entry.Name()
+		ticketID := ExtractTicketID(dirName)
+		if ticketID == "" {
+			ticketID = ExtractTicketID(branch)
+		}
+
+		// Extract hash from directory name
+		ticketHash := ExtractTicketHashFromPath(path)
+
+		// Build pointers for optional fields
+		var ticketIDPtr, ticketHashPtr, projectNamePtr *string
+		if ticketID != "" {
+			ticketIDPtr = &ticketID
+		}
+		if ticketHash != "" {
+			ticketHashPtr = &ticketHash
+		}
+		if projectName != "" {
+			projectNamePtr = &projectName
+		}
+
+		// Determine project from projectName or fall back to dirName
+		project := projectName
+		if project == "" {
+			project = dirName
+		}
+
+		// Check if branch is merged (stale detection)
+		status := store.WorktreeStatusActive
+		mainRepo := getMainRepoFromWorktree(path)
+		if mainRepo != "" && isBranchMerged(mainRepo, branch) {
+			status = store.WorktreeStatusMerged
+		}
+
+		wt := &store.Worktree{
+			Path:        path,
+			Project:     project,
+			Branch:      branch,
+			IsMain:      false,
+			TicketID:    ticketIDPtr,
+			TicketHash:  ticketHashPtr,
+			ProjectName: projectNamePtr,
+			Status:      status,
+		}
+		if err := s.store.UpsertWorktree(wt); err != nil {
+			continue
 		}
 	}
 
@@ -234,4 +369,152 @@ func expandPath(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+// ExtractTicketID extracts a ticket ID from a branch name.
+// Supports patterns like: drew/eng-123-feature, ENG-123-feature, eng-123
+func ExtractTicketID(branch string) string {
+	matches := ticketIDPattern.FindStringSubmatch(branch)
+	if len(matches) >= 2 {
+		return strings.ToUpper(matches[1])
+	}
+	return ""
+}
+
+// GetProjectNameFromRemote extracts the project name from git remote URL.
+// Supports: git@github.com:user/project.git, https://github.com/user/project.git
+func GetProjectNameFromRemote(repoPath string) string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	remote := strings.TrimSpace(string(output))
+	return parseProjectFromRemote(remote)
+}
+
+// parseProjectFromRemote parses a git remote URL to extract the project name.
+func parseProjectFromRemote(remote string) string {
+	// Remove trailing .git
+	remote = strings.TrimSuffix(remote, ".git")
+
+	// Handle SSH format: git@github.com:user/project
+	if strings.Contains(remote, ":") && strings.Contains(remote, "@") {
+		parts := strings.Split(remote, ":")
+		if len(parts) == 2 {
+			pathParts := strings.Split(parts[1], "/")
+			if len(pathParts) >= 1 {
+				return pathParts[len(pathParts)-1]
+			}
+		}
+	}
+
+	// Handle HTTPS format: https://github.com/user/project
+	parts := strings.Split(remote, "/")
+	if len(parts) >= 1 {
+		return parts[len(parts)-1]
+	}
+
+	return ""
+}
+
+// ExtractTicketHashFromPath extracts the 4-char hash from worktree directory name.
+// Expected format: ENG-123-a1b2 or TICKET-ID-hash
+func ExtractTicketHashFromPath(path string) string {
+	name := filepath.Base(path)
+	parts := strings.Split(name, "-")
+	if len(parts) >= 3 {
+		// Last part should be the hash
+		hash := parts[len(parts)-1]
+		if len(hash) == 4 {
+			return hash
+		}
+	}
+	return ""
+}
+
+// isBranchMerged checks if a branch has been merged into the default branch.
+func isBranchMerged(repoPath, branch string) bool {
+	if branch == "" {
+		return false
+	}
+
+	defaultBranch := getDefaultBranch(repoPath)
+
+	cmd := exec.Command("git", "branch", "--merged", defaultBranch)
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "* ")
+		if line == branch {
+			return true
+		}
+	}
+	return false
+}
+
+// getDefaultBranch determines the default branch for a repository (main or master).
+func getDefaultBranch(repoPath string) string {
+	// Try to get from remote
+	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err == nil {
+		branch := strings.TrimSpace(string(output))
+		return strings.TrimPrefix(branch, "origin/")
+	}
+
+	// Fall back to checking if main or master exists
+	for _, branch := range []string{"main", "master"} {
+		cmd = exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		cmd.Dir = repoPath
+		if cmd.Run() == nil {
+			return branch
+		}
+	}
+
+	return "main"
+}
+
+// getMainRepoFromWorktree extracts the main repository path from a worktree.
+// Worktrees have a .git file (not directory) that points to the main repo.
+func getMainRepoFromWorktree(worktreePath string) string {
+	gitFile := filepath.Join(worktreePath, ".git")
+
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return ""
+	}
+
+	// Format: "gitdir: /path/to/main/.git/worktrees/name"
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return ""
+	}
+
+	gitDir := strings.TrimPrefix(content, "gitdir: ")
+
+	// Navigate up from .git/worktrees/name to get main repo
+	// gitDir is like: /path/to/main/.git/worktrees/wt-name
+	parts := strings.Split(gitDir, string(filepath.Separator))
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] == ".git" {
+			// Reconstruct path up to .git parent
+			mainPath := filepath.Join(parts[:i]...)
+			if !filepath.IsAbs(mainPath) && len(parts) > 0 && parts[0] == "" {
+				// Unix absolute path - add leading /
+				mainPath = "/" + mainPath
+			}
+			return mainPath
+		}
+	}
+
+	return ""
 }

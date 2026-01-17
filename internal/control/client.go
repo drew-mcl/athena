@@ -260,6 +260,56 @@ func (c *Client) Normalize() ([]string, error) {
 	return result.Moved, nil
 }
 
+// MigratePlan returns a plan for migrating worktrees to the new structure.
+func (c *Client) MigratePlan() (*MigrationPlan, error) {
+	resp, err := c.Call("migrate_plan", nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf(resp.Error)
+	}
+
+	var plan MigrationPlan
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &plan)
+	return &plan, nil
+}
+
+// MigrateWorktrees moves worktrees to the new structure.
+func (c *Client) MigrateWorktrees(dryRun bool) ([]string, error) {
+	resp, err := c.Call("migrate_worktrees", map[string]bool{"dry_run": dryRun})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf(resp.Error)
+	}
+
+	var result struct {
+		Migrated []string `json:"migrated"`
+	}
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &result)
+	return result.Migrated, nil
+}
+
+// CreateWorktree creates a new worktree in the dedicated worktree directory.
+func (c *Client) CreateWorktree(req CreateWorktreeRequest) (*WorktreeInfo, error) {
+	resp, err := c.Call("create_worktree", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf(resp.Error)
+	}
+
+	var wt WorktreeInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &wt)
+	return &wt, nil
+}
+
 // ListNotes retrieves all notes.
 func (c *Client) ListNotes() ([]*NoteInfo, error) {
 	resp, err := c.Call("list_notes", nil)
@@ -426,12 +476,18 @@ type AgentEventInfo struct {
 
 // WorktreeInfo represents worktree data for API responses.
 type WorktreeInfo struct {
-	Path    string `json:"path"`
-	Project string `json:"project"`
-	Branch  string `json:"branch"`
-	IsMain  bool   `json:"is_main"`
-	AgentID string `json:"agent_id,omitempty"`
-	Status  string `json:"status"`
+	Path        string `json:"path"`
+	Project     string `json:"project"`
+	Branch      string `json:"branch"`
+	IsMain      bool   `json:"is_main"`
+	AgentID     string `json:"agent_id,omitempty"`
+	Status      string `json:"status"`       // Git status (dirty/clean indicators)
+	// New fields for ticket-based workflow
+	TicketID    string `json:"ticket_id,omitempty"`    // External ticket ID (e.g., ENG-123)
+	TicketHash  string `json:"ticket_hash,omitempty"`  // 4-char hash for uniqueness
+	Description string `json:"description,omitempty"`  // Worktree description/purpose
+	ProjectName string `json:"project_name,omitempty"` // Cached from git remote origin
+	WTStatus    string `json:"wt_status,omitempty"`    // Worktree lifecycle: active | merged | stale
 }
 
 // JobInfo represents job data for API responses.
@@ -527,4 +583,28 @@ type CreateChangelogRequest struct {
 	Project     string `json:"project"`
 	JobID       string `json:"job_id,omitempty"`
 	AgentID     string `json:"agent_id,omitempty"`
+}
+
+// CreateWorktreeRequest is the request to create a new worktree.
+type CreateWorktreeRequest struct {
+	MainRepoPath string `json:"main_repo_path"` // Path to the main repository
+	Branch       string `json:"branch"`          // Branch name (optional, will be generated)
+	TicketID     string `json:"ticket_id"`       // Ticket ID (e.g., ENG-123)
+	Description  string `json:"description"`     // Description of the work
+}
+
+// MigrationPlan describes what migration would do.
+type MigrationPlan struct {
+	WorktreeDir string          `json:"worktree_dir"`
+	Migrations  []MigrationItem `json:"migrations"`
+}
+
+// MigrationItem describes a single worktree migration.
+type MigrationItem struct {
+	CurrentPath string `json:"current_path"`
+	TargetPath  string `json:"target_path"`
+	Branch      string `json:"branch"`
+	TicketID    string `json:"ticket_id"`
+	Hash        string `json:"hash"`
+	Project     string `json:"project"`
 }
