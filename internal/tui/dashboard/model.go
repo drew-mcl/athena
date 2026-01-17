@@ -127,6 +127,7 @@ type (
 		logs    []*control.AgentEventInfo
 	}
 	clearStatusMsg struct{}
+	clearErrMsg    struct{} // Auto-clears error after timeout
 )
 
 // New creates a new dashboard model
@@ -251,6 +252,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg
+		// Auto-clear error after 5 seconds
+		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+			return clearErrMsg{}
+		})
+
+	case clearErrMsg:
+		m.err = nil
 
 	case dataUpdateMsg:
 		// Data was modified (create/update/delete), refresh
@@ -1091,6 +1099,14 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderFooter() string {
+	// Show error if present (highest priority)
+	if m.err != nil {
+		errStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#f7768e")).
+			Bold(true)
+		return errStyle.Render(fmt.Sprintf(" ✗ %s", m.err.Error()))
+	}
+
 	// Show status message if recent
 	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 2*time.Second {
 		return tui.StyleStatusMsg.Render(m.statusMsg)
