@@ -1,0 +1,32 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+go.work
+go.work.sum
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local data
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.log
+
+# Athena runtime
+.athena/
+athena.sock
