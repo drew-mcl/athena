@@ -321,6 +321,7 @@ const (
 	JobTypeQuestion JobType = "question" // No code change, just Q&A (no worktree)
 	JobTypeQuick    JobType = "quick"    // Fast change, broadcast to all worktrees
 	JobTypeFeature  JobType = "feature"  // Long-lived feature work (agent-based)
+	JobTypeMerge    JobType = "merge"    // Merge conflict resolution
 )
 
 // PropagationResult tracks the merge status for each worktree during quick job broadcast.

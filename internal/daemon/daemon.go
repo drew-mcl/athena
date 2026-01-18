@@ -1532,6 +1532,26 @@ func (d *Daemon) handleMergeLocal(params json.RawMessage) (any, error) {
 			projectName = wt.Project
 		}
 
+		// Create a merge resolution job/task
+		taskDescription := fmt.Sprintf("Resolve merge conflicts: %s → main", result.Branch)
+		job := &store.Job{
+			ID:              generateID(),
+			RawInput:        taskDescription,
+			NormalizedInput: taskDescription,
+			Status:          store.JobStatusExecuting,
+			Type:            store.JobTypeMerge,
+			Project:         projectName,
+		}
+		if err := d.store.CreateJob(job); err != nil {
+			logging.Warn("failed to create merge job", "error", err)
+		} else {
+			// Broadcast job creation
+			d.server.Broadcast(control.Event{
+				Type:    "job_created",
+				Payload: jobToInfo(job),
+			})
+		}
+
 		// Spawn a Sonnet agent to resolve the conflicts via rebase
 		spec := agent.SpawnSpec{
 			WorktreePath: req.WorktreePath,
@@ -1552,6 +1572,10 @@ If the conflicts are too complex to resolve automatically, explain what manual i
 		spawnedAgent, spawnErr := d.spawner.Spawn(d.ctx, spec)
 		if spawnErr != nil {
 			logging.Error("failed to spawn conflict resolver", "error", spawnErr)
+			// Mark job as failed
+			if job != nil {
+				d.store.UpdateJobStatus(job.ID, store.JobStatusFailed)
+			}
 			return &control.MergeLocalResult{
 				Success:      false,
 				HasConflicts: true,
