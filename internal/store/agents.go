@@ -104,6 +104,7 @@ func (s *Store) ListRunningAgents() ([]*Agent, error) {
 		AgentStatusPlanning,
 		AgentStatusExecuting,
 		AgentStatusSpawning,
+		AgentStatusAwaiting,
 	)
 }
 

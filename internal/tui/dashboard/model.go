@@ -98,13 +98,14 @@ type Model struct {
 	promoteProjectIdx int    // selected project index
 
 	// Plan viewer mode
-	planMode         bool   // true = viewing plan
-	planContent      string // raw markdown content
-	planRendered     string // glamour-rendered output
-	planStatus       string // draft | approved | executing | completed
-	planScroll       int    // scroll offset
-	planAgentID      string // planner agent ID for parent link
-	planWorktreePath string // worktree path for the plan
+	planMode          bool   // true = viewing plan
+	planContent       string // raw markdown content
+	planRendered      string // glamour-rendered output
+	planStatus        string // pending | draft | approved | executing | completed
+	planPlannerStatus string // Status of planner agent (for visibility when pending)
+	planScroll        int    // scroll offset
+	planAgentID       string // planner agent ID for parent link
+	planWorktreePath  string // worktree path for the plan
 
 	// Status message feedback
 	statusMsg     string
@@ -140,10 +141,22 @@ type (
 		logs    []*control.AgentEventInfo
 	}
 	planResultMsg struct {
-		worktreePath string
-		content      string
-		status       string
-		agentID      string
+		worktreePath  string
+		content       string
+		status        string
+		agentID       string
+		plannerStatus string // Status of planner agent (for pending plans)
+	}
+	publishResultMsg struct {
+		path   string
+		prURL  string
+		branch string
+	}
+	mergeResultMsg struct {
+		path string
+	}
+	cleanupResultMsg struct {
+		path string
 	}
 	clearStatusMsg struct{}
 	clearErrMsg    struct{} // Auto-clears error after timeout
@@ -302,10 +315,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.planContent = msg.content
 		m.planStatus = msg.status
 		m.planAgentID = msg.agentID
+		m.planPlannerStatus = msg.plannerStatus
 		m.planMode = true
 		m.planScroll = 0
-		// Render markdown with glamour
-		m.planRendered = m.renderMarkdown(msg.content)
+		// Render markdown with glamour (or show pending message)
+		if msg.status == "pending" {
+			m.planRendered = m.renderPendingPlan(msg.plannerStatus)
+		} else {
+			m.planRendered = m.renderMarkdown(msg.content)
+		}
+
+	case publishResultMsg:
+		m.statusMsg = fmt.Sprintf("PR created: %s", msg.prURL)
+		m.statusMsgTime = time.Now()
+		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		}))
+
+	case mergeResultMsg:
+		m.statusMsg = "Branch merged to main"
+		m.statusMsgTime = time.Now()
+		cmds = append(cmds, m.fetchData, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		}))
+
+	case cleanupResultMsg:
+		m.statusMsg = fmt.Sprintf("Worktree cleaned up: %s", filepath.Base(msg.path))
+		m.statusMsgTime = time.Now()
+		cmds = append(cmds, m.fetchData, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		}))
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -629,6 +668,57 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.doRetry()
 		}
 		return m, m.fetchData
+
+	case "P":
+		// Publish PR (worktrees tab only)
+		if m.tab != TabWorktrees {
+			return m, m.showStatus("Publish only available on worktrees tab")
+		}
+		wt := m.getSelectedWorktree()
+		if wt == nil {
+			return m, m.showStatus("No worktree selected")
+		}
+		if wt.IsMain {
+			return m, m.showStatus("Cannot publish main worktree")
+		}
+		if wt.WTStatus != "active" && wt.WTStatus != "" {
+			return m, m.showStatus("Can only publish active worktrees")
+		}
+		return m, m.doPublishPR(wt)
+
+	case "M":
+		// Merge local (worktrees tab only)
+		if m.tab != TabWorktrees {
+			return m, m.showStatus("Merge only available on worktrees tab")
+		}
+		wt := m.getSelectedWorktree()
+		if wt == nil {
+			return m, m.showStatus("No worktree selected")
+		}
+		if wt.IsMain {
+			return m, m.showStatus("Cannot merge main worktree")
+		}
+		if wt.WTStatus != "active" && wt.WTStatus != "" {
+			return m, m.showStatus("Can only merge active worktrees")
+		}
+		return m, m.doMergeLocal(wt)
+
+	case "c":
+		// Cleanup worktree (worktrees tab only)
+		if m.tab != TabWorktrees {
+			return m, m.showStatus("Cleanup only available on worktrees tab")
+		}
+		wt := m.getSelectedWorktree()
+		if wt == nil {
+			return m, m.showStatus("No worktree selected")
+		}
+		if wt.IsMain {
+			return m, m.showStatus("Cannot cleanup main worktree")
+		}
+		if wt.WTStatus != "merged" {
+			return m, m.showStatus("Can only cleanup merged worktrees (merge first)")
+		}
+		return m, m.doCleanup(wt)
 	}
 
 	return m, nil
@@ -806,6 +896,14 @@ func (m Model) handlePlanMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		// Refresh plan from file
 		return m, m.fetchPlan(m.planWorktreePath, true)
+
+	case "L":
+		// View planner agent logs (especially useful when pending)
+		if m.planAgentID != "" {
+			m.planMode = false
+			return m, m.fetchLogs(m.planAgentID)
+		}
+		return m, m.showStatus("No planner agent to view logs for")
 
 	// Vi-style scrolling
 	case "j", "down":
@@ -1108,6 +1206,20 @@ func (m Model) projectWorktrees() []*control.WorktreeInfo {
 		}
 	}
 	return result
+}
+
+// getSelectedWorktree returns the currently selected worktree, or nil if none.
+func (m Model) getSelectedWorktree() *control.WorktreeInfo {
+	var wts []*control.WorktreeInfo
+	if m.level == LevelDashboard {
+		wts = m.worktrees
+	} else {
+		wts = m.projectWorktrees()
+	}
+	if m.selected >= len(wts) {
+		return nil
+	}
+	return wts[m.selected]
 }
 
 func (m Model) projectAgents() []*control.AgentInfo {
@@ -2291,6 +2403,8 @@ func (m Model) renderPlanView() string {
 	// Status badge
 	var statusStyle lipgloss.Style
 	switch m.planStatus {
+	case "pending":
+		statusStyle = tui.StatusStyle("spawning")
 	case "draft":
 		statusStyle = tui.StatusStyle("pending")
 	case "approved":
@@ -2303,6 +2417,13 @@ func (m Model) renderPlanView() string {
 		statusStyle = tui.StyleMuted
 	}
 	content.WriteString("  " + statusStyle.Render("["+strings.ToUpper(m.planStatus)+"]"))
+
+	// Show planner status when pending
+	if m.planStatus == "pending" && m.planPlannerStatus != "" {
+		plannerStyle := tui.StatusStyle(m.planPlannerStatus)
+		content.WriteString("  " + plannerStyle.Render("planner:"+m.planPlannerStatus))
+	}
+
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n")
@@ -2334,13 +2455,16 @@ func (m Model) renderPlanView() string {
 		}
 	}
 
-	// Footer with available actions
+	// Footer with available actions based on plan state
 	var helpText string
-	if m.planStatus == "draft" {
+	switch m.planStatus {
+	case "pending":
+		helpText = "r:refresh  L:logs  q:close"
+	case "draft":
 		helpText = "j/k:scroll  g/G:top/bottom  a:approve  r:refresh  q:close"
-	} else if m.planStatus == "approved" {
+	case "approved":
 		helpText = "j/k:scroll  g/G:top/bottom  x:execute  r:refresh  q:close"
-	} else {
+	default:
 		helpText = "j/k:scroll  g/G:top/bottom  r:refresh  q:close"
 	}
 	footer := "  " + tui.StyleHelp.Render(helpText)
@@ -2700,6 +2824,36 @@ func (m Model) doKill() tea.Cmd {
 	return nil
 }
 
+func (m Model) doPublishPR(wt *control.WorktreeInfo) tea.Cmd {
+	return func() tea.Msg {
+		result, err := m.client.PublishPR(wt.Path)
+		if err != nil {
+			return errMsg(err)
+		}
+		return publishResultMsg{path: wt.Path, prURL: result.PRURL, branch: result.Branch}
+	}
+}
+
+func (m Model) doMergeLocal(wt *control.WorktreeInfo) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.MergeLocal(wt.Path)
+		if err != nil {
+			return errMsg(err)
+		}
+		return mergeResultMsg{path: wt.Path}
+	}
+}
+
+func (m Model) doCleanup(wt *control.WorktreeInfo) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.CleanupWorktree(wt.Path, true) // Delete branch too
+		if err != nil {
+			return errMsg(err)
+		}
+		return cleanupResultMsg{path: wt.Path}
+	}
+}
+
 func (m Model) doPlanView() tea.Cmd {
 	var wts []*control.WorktreeInfo
 	var agents []*control.AgentInfo
@@ -2737,12 +2891,44 @@ func (m Model) fetchPlan(worktreePath string, forceRefresh bool) tea.Cmd {
 			return errMsg(fmt.Errorf("failed to get plan: %w", err))
 		}
 		return planResultMsg{
-			worktreePath: worktreePath,
-			content:      plan.Content,
-			status:       plan.Status,
-			agentID:      plan.AgentID,
+			worktreePath:  worktreePath,
+			content:       plan.Content,
+			status:        plan.Status,
+			agentID:       plan.AgentID,
+			plannerStatus: plan.PlannerStatus,
 		}
 	}
+}
+
+// renderPendingPlan renders a message showing the planner is still working.
+func (m Model) renderPendingPlan(plannerStatus string) string {
+	var b strings.Builder
+
+	b.WriteString("## 🔄 Plan In Progress\n\n")
+	b.WriteString("The planner agent is analyzing the codebase and creating an implementation plan.\n\n")
+
+	b.WriteString("**Planner Status:** ")
+	switch plannerStatus {
+	case "planning":
+		b.WriteString("`thinking` - Analyzing the codebase\n")
+	case "executing":
+		b.WriteString("`working` - Writing the plan\n")
+	case "running":
+		b.WriteString("`running` - Getting started\n")
+	case "completed":
+		b.WriteString("`done` - Completed (refresh to see plan)\n")
+	case "crashed":
+		b.WriteString("`crashed` - Something went wrong\n")
+	default:
+		b.WriteString(fmt.Sprintf("`%s`\n", plannerStatus))
+	}
+
+	b.WriteString("\n---\n\n")
+	b.WriteString("Press `r` to refresh and check for the plan.\n")
+	b.WriteString("Press `L` to view the planner's logs.\n")
+	b.WriteString("Press `q` to close.\n")
+
+	return b.String()
 }
 
 func (m Model) approvePlan(worktreePath string) tea.Cmd {
@@ -2756,10 +2942,11 @@ func (m Model) approvePlan(worktreePath string) tea.Cmd {
 			return errMsg(err)
 		}
 		return planResultMsg{
-			worktreePath: worktreePath,
-			content:      plan.Content,
-			status:       plan.Status,
-			agentID:      plan.AgentID,
+			worktreePath:  worktreePath,
+			content:       plan.Content,
+			status:        plan.Status,
+			agentID:       plan.AgentID,
+			plannerStatus: plan.PlannerStatus,
 		}
 	}
 }

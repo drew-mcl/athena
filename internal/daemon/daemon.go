@@ -2,11 +2,14 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -33,6 +36,7 @@ type Daemon struct {
 	scanner     *worktree.Scanner
 	provisioner *worktree.Provisioner
 	migrator    *worktree.Migrator
+	publisher   *worktree.Publisher
 	spawner     *agent.Spawner
 	executor    *JobExecutor
 
@@ -76,6 +80,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		scanner:     worktree.NewScanner(cfg, st),
 		provisioner: worktree.NewProvisioner(cfg, st),
 		migrator:    worktree.NewMigrator(cfg, st),
+		publisher:   worktree.NewPublisher(cfg, st),
 		spawner:     agent.NewSpawner(cfg, st),
 		agents:      make(map[string]*AgentProcess),
 		jobQueue:    make(chan string, 100),
@@ -377,6 +382,10 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_plan", d.handleGetPlan)
 	d.server.Handle("approve_plan", d.handleApprovePlan)
 	d.server.Handle("spawn_executor", d.handleSpawnExecutor)
+	// Publish/Merge/Cleanup
+	d.server.Handle("publish_pr", d.handlePublishPR)
+	d.server.Handle("merge_local", d.handleMergeLocal)
+	d.server.Handle("cleanup_worktree", d.handleCleanupWorktree)
 }
 
 func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {
@@ -554,6 +563,9 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 		}
 		if wt.ProjectName != nil {
 			info.ProjectName = *wt.ProjectName
+		}
+		if wt.PRURL != nil {
+			info.PRURL = *wt.PRURL
 		}
 
 		// Get git status
@@ -763,6 +775,9 @@ func (d *Daemon) healthCheckLoop() {
 	}
 }
 
+// awaitingTimeout is how long without a heartbeat before marking agent as awaiting.
+const awaitingTimeout = 30 * time.Second
+
 func (d *Daemon) checkAgentHealth() {
 	agents, err := d.store.ListRunningAgents()
 	if err != nil {
@@ -772,17 +787,44 @@ func (d *Daemon) checkAgentHealth() {
 	d.agentsMu.RLock()
 	defer d.agentsMu.RUnlock()
 
+	now := time.Now()
+
 	for _, agent := range agents {
 		if agent.PID == nil {
 			continue
 		}
 
+		// Check if process is still running
 		if !processExists(*agent.PID) {
 			d.store.UpdateAgentStatus(agent.ID, store.AgentStatusCrashed)
 			d.server.Broadcast(control.Event{
 				Type:    "agent_crashed",
 				Payload: map[string]string{"id": agent.ID},
 			})
+			continue
+		}
+
+		// Check for awaiting status (process running but no recent heartbeat)
+		// Only apply to active states (planning, executing, running)
+		if agent.Status == store.AgentStatusPlanning ||
+			agent.Status == store.AgentStatusExecuting ||
+			agent.Status == store.AgentStatusRunning {
+
+			if agent.LastHeartbeat != nil {
+				timeSinceHeartbeat := now.Sub(*agent.LastHeartbeat)
+				if timeSinceHeartbeat > awaitingTimeout {
+					// Agent is idle - likely waiting for user input
+					d.store.UpdateAgentStatus(agent.ID, store.AgentStatusAwaiting)
+					d.server.Broadcast(control.Event{
+						Type:    "agent_awaiting",
+						Payload: map[string]string{"id": agent.ID},
+					})
+					logging.Debug("agent marked as awaiting",
+						"agent_id", agent.ID,
+						"last_heartbeat", agent.LastHeartbeat,
+						"idle_seconds", timeSinceHeartbeat.Seconds())
+				}
+			}
 		}
 	}
 }
@@ -1147,57 +1189,91 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	// Check DB cache first (unless force refresh)
-	if !req.ForceRefresh {
-		plan, err := d.store.GetPlan(req.WorktreePath)
-		if err == nil && plan != nil {
-			return planToInfo(plan), nil
-		}
-	}
-
-	// Read from file system
-	planPath := req.WorktreePath + "/.plan.md"
-	content, err := os.ReadFile(planPath)
-	if err != nil {
-		return nil, fmt.Errorf("no plan found: %w", err)
-	}
-
 	// Find planner agent for this worktree
 	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
-	var plannerID string
+	var plannerAgent *store.Agent
 	for _, a := range agents {
 		if a.Archetype == "planner" {
-			plannerID = a.ID
+			plannerAgent = a
 			break
 		}
 	}
 
-	if plannerID == "" {
+	// Check DB cache first (unless force refresh)
+	if !req.ForceRefresh {
+		plan, err := d.store.GetPlan(req.WorktreePath)
+		if err == nil && plan != nil && plan.Status != store.PlanStatusPending {
+			// Return cached plan if we have content
+			info := planToInfo(plan)
+			if plannerAgent != nil {
+				info.PlannerStatus = string(plannerAgent.Status)
+			}
+			return info, nil
+		}
+	}
+
+	// Try to read from Claude's native plan storage
+	// Claude stores plans at ~/.claude/plans/<slug>.md
+	if plannerAgent != nil && plannerAgent.ClaudeSessionID != "" {
+		content, err := readClaudePlan(req.WorktreePath, plannerAgent.ClaudeSessionID)
+		if err == nil && content != "" {
+			// Plan found - cache in DB and return
+			existingPlan, _ := d.store.GetPlan(req.WorktreePath)
+			if existingPlan != nil {
+				d.store.UpdatePlanContent(req.WorktreePath, content)
+				if existingPlan.Status == store.PlanStatusPending {
+					d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusDraft)
+				}
+				existingPlan.Content = content
+				existingPlan.Status = store.PlanStatusDraft
+				info := planToInfo(existingPlan)
+				info.PlannerStatus = string(plannerAgent.Status)
+				return info, nil
+			}
+
+			// Create new plan
+			plan := &store.Plan{
+				ID:           generateID(),
+				WorktreePath: req.WorktreePath,
+				AgentID:      plannerAgent.ID,
+				Content:      content,
+				Status:       store.PlanStatusDraft,
+			}
+			if err := d.store.CreatePlan(plan); err != nil {
+				return nil, fmt.Errorf("failed to cache plan: %w", err)
+			}
+			info := planToInfo(plan)
+			info.PlannerStatus = string(plannerAgent.Status)
+			return info, nil
+		}
+		// Log why plan wasn't found (helpful for debugging)
+		logging.Debug("could not read Claude plan", "error", err, "session_id", plannerAgent.ClaudeSessionID)
+	}
+
+	// No plan yet - check if planner is still working
+	if plannerAgent == nil {
 		return nil, fmt.Errorf("no planner agent found for worktree")
 	}
 
-	// Cache in DB (upsert)
-	existingPlan, _ := d.store.GetPlan(req.WorktreePath)
-	if existingPlan != nil {
-		// Update existing plan
-		d.store.UpdatePlanContent(req.WorktreePath, string(content))
-		existingPlan.Content = string(content)
-		return planToInfo(existingPlan), nil
-	}
-
-	// Create new plan
+	// Planner is working but hasn't created plan yet
+	// Return a "pending" plan so the TUI can show progress
 	plan := &store.Plan{
 		ID:           generateID(),
 		WorktreePath: req.WorktreePath,
-		AgentID:      plannerID,
-		Content:      string(content),
-		Status:       store.PlanStatusDraft,
-	}
-	if err := d.store.CreatePlan(plan); err != nil {
-		return nil, fmt.Errorf("failed to cache plan: %w", err)
+		AgentID:      plannerAgent.ID,
+		Content:      "", // No content yet
+		Status:       store.PlanStatusPending,
 	}
 
-	return planToInfo(plan), nil
+	// Cache the pending plan
+	existingPlan, _ := d.store.GetPlan(req.WorktreePath)
+	if existingPlan == nil {
+		d.store.CreatePlan(plan)
+	}
+
+	info := planToInfo(plan)
+	info.PlannerStatus = string(plannerAgent.Status)
+	return info, nil
 }
 
 func (d *Daemon) handleApprovePlan(params json.RawMessage) (any, error) {
@@ -1227,20 +1303,36 @@ func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
 	}
 
-	// Get plan
-	plan, err := d.store.GetPlan(req.WorktreePath)
-	if err != nil || plan == nil {
-		return nil, fmt.Errorf("no plan found for worktree: %s", req.WorktreePath)
-	}
-
-	// Find planner agent for parent link
-	var plannerID string
+	// Find planner agent for parent link and session ID
+	var plannerAgent *store.Agent
 	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
 	for _, a := range agents {
 		if a.Archetype == "planner" {
-			plannerID = a.ID
+			plannerAgent = a
 			break
 		}
+	}
+
+	// Get plan content - try DB cache first, then Claude's storage
+	var planContent string
+	plan, _ := d.store.GetPlan(req.WorktreePath)
+	if plan != nil && plan.Content != "" {
+		planContent = plan.Content
+	} else if plannerAgent != nil && plannerAgent.ClaudeSessionID != "" {
+		// Read directly from Claude's plan storage
+		content, err := readClaudePlan(req.WorktreePath, plannerAgent.ClaudeSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("could not read plan: %w", err)
+		}
+		planContent = content
+		// Cache it for future use
+		if plan != nil {
+			d.store.UpdatePlanContent(req.WorktreePath, content)
+		}
+	}
+
+	if planContent == "" {
+		return nil, fmt.Errorf("no plan content found for worktree: %s", req.WorktreePath)
 	}
 
 	// Build executor prompt with plan
@@ -1250,15 +1342,19 @@ func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
 
 ---
 
-Execute this plan precisely. After each step, report what you did.`, plan.Content)
+Execute this plan precisely. After each step, report what you did.`, planContent)
 
 	// Spawn executor
+	var parentID string
+	if plannerAgent != nil {
+		parentID = plannerAgent.ID
+	}
 	spec := agent.SpawnSpec{
 		WorktreePath: req.WorktreePath,
 		ProjectName:  wt.Project,
 		Archetype:    "executor",
 		Prompt:       prompt,
-		ParentID:     plannerID,
+		ParentID:     parentID,
 	}
 
 	spawnedAgent, err := d.spawner.Spawn(d.ctx, spec)
@@ -1291,4 +1387,152 @@ func planToInfo(p *store.Plan) *control.PlanInfo {
 		CreatedAt:    p.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    p.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// readClaudePlan reads the plan content from Claude's native plan storage.
+// Claude stores plans at ~/.claude/plans/<slug>.md where the slug is found
+// in the session's jsonl file.
+func readClaudePlan(worktreePath, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("no session ID")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot get home dir: %w", err)
+	}
+
+	// Claude stores projects at ~/.claude/projects/<escaped-path>/
+	// where path separators are replaced with dashes
+	escapedPath := strings.ReplaceAll(worktreePath, "/", "-")
+	sessionFile := filepath.Join(homeDir, ".claude", "projects", escapedPath, sessionID+".jsonl")
+
+	// Read session file to extract slug
+	slug, err := extractSessionSlug(sessionFile)
+	if err != nil {
+		return "", fmt.Errorf("cannot extract slug: %w", err)
+	}
+
+	// Read plan from Claude's plans directory
+	planPath := filepath.Join(homeDir, ".claude", "plans", slug+".md")
+	content, err := os.ReadFile(planPath)
+	if err != nil {
+		return "", fmt.Errorf("plan not found at %s: %w", planPath, err)
+	}
+
+	return string(content), nil
+}
+
+// extractSessionSlug extracts the "slug" field from a Claude session jsonl file.
+// The slug determines the plan filename in ~/.claude/plans/
+func extractSessionSlug(sessionFile string) (string, error) {
+	f, err := os.Open(sessionFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Increase buffer size for large JSON lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Quick check before parsing
+		if !strings.Contains(line, `"slug"`) {
+			continue
+		}
+
+		var entry struct {
+			Slug string `json:"slug"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Slug != "" {
+			return entry.Slug, nil
+		}
+	}
+
+	return "", fmt.Errorf("no slug found in session file")
+}
+
+// Publish/Merge/Cleanup handlers
+
+func (d *Daemon) handlePublishPR(params json.RawMessage) (any, error) {
+	var req control.PublishPRRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	opts := worktree.PublishOptions{
+		WorktreePath: req.WorktreePath,
+		Title:        req.Title,
+		Body:         req.Body,
+	}
+
+	result, err := d.publisher.PublishPR(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type: "worktree_published",
+		Payload: map[string]string{
+			"path":   req.WorktreePath,
+			"pr_url": result.PRURL,
+			"branch": result.Branch,
+		},
+	})
+
+	return &control.PublishResult{
+		PRURL:  result.PRURL,
+		Branch: result.Branch,
+	}, nil
+}
+
+func (d *Daemon) handleMergeLocal(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.publisher.MergeLocal(req.WorktreePath); err != nil {
+		return nil, err
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type: "worktree_merged",
+		Payload: map[string]string{
+			"path": req.WorktreePath,
+		},
+	})
+
+	return map[string]bool{"success": true}, nil
+}
+
+func (d *Daemon) handleCleanupWorktree(params json.RawMessage) (any, error) {
+	var req control.CleanupWorktreeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.publisher.Cleanup(req.WorktreePath, req.DeleteBranch); err != nil {
+		return nil, err
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type: "worktree_cleaned",
+		Payload: map[string]string{
+			"path": req.WorktreePath,
+		},
+	})
+
+	return map[string]bool{"success": true}, nil
 }

@@ -81,6 +81,7 @@ func (s *Store) migrateWorktreeColumns() error {
 		{"description", "TEXT"},
 		{"project_name", "TEXT"},
 		{"status", "TEXT DEFAULT 'active'"},
+		{"pr_url", "TEXT"},
 	}
 
 	// Add missing columns
@@ -202,7 +203,8 @@ func (s *Store) migrate() error {
 		ticket_hash   TEXT,                      -- 4-char hash for uniqueness
 		description   TEXT,                      -- Worktree description/purpose
 		project_name  TEXT,                      -- Cached from git remote origin
-		status        TEXT DEFAULT 'active',     -- active | merged | stale
+		status        TEXT DEFAULT 'active',     -- active | published | merged | stale
+		pr_url        TEXT,                      -- GitHub PR URL if published via PR flow
 
 		FOREIGN KEY (agent_id) REFERENCES agents(id),
 		FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -357,9 +359,10 @@ type Job struct {
 type WorktreeStatus string
 
 const (
-	WorktreeStatusActive WorktreeStatus = "active"
-	WorktreeStatusMerged WorktreeStatus = "merged"
-	WorktreeStatusStale  WorktreeStatus = "stale"
+	WorktreeStatusActive    WorktreeStatus = "active"
+	WorktreeStatusPublished WorktreeStatus = "published" // PR created, awaiting merge
+	WorktreeStatusMerged    WorktreeStatus = "merged"
+	WorktreeStatusStale     WorktreeStatus = "stale"
 )
 
 // Worktree represents a git worktree.
@@ -376,7 +379,8 @@ type Worktree struct {
 	TicketHash  *string        // 4-char hash for uniqueness
 	Description *string        // Worktree description/purpose
 	ProjectName *string        // Cached from git remote origin
-	Status      WorktreeStatus // active | merged | stale
+	Status      WorktreeStatus // active | published | merged | stale
+	PRURL       *string        // GitHub PR URL if published via PR flow
 }
 
 // AgentEvent represents a logged event from an agent.
@@ -413,10 +417,11 @@ type ChangelogEntry struct {
 type PlanStatus string
 
 const (
-	PlanStatusDraft     PlanStatus = "draft"
-	PlanStatusApproved  PlanStatus = "approved"
-	PlanStatusExecuting PlanStatus = "executing"
-	PlanStatusCompleted PlanStatus = "completed"
+	PlanStatusPending   PlanStatus = "pending"   // Planner agent still working, no .plan.md yet
+	PlanStatusDraft     PlanStatus = "draft"     // .plan.md exists, awaiting approval
+	PlanStatusApproved  PlanStatus = "approved"  // User approved, ready for executor
+	PlanStatusExecuting PlanStatus = "executing" // Executor agent running
+	PlanStatusCompleted PlanStatus = "completed" // Executor finished
 )
 
 // Plan represents an implementation plan created by a planner agent.

@@ -467,6 +467,49 @@ func (c *Client) SpawnExecutor(worktreePath string) (*AgentInfo, error) {
 	return &agent, nil
 }
 
+// PublishPR pushes a worktree branch and creates a PR.
+func (c *Client) PublishPR(worktreePath string) (*PublishResult, error) {
+	resp, err := c.Call("publish_pr", PublishPRRequest{WorktreePath: worktreePath})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	data, _ := json.Marshal(resp.Data)
+	var result PublishResult
+	json.Unmarshal(data, &result)
+	return &result, nil
+}
+
+// MergeLocal merges a worktree branch into main locally.
+func (c *Client) MergeLocal(worktreePath string) error {
+	resp, err := c.Call("merge_local", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// CleanupWorktree removes a worktree and optionally deletes the branch.
+func (c *Client) CleanupWorktree(worktreePath string, deleteBranch bool) error {
+	resp, err := c.Call("cleanup_worktree", CleanupWorktreeRequest{
+		WorktreePath: worktreePath,
+		DeleteBranch: deleteBranch,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
 func (c *Client) readLoop() {
 	for c.scanner.Scan() {
 		select {
@@ -553,7 +596,8 @@ type WorktreeInfo struct {
 	TicketHash  string `json:"ticket_hash,omitempty"`  // 4-char hash for uniqueness
 	Description string `json:"description,omitempty"`  // Worktree description/purpose
 	ProjectName string `json:"project_name,omitempty"` // Cached from git remote origin
-	WTStatus    string `json:"wt_status,omitempty"`    // Worktree lifecycle: active | merged | stale
+	WTStatus    string `json:"wt_status,omitempty"`    // Worktree lifecycle: active | published | merged | stale
+	PRURL       string `json:"pr_url,omitempty"`       // GitHub PR URL if published
 }
 
 // JobInfo represents job data for API responses.
@@ -677,16 +721,36 @@ type MigrationItem struct {
 
 // PlanInfo represents plan data for API responses.
 type PlanInfo struct {
-	ID           string `json:"id"`
-	WorktreePath string `json:"worktree_path"`
-	AgentID      string `json:"agent_id"`
-	Content      string `json:"content"`
-	Status       string `json:"status"` // draft | approved | executing | completed
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID            string `json:"id"`
+	WorktreePath  string `json:"worktree_path"`
+	AgentID       string `json:"agent_id"`
+	Content       string `json:"content"`
+	Status        string `json:"status"`         // pending | draft | approved | executing | completed
+	PlannerStatus string `json:"planner_status"` // Status of the planner agent (for visibility when pending)
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 // SpawnExecutorRequest is the request to spawn an executor agent.
 type SpawnExecutorRequest struct {
 	WorktreePath string `json:"worktree_path"`
+}
+
+// PublishPRRequest is the request to publish a worktree via PR.
+type PublishPRRequest struct {
+	WorktreePath string `json:"worktree_path"`
+	Title        string `json:"title,omitempty"` // Optional: auto-generated if empty
+	Body         string `json:"body,omitempty"`  // Optional: auto-generated if empty
+}
+
+// PublishResult contains the result of publishing a PR.
+type PublishResult struct {
+	PRURL  string `json:"pr_url"`
+	Branch string `json:"branch"`
+}
+
+// CleanupWorktreeRequest is the request to cleanup a worktree.
+type CleanupWorktreeRequest struct {
+	WorktreePath string `json:"worktree_path"`
+	DeleteBranch bool   `json:"delete_branch"` // Whether to also delete the branch
 }

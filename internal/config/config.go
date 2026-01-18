@@ -165,15 +165,15 @@ func defaultArchetypes() map[string]Archetype {
 	return map[string]Archetype{
 		"planner": {
 			Description:    "Explores codebase and drafts implementation plans",
-			Prompt:         "You are a planning agent. Thoroughly explore the codebase to understand architecture, then draft a detailed implementation plan. Do NOT modify any files.",
-			PermissionMode: "plan",
+			Prompt:         "You are a planning agent. Thoroughly explore the codebase to understand architecture, then use the EnterPlanMode tool to create a detailed implementation plan.",
+			PermissionMode: "plan", // Read-only, plan stored in Claude's native ~/.claude/plans/
 			AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
-			Model:          "sonnet",
+			Model:          "opus",
 		},
 		"executor": {
 			Description:    "Implements approved plans with precision",
-			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval.",
-			PermissionMode: "default",
+			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval. CRITICAL: When you complete your work, you MUST commit all changes with a descriptive commit message before finishing. Never leave uncommitted changes.",
+			PermissionMode: "bypassPermissions", // User approved plan, executor runs autonomously
 			AllowedTools:   []string{"all"},
 			Model:          "opus",
 		},
