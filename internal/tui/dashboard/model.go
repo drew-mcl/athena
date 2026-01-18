@@ -184,7 +184,7 @@ func New(client *control.Client) Model {
 		{Header: "PATH", MinWidth: 20, MaxWidth: 60, Flex: 3},
 		{Header: "BRANCH", MinWidth: 15, MaxWidth: 40, Flex: 2},
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "GIT", MinWidth: 8, MaxWidth: 15, Flex: 0}, // Starship-style [!?+*]
+		{Header: "GIT", MinWidth: 12, MaxWidth: 40, Flex: 1}, // Starship-style [!?+*→branch]
 	})
 
 	jobTable := layout.NewTable([]layout.Column{
@@ -1977,12 +1977,12 @@ func (m Model) renderAgents() string {
 
 	contentHeight := layout.ContentHeight(m.height)
 
-	// Project-level agent table (no PROJECT column)
+	// Project-level agent table (no PROJECT column, Notes-style layout for activity)
 	projectAgentTable := layout.NewTable([]layout.Column{
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
 		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
-		{Header: "WORKTREE", MinWidth: 20, MaxWidth: 35, Flex: 2},
-		{Header: "STATUS", MinWidth: 10, MaxWidth: 12, Flex: 0},
+		{Header: "WORKTREE", MinWidth: 18, MaxWidth: 30, Flex: 1},
+		{Header: "ACTIVITY", MinWidth: 30, MaxWidth: 80, Flex: 3}, // What the agent is doing
 		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
 	})
 	projectAgentTable.SetWidth(m.width)
@@ -2040,11 +2040,46 @@ func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, sel
 		icon,
 		agent.Archetype,
 		wtName,
-		agent.Status,
+		formatActivity(agent),
 		age,
 	}
 
 	return table.RenderRow(values, selected)
+}
+
+// formatActivity returns a human-readable description of what the agent is doing.
+// If LastActivity is populated, it shows that with a relative time suffix.
+// Otherwise, it falls back to descriptive status messages.
+func formatActivity(agent *control.AgentInfo) string {
+	if agent.LastActivity != "" {
+		// Show activity with relative time if recent
+		if agent.LastActivityTime != "" {
+			activityTime := parseCreatedAt(agent.LastActivityTime)
+			if !activityTime.IsZero() && time.Since(activityTime) < 5*time.Minute {
+				relTime := formatDuration(time.Since(activityTime))
+				return fmt.Sprintf("%s (%s ago)", agent.LastActivity, relTime)
+			}
+		}
+		return agent.LastActivity
+	}
+
+	// Fallback to status-based descriptions
+	switch agent.Status {
+	case "awaiting":
+		return "Waiting for user input"
+	case "crashed":
+		return "Process crashed - needs restart"
+	case "planning":
+		return "Creating implementation plan..."
+	case "executing":
+		return "Executing implementation..."
+	case "running":
+		return "Working..."
+	case "stopped":
+		return "Stopped"
+	default:
+		return agent.Status
+	}
 }
 
 func (m Model) renderNotes() string {
