@@ -16,8 +16,20 @@ type Server struct {
 	listener   net.Listener
 	handlers   map[string]HandlerFunc
 	mu         sync.RWMutex
-	clients    map[net.Conn]struct{}
+	clients    map[*clientConn]struct{}
 	done       chan struct{}
+}
+
+type clientConn struct {
+	conn    net.Conn
+	writeMu sync.Mutex
+}
+
+func (c *clientConn) write(data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_, err := c.conn.Write(data)
+	return err
 }
 
 // HandlerFunc is the signature for API method handlers.
@@ -48,7 +60,7 @@ func NewServer(socketPath string) *Server {
 	return &Server{
 		socketPath: socketPath,
 		handlers:   make(map[string]HandlerFunc),
-		clients:    make(map[net.Conn]struct{}),
+		clients:    make(map[*clientConn]struct{}),
 		done:       make(chan struct{}),
 	}
 }
@@ -62,6 +74,11 @@ func (s *Server) Handle(method string, handler HandlerFunc) {
 
 // Start begins listening for connections.
 func (s *Server) Start() error {
+	if conn, err := net.Dial("unix", s.socketPath); err == nil {
+		conn.Close()
+		return fmt.Errorf("daemon already running (socket %s)", s.socketPath)
+	}
+
 	// Remove existing socket
 	os.Remove(s.socketPath)
 
@@ -83,8 +100,8 @@ func (s *Server) Stop() error {
 	close(s.done)
 
 	s.mu.Lock()
-	for conn := range s.clients {
-		conn.Close()
+	for client := range s.clients {
+		client.conn.Close()
 	}
 	s.mu.Unlock()
 
@@ -106,8 +123,8 @@ func (s *Server) Broadcast(event Event) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for conn := range s.clients {
-		conn.Write(data)
+	for client := range s.clients {
+		client.write(data)
 	}
 }
 
@@ -130,26 +147,28 @@ func (s *Server) acceptLoop() {
 		}
 
 		s.mu.Lock()
-		s.clients[conn] = struct{}{}
+		client := &clientConn{conn: conn}
+		s.clients[client] = struct{}{}
 		s.mu.Unlock()
 
-		go s.handleConnection(conn)
+		go s.handleConnection(client)
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConnection(client *clientConn) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.clients, conn)
+		delete(s.clients, client)
 		s.mu.Unlock()
-		conn.Close()
+		client.conn.Close()
 	}()
 
-	scanner := bufio.NewScanner(conn)
+	scanner := bufio.NewScanner(client.conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		var req Request
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			s.sendError(conn, "", "invalid request: "+err.Error())
+			s.sendError(client, "", "invalid request: "+err.Error())
 			continue
 		}
 
@@ -158,28 +177,28 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.RUnlock()
 
 		if !ok {
-			s.sendError(conn, req.ID, "unknown method: "+req.Method)
+			s.sendError(client, req.ID, "unknown method: "+req.Method)
 			continue
 		}
 
 		data, err := handler(req.Params)
 		if err != nil {
-			s.sendError(conn, req.ID, err.Error())
+			s.sendError(client, req.ID, err.Error())
 			continue
 		}
 
-		s.sendResponse(conn, req.ID, data)
+		s.sendResponse(client, req.ID, data)
 	}
 }
 
-func (s *Server) sendResponse(conn net.Conn, id string, data any) {
+func (s *Server) sendResponse(client *clientConn, id string, data any) {
 	resp := Response{Data: data, ID: id}
 	encoded, _ := json.Marshal(resp)
-	conn.Write(append(encoded, '\n'))
+	client.write(append(encoded, '\n'))
 }
 
-func (s *Server) sendError(conn net.Conn, id, errMsg string) {
+func (s *Server) sendError(client *clientConn, id, errMsg string) {
 	resp := Response{Error: errMsg, ID: id}
 	encoded, _ := json.Marshal(resp)
-	conn.Write(append(encoded, '\n'))
+	client.write(append(encoded, '\n'))
 }

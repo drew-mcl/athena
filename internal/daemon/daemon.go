@@ -373,6 +373,10 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("list_changelog", d.handleListChangelog)
 	d.server.Handle("create_changelog", d.handleCreateChangelog)
 	d.server.Handle("delete_changelog", d.handleDeleteChangelog)
+	// Plans
+	d.server.Handle("get_plan", d.handleGetPlan)
+	d.server.Handle("approve_plan", d.handleApprovePlan)
+	d.server.Handle("spawn_executor", d.handleSpawnExecutor)
 }
 
 func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {
@@ -1130,4 +1134,161 @@ Do NOT make any code changes. Only explore and create the plan.`, description)
 	}
 
 	return info, nil
+}
+
+// Plan handlers
+
+func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+		ForceRefresh bool   `json:"force_refresh"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Check DB cache first (unless force refresh)
+	if !req.ForceRefresh {
+		plan, err := d.store.GetPlan(req.WorktreePath)
+		if err == nil && plan != nil {
+			return planToInfo(plan), nil
+		}
+	}
+
+	// Read from file system
+	planPath := req.WorktreePath + "/.plan.md"
+	content, err := os.ReadFile(planPath)
+	if err != nil {
+		return nil, fmt.Errorf("no plan found: %w", err)
+	}
+
+	// Find planner agent for this worktree
+	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
+	var plannerID string
+	for _, a := range agents {
+		if a.Archetype == "planner" {
+			plannerID = a.ID
+			break
+		}
+	}
+
+	if plannerID == "" {
+		return nil, fmt.Errorf("no planner agent found for worktree")
+	}
+
+	// Cache in DB (upsert)
+	existingPlan, _ := d.store.GetPlan(req.WorktreePath)
+	if existingPlan != nil {
+		// Update existing plan
+		d.store.UpdatePlanContent(req.WorktreePath, string(content))
+		existingPlan.Content = string(content)
+		return planToInfo(existingPlan), nil
+	}
+
+	// Create new plan
+	plan := &store.Plan{
+		ID:           generateID(),
+		WorktreePath: req.WorktreePath,
+		AgentID:      plannerID,
+		Content:      string(content),
+		Status:       store.PlanStatusDraft,
+	}
+	if err := d.store.CreatePlan(plan); err != nil {
+		return nil, fmt.Errorf("failed to cache plan: %w", err)
+	}
+
+	return planToInfo(plan), nil
+}
+
+func (d *Daemon) handleApprovePlan(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusApproved); err != nil {
+		return nil, err
+	}
+
+	return map[string]bool{"success": true}, nil
+}
+
+func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
+	var req control.SpawnExecutorRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Get worktree
+	wt, err := d.store.GetWorktree(req.WorktreePath)
+	if err != nil || wt == nil {
+		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
+	}
+
+	// Get plan
+	plan, err := d.store.GetPlan(req.WorktreePath)
+	if err != nil || plan == nil {
+		return nil, fmt.Errorf("no plan found for worktree: %s", req.WorktreePath)
+	}
+
+	// Find planner agent for parent link
+	var plannerID string
+	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
+	for _, a := range agents {
+		if a.Archetype == "planner" {
+			plannerID = a.ID
+			break
+		}
+	}
+
+	// Build executor prompt with plan
+	prompt := fmt.Sprintf(`## Approved Implementation Plan
+
+%s
+
+---
+
+Execute this plan precisely. After each step, report what you did.`, plan.Content)
+
+	// Spawn executor
+	spec := agent.SpawnSpec{
+		WorktreePath: req.WorktreePath,
+		ProjectName:  wt.Project,
+		Archetype:    "executor",
+		Prompt:       prompt,
+		ParentID:     plannerID,
+	}
+
+	spawnedAgent, err := d.spawner.Spawn(d.ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to spawn executor: %w", err)
+	}
+
+	// Update plan status
+	d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusExecuting)
+
+	// Associate agent with worktree
+	d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "agent_created",
+		Payload: agentToInfo(spawnedAgent),
+	})
+
+	return agentToInfo(spawnedAgent), nil
+}
+
+func planToInfo(p *store.Plan) *control.PlanInfo {
+	return &control.PlanInfo{
+		ID:           p.ID,
+		WorktreePath: p.WorktreePath,
+		AgentID:      p.AgentID,
+		Content:      p.Content,
+		Status:       string(p.Status),
+		CreatedAt:    p.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    p.UpdatedAt.Format(time.RFC3339),
+	}
 }

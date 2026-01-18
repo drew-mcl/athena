@@ -82,6 +82,10 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 		e.updateJobStatus(job.ID, store.JobStatusFailed)
 		return err
 	}
+	if err := e.ensureCleanRepo(mainRepo); err != nil {
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return err
+	}
 
 	// 2. Get default branch
 	defaultBranch := e.getDefaultBranch(mainRepo)
@@ -394,22 +398,36 @@ func (e *JobExecutor) commitChanges(repoPath, message string) (string, error) {
 }
 
 func (e *JobExecutor) mergeToDefault(mainRepo, sourceBranch, targetBranch string) error {
-	// Checkout target branch
-	cmd := exec.Command("git", "checkout", targetBranch)
-	cmd.Dir = mainRepo
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("checkout %s failed: %w", targetBranch, err)
-	}
-
-	// Merge source branch
-	cmd = exec.Command("git", "merge", "--no-edit", sourceBranch)
-	cmd.Dir = mainRepo
-	output, err := cmd.CombinedOutput()
+	originalBranch, err := e.getCurrentBranch(mainRepo)
 	if err != nil {
-		return fmt.Errorf("merge failed: %s", string(output))
+		return err
+	}
+	if originalBranch == "" {
+		return fmt.Errorf("cannot merge: repository is in detached HEAD state: %s", mainRepo)
 	}
 
-	return nil
+	if err := e.ensureCleanRepo(mainRepo); err != nil {
+		return err
+	}
+
+	if originalBranch != "" && originalBranch != targetBranch {
+		if err := e.checkoutBranch(mainRepo, targetBranch); err != nil {
+			return err
+		}
+	}
+
+	mergeErr := e.mergeBranch(mainRepo, sourceBranch)
+	if mergeErr != nil {
+		e.abortMerge(mainRepo)
+	}
+
+	if originalBranch != "" && originalBranch != targetBranch {
+		if err := e.checkoutBranch(mainRepo, originalBranch); err != nil {
+			logging.Warn("failed to restore branch after merge", "repo", mainRepo, "branch", originalBranch, "error", err)
+		}
+	}
+
+	return mergeErr
 }
 
 func (e *JobExecutor) tryAutoMerge(wtPath, defaultBranch string) error {
@@ -432,6 +450,50 @@ func (e *JobExecutor) abortMerge(wtPath string) {
 	cmd := exec.Command("git", "merge", "--abort")
 	cmd.Dir = wtPath
 	cmd.Run()
+}
+
+func (e *JobExecutor) ensureCleanRepo(repoPath string) error {
+	dirty, err := e.hasUncommittedChanges(repoPath)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("repository has uncommitted changes: %s", repoPath)
+	}
+	return nil
+}
+
+func (e *JobExecutor) getCurrentBranch(repoPath string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read current branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(output))
+	if branch == "HEAD" {
+		return "", nil
+	}
+	return branch, nil
+}
+
+func (e *JobExecutor) checkoutBranch(repoPath, branch string) error {
+	cmd := exec.Command("git", "checkout", branch)
+	cmd.Dir = repoPath
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("checkout %s failed: %w", branch, err)
+	}
+	return nil
+}
+
+func (e *JobExecutor) mergeBranch(repoPath, branch string) error {
+	cmd := exec.Command("git", "merge", "--no-edit", branch)
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("merge failed: %s", string(output))
+	}
+	return nil
 }
 
 func truncateStr(s string, maxLen int) string {

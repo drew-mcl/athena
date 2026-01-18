@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/drewfead/athena/internal/agent"
 	"github.com/drewfead/athena/internal/store"
@@ -30,6 +32,8 @@ type TaskGraph struct {
 	ParentJobID string
 	Subtasks    []*Subtask
 	Status      string // pending | running | completed | failed
+
+	mu sync.Mutex
 }
 
 // Subtask represents a single unit of work in a task graph.
@@ -41,7 +45,7 @@ type Subtask struct {
 	Complexity   string   `json:"estimated_complexity,omitempty"`
 
 	// Runtime state
-	Status       string // pending | ready | running | completed | failed
+	Status       string // pending | ready | spawning | running | completed | failed
 	AgentID      string
 	WorktreePath string
 }
@@ -49,7 +53,7 @@ type Subtask struct {
 // ArchitectOutput is the expected JSON output from an architect agent.
 type ArchitectOutput struct {
 	Subtasks         []*Subtask `json:"subtasks"`
-	MergeStrategy    string     `json:"merge_strategy"`    // sequential | parallel
+	MergeStrategy    string     `json:"merge_strategy"` // sequential | parallel
 	IntegrationNotes string     `json:"integration_notes"`
 }
 
@@ -113,29 +117,48 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, job *store.Job) (*TaskGr
 
 // executeGraph runs the task graph, spawning workers as dependencies are met.
 func (o *Orchestrator) executeGraph(ctx context.Context, graph *TaskGraph) {
+	graph.mu.Lock()
 	graph.Status = "running"
+	graph.mu.Unlock()
 
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		// Find ready tasks
-		ready := o.getReadyTasks(graph)
+		graph.mu.Lock()
+		ready := o.getReadyTasksLocked(graph)
 		if len(ready) == 0 {
 			// Check if all complete
-			if o.allComplete(graph) {
+			if o.allCompleteLocked(graph) {
 				graph.Status = "completed"
+				graph.mu.Unlock()
 				return
 			}
 			// Check for deadlock (no ready, not all complete)
-			if o.hasFailure(graph) {
+			if o.hasFailureLocked(graph) {
 				graph.Status = "failed"
+				graph.mu.Unlock()
 				return
 			}
+			graph.mu.Unlock()
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
+		for _, task := range ready {
+			task.Status = "spawning"
+		}
+		graph.mu.Unlock()
 
 		// Spawn workers for ready tasks
 		for _, task := range ready {
 			if err := o.spawnWorker(ctx, graph, task); err != nil {
+				graph.mu.Lock()
 				task.Status = "failed"
+				graph.mu.Unlock()
 			}
 		}
 	}
@@ -161,7 +184,9 @@ func (o *Orchestrator) spawnWorker(ctx context.Context, graph *TaskGraph, task *
 	if err != nil {
 		return fmt.Errorf("failed to provision worktree: %w", err)
 	}
+	graph.mu.Lock()
 	task.WorktreePath = wt.Path
+	graph.mu.Unlock()
 
 	// Spawn worker agent
 	workerSpec := agent.SpawnSpec{
@@ -177,8 +202,10 @@ func (o *Orchestrator) spawnWorker(ctx context.Context, graph *TaskGraph, task *
 		return fmt.Errorf("failed to spawn worker: %w", err)
 	}
 
+	graph.mu.Lock()
 	task.AgentID = agent.ID
 	task.Status = "running"
+	graph.mu.Unlock()
 
 	// Watch for completion
 	go o.watchWorker(ctx, graph, task)
@@ -188,32 +215,39 @@ func (o *Orchestrator) spawnWorker(ctx context.Context, graph *TaskGraph, task *
 
 // watchWorker monitors a worker agent and updates task status on completion.
 func (o *Orchestrator) watchWorker(ctx context.Context, graph *TaskGraph, task *Subtask) {
-	// Poll for agent completion
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
 			agent, err := o.store.GetAgent(task.AgentID)
 			if err != nil || agent == nil {
 				continue
 			}
 
+			graph.mu.Lock()
 			switch agent.Status {
 			case store.AgentStatusCompleted:
 				task.Status = "completed"
-				o.updateDependents(graph, task.ID)
+				o.updateDependentsLocked(graph, task.ID)
+				graph.mu.Unlock()
 				return
 			case store.AgentStatusCrashed, store.AgentStatusTerminated:
 				task.Status = "failed"
+				graph.mu.Unlock()
 				return
+			default:
+				graph.mu.Unlock()
 			}
 		}
 	}
 }
 
 // updateDependents marks tasks as ready when their dependencies are met.
-func (o *Orchestrator) updateDependents(graph *TaskGraph, completedID string) {
+func (o *Orchestrator) updateDependentsLocked(graph *TaskGraph, completedID string) {
 	for _, task := range graph.Subtasks {
 		if task.Status != "pending" {
 			continue
@@ -237,7 +271,7 @@ func (o *Orchestrator) updateDependents(graph *TaskGraph, completedID string) {
 
 // Helper methods
 
-func (o *Orchestrator) getReadyTasks(graph *TaskGraph) []*Subtask {
+func (o *Orchestrator) getReadyTasksLocked(graph *TaskGraph) []*Subtask {
 	var ready []*Subtask
 	for _, t := range graph.Subtasks {
 		if t.Status == "ready" {
@@ -247,7 +281,7 @@ func (o *Orchestrator) getReadyTasks(graph *TaskGraph) []*Subtask {
 	return ready
 }
 
-func (o *Orchestrator) allComplete(graph *TaskGraph) bool {
+func (o *Orchestrator) allCompleteLocked(graph *TaskGraph) bool {
 	for _, t := range graph.Subtasks {
 		if t.Status != "completed" {
 			return false
@@ -256,7 +290,7 @@ func (o *Orchestrator) allComplete(graph *TaskGraph) bool {
 	return true
 }
 
-func (o *Orchestrator) hasFailure(graph *TaskGraph) bool {
+func (o *Orchestrator) hasFailureLocked(graph *TaskGraph) bool {
 	for _, t := range graph.Subtasks {
 		if t.Status == "failed" {
 			return true
@@ -285,12 +319,14 @@ func (o *Orchestrator) getMainWorktree(project string) string {
 }
 
 func (o *Orchestrator) waitForArchitectOutput(ctx context.Context, agentID string) (*ArchitectOutput, error) {
-	// Poll for architect completion
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		default:
+		case <-ticker.C:
 			agent, err := o.store.GetAgent(agentID)
 			if err != nil || agent == nil {
 				continue
@@ -305,10 +341,9 @@ func (o *Orchestrator) waitForArchitectOutput(ctx context.Context, agentID strin
 
 				// Find the result event with JSON output
 				for _, e := range events {
-					if e.EventType == "result" || e.EventType == "text" {
-						var output ArchitectOutput
-						if err := json.Unmarshal([]byte(e.Payload), &output); err == nil && len(output.Subtasks) > 0 {
-							return &output, nil
+					if e.EventType == "assistant" || e.EventType == "result" || e.EventType == "text" {
+						if output, ok := parseArchitectOutputPayload(e.Payload); ok {
+							return output, nil
 						}
 					}
 				}
@@ -320,6 +355,50 @@ func (o *Orchestrator) waitForArchitectOutput(ctx context.Context, agentID strin
 			}
 		}
 	}
+}
+
+func parseArchitectOutputPayload(payload string) (*ArchitectOutput, bool) {
+	if payload == "" {
+		return nil, false
+	}
+
+	var output ArchitectOutput
+	if err := json.Unmarshal([]byte(payload), &output); err == nil && len(output.Subtasks) > 0 {
+		return &output, true
+	}
+
+	var wrapper struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(payload), &wrapper); err != nil || wrapper.Content == "" {
+		return nil, false
+	}
+
+	decoded := extractJSONBlock(wrapper.Content)
+	if err := json.Unmarshal([]byte(decoded), &output); err == nil && len(output.Subtasks) > 0 {
+		return &output, true
+	}
+
+	return nil, false
+}
+
+func extractJSONBlock(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	trimmed = strings.TrimSpace(trimmed)
+	if strings.HasPrefix(trimmed, "json") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "json"))
+	}
+
+	if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+
+	return trimmed
 }
 
 // GetTaskGraph returns the task graph by ID.

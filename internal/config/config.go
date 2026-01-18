@@ -172,10 +172,10 @@ func defaultArchetypes() map[string]Archetype {
 		},
 		"executor": {
 			Description:    "Implements approved plans with precision",
-			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step.",
+			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval.",
 			PermissionMode: "default",
 			AllowedTools:   []string{"all"},
-			Model:          "sonnet",
+			Model:          "opus",
 		},
 		"reviewer": {
 			Description:    "Reviews code for bugs, security, and style",

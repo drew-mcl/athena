@@ -107,6 +107,32 @@ func (s *Store) ListRunningAgents() ([]*Agent, error) {
 	)
 }
 
+// ListAgentsByWorktree returns all agents for a specific worktree.
+func (s *Store) ListAgentsByWorktree(worktreePath string) ([]*Agent, error) {
+	query := `
+		SELECT id, worktree_path, project_name, archetype, status, pid, exit_code,
+		       restart_count, created_at, updated_at, prompt, linear_issue_id,
+		       parent_agent_id, claude_session_id, last_heartbeat
+		FROM agents WHERE worktree_path = ?
+		ORDER BY created_at DESC
+	`
+	rows, err := s.db.Query(query, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []*Agent
+	for rows.Next() {
+		agent, err := scanAgentRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
 // UpdateAgentStatus updates an agent's status.
 func (s *Store) UpdateAgentStatus(id string, status AgentStatus) error {
 	query := `UPDATE agents SET status = ?, updated_at = ? WHERE id = ?`

@@ -168,6 +168,26 @@ func (s *Store) migrate() error {
 		FOREIGN KEY (agent_id) REFERENCES agents(id)
 	);
 
+	-- Messages (eventlog-backed context and replay)
+	CREATE TABLE IF NOT EXISTS messages (
+		id            TEXT PRIMARY KEY,
+		agent_id      TEXT NOT NULL,
+		direction     TEXT NOT NULL,
+		type          TEXT NOT NULL,
+		sequence      INTEGER NOT NULL,
+		timestamp     DATETIME DEFAULT CURRENT_TIMESTAMP,
+		text          TEXT,
+		tool_name     TEXT,
+		tool_input    TEXT,
+		tool_output   TEXT,
+		error_code    TEXT,
+		error_message TEXT,
+		session_id    TEXT,
+		raw           TEXT,
+
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+
 	-- Worktree registry
 	CREATE TABLE IF NOT EXISTS worktrees (
 		path        TEXT PRIMARY KEY,
@@ -212,15 +232,33 @@ func (s *Store) migrate() error {
 		FOREIGN KEY (agent_id) REFERENCES agents(id)
 	);
 
+	-- Plans table for storing implementation plans created by planner agents
+	CREATE TABLE IF NOT EXISTS plans (
+		id            TEXT PRIMARY KEY,
+		worktree_path TEXT NOT NULL,
+		agent_id      TEXT NOT NULL,              -- planner agent that created it
+		content       TEXT NOT NULL,              -- markdown content
+		status        TEXT DEFAULT 'draft',       -- draft | approved | executing | completed
+		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+		FOREIGN KEY (worktree_path) REFERENCES worktrees(path),
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+
 	-- Indexes for common queries
 	CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 	CREATE INDEX IF NOT EXISTS idx_agents_worktree ON agents(worktree_path);
 	CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 	CREATE INDEX IF NOT EXISTS idx_events_agent ON agent_events(agent_id, timestamp);
+	CREATE INDEX IF NOT EXISTS idx_messages_agent_seq ON messages(agent_id, sequence);
+	CREATE INDEX IF NOT EXISTS idx_messages_agent_type ON messages(agent_id, type);
 	CREATE INDEX IF NOT EXISTS idx_worktrees_project ON worktrees(project);
 	CREATE INDEX IF NOT EXISTS idx_worktrees_ticket ON worktrees(ticket_id);
 	CREATE INDEX IF NOT EXISTS idx_worktrees_status ON worktrees(status);
 	CREATE INDEX IF NOT EXISTS idx_worktrees_project_name ON worktrees(project_name);
+	CREATE INDEX IF NOT EXISTS idx_plans_worktree ON plans(worktree_path);
+	CREATE INDEX IF NOT EXISTS idx_plans_agent ON plans(agent_id);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -369,4 +407,25 @@ type ChangelogEntry struct {
 	JobID       *string
 	AgentID     *string
 	CreatedAt   time.Time
+}
+
+// PlanStatus represents the lifecycle state of a plan.
+type PlanStatus string
+
+const (
+	PlanStatusDraft     PlanStatus = "draft"
+	PlanStatusApproved  PlanStatus = "approved"
+	PlanStatusExecuting PlanStatus = "executing"
+	PlanStatusCompleted PlanStatus = "completed"
+)
+
+// Plan represents an implementation plan created by a planner agent.
+type Plan struct {
+	ID           string
+	WorktreePath string
+	AgentID      string // planner agent that created it
+	Content      string // markdown content
+	Status       PlanStatus
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

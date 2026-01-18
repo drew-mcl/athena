@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/terminal"
@@ -96,6 +97,15 @@ type Model struct {
 	promoteNoteText   string // content of note being promoted
 	promoteProjectIdx int    // selected project index
 
+	// Plan viewer mode
+	planMode         bool   // true = viewing plan
+	planContent      string // raw markdown content
+	planRendered     string // glamour-rendered output
+	planStatus       string // draft | approved | executing | completed
+	planScroll       int    // scroll offset
+	planAgentID      string // planner agent ID for parent link
+	planWorktreePath string // worktree path for the plan
+
 	// Status message feedback
 	statusMsg     string
 	statusMsgTime time.Time
@@ -129,6 +139,12 @@ type (
 		agentID string
 		logs    []*control.AgentEventInfo
 	}
+	planResultMsg struct {
+		worktreePath string
+		content      string
+		status       string
+		agentID      string
+	}
 	clearStatusMsg struct{}
 	clearErrMsg    struct{} // Auto-clears error after timeout
 )
@@ -138,8 +154,8 @@ func New(client *control.Client) Model {
 	ti := textarea.New()
 	ti.Placeholder = "Type here..."
 	ti.CharLimit = 2000
-	ti.SetWidth(80)           // Will be updated on resize
-	ti.SetHeight(3)           // Start with 3 lines
+	ti.SetWidth(80) // Will be updated on resize
+	ti.SetHeight(3) // Start with 3 lines
 	ti.ShowLineNumbers = false
 	ti.FocusedStyle.CursorLine = lipgloss.NewStyle() // No highlight on current line
 	ti.FocusedStyle.Base = lipgloss.NewStyle()       // No border/background
@@ -214,6 +230,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode {
 			return m.handleInputMode(msg)
 		}
+		if m.planMode {
+			return m.handlePlanMode(msg)
+		}
 		if m.logsMode {
 			return m.handleLogsMode(msg)
 		}
@@ -268,7 +287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.fetchData)
 
 	case eventMsg:
-		cmds = append(cmds, m.fetchData)
+		cmds = append(cmds, m.fetchData, m.listenForEvents())
 
 	case logsResultMsg:
 		m.logsAgentID = msg.agentID
@@ -277,6 +296,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsFollow = true
 		// Start at bottom (most recent) if following
 		m.logsScroll = max(0, len(m.logs)-m.logsViewportHeight())
+
+	case planResultMsg:
+		m.planWorktreePath = msg.worktreePath
+		m.planContent = msg.content
+		m.planStatus = msg.status
+		m.planAgentID = msg.agentID
+		m.planMode = true
+		m.planScroll = 0
+		// Render markdown with glamour
+		m.planRendered = m.renderMarkdown(msg.content)
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -548,8 +577,9 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x", "ctrl+k":
 		// Toggle note done on notes tab (at any level)
 		if m.tab == TabNotes {
-			if m.selected < len(m.notes) {
-				note := m.notes[m.selected]
+			notes := m.projectNotes()
+			if m.selected < len(notes) {
+				note := notes[m.selected]
 				return m, m.toggleNote(note.ID, !note.Done)
 			}
 			return m, nil
@@ -559,8 +589,9 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		// Space also toggles note done (at any level)
 		if m.tab == TabNotes {
-			if m.selected < len(m.notes) {
-				note := m.notes[m.selected]
+			notes := m.projectNotes()
+			if m.selected < len(notes) {
+				note := notes[m.selected]
 				return m, m.toggleNote(note.ID, !note.Done)
 			}
 		}
@@ -578,8 +609,9 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		// Promote note to feature/worktree
 		if m.tab == TabNotes {
-			if m.selected < len(m.notes) {
-				note := m.notes[m.selected]
+			notes := m.projectNotes()
+			if m.selected < len(notes) {
+				note := notes[m.selected]
 				if len(m.projects) == 0 {
 					return m, m.showStatus("No projects available")
 				}
@@ -628,10 +660,17 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.createNote(input)
 			}
 			isQuestion := m.questionMode
+			project := m.resolveJobProject()
+			if project == "" {
+				m.inputMode = false
+				m.questionMode = false
+				m.textInput.Reset()
+				return m, m.showStatus("Select a project before creating a job")
+			}
 			m.inputMode = false
 			m.questionMode = false
 			m.textInput.Reset()
-			return m, m.createJob(input, isQuestion)
+			return m, m.createJob(input, isQuestion, project)
 		}
 		return m, nil
 
@@ -648,7 +687,7 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", "enter":
 		m.detailMode = false
 		m.detailJob = nil
 		m.detailAgent = nil
@@ -734,6 +773,88 @@ func (m Model) handleLogsMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) logsViewportHeight() int {
 	// height - header(2) - footer(1) - padding(1)
 	return max(5, m.height-4)
+}
+
+func (m Model) handlePlanMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxScroll := max(0, m.planViewportLines()-m.planViewportHeight())
+	halfPage := max(1, m.planViewportHeight()/2)
+
+	switch msg.String() {
+	case "esc", "q":
+		m.planMode = false
+		m.planContent = ""
+		m.planRendered = ""
+		m.planWorktreePath = ""
+		m.planScroll = 0
+		return m, nil
+
+	case "a":
+		// Approve plan
+		if m.planStatus == "draft" {
+			return m, m.approvePlan(m.planWorktreePath)
+		}
+		return m, m.showStatus("Plan already approved")
+
+	case "x":
+		// Execute plan (spawn executor)
+		if m.planStatus == "approved" {
+			m.planMode = false
+			return m, m.spawnExecutor(m.planWorktreePath)
+		}
+		return m, m.showStatus("Approve plan first with [a]")
+
+	case "r":
+		// Refresh plan from file
+		return m, m.fetchPlan(m.planWorktreePath, true)
+
+	// Vi-style scrolling
+	case "j", "down":
+		m.planScroll = min(m.planScroll+1, maxScroll)
+	case "k", "up":
+		m.planScroll = max(m.planScroll-1, 0)
+	case "g":
+		m.planScroll = 0
+	case "G":
+		m.planScroll = maxScroll
+	case "ctrl+d":
+		m.planScroll = min(m.planScroll+halfPage, maxScroll)
+	case "ctrl+u":
+		m.planScroll = max(m.planScroll-halfPage, 0)
+	}
+	return m, nil
+}
+
+// planViewportHeight returns available lines for plan content
+func (m Model) planViewportHeight() int {
+	// height - header(3) - footer(2) - padding(2)
+	return max(5, m.height-7)
+}
+
+// planViewportLines returns total lines in rendered plan
+func (m Model) planViewportLines() int {
+	return strings.Count(m.planRendered, "\n") + 1
+}
+
+// renderMarkdown renders markdown content using glamour
+func (m Model) renderMarkdown(content string) string {
+	width := m.width - 4
+	if width < 40 {
+		width = 40
+	}
+
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return content // fallback to raw
+	}
+
+	out, err := r.Render(content)
+	if err != nil {
+		return content // fallback to raw
+	}
+	return out
 }
 
 func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1013,7 +1134,13 @@ func (m Model) projectTasks() []*control.JobInfo {
 func (m Model) projectNotes() []*control.NoteInfo {
 	// For now, notes are global - in future could be project-specific
 	// Filter by project if notes have project field, otherwise return all
-	return m.notes
+	notes := make([]*control.NoteInfo, 0, len(m.notes))
+	for _, note := range m.notes {
+		if !note.Done {
+			notes = append(notes, note)
+		}
+	}
+	return notes
 }
 
 // View implements tea.Model
@@ -1035,6 +1162,11 @@ func (m Model) View() string {
 	// Logs overlay
 	if m.logsMode {
 		return m.renderLogs()
+	}
+
+	// Plan viewer overlay
+	if m.planMode {
+		return m.renderPlanView()
 	}
 
 	// Worktree creation wizard
@@ -1084,6 +1216,13 @@ func (m Model) renderDashboard() string {
 	// Pin footer to bottom
 	footer := m.renderFooter()
 	return layout.PinFooterToBottom(content.String(), footer, m.height)
+}
+
+func (m Model) renderDaemonStatus() string {
+	if m.client != nil && m.client.Connected() {
+		return tui.StyleSuccess.Render("* daemon")
+	}
+	return tui.StyleDanger.Render("x daemon")
 }
 
 func (m Model) renderHeader() string {
@@ -1146,6 +1285,7 @@ func (m Model) renderHeader() string {
 	} else {
 		stats = tui.StyleStatus.Render(fmt.Sprintf("%d/%d agents", activeCount, len(m.agents)))
 	}
+	stats = m.renderDaemonStatus() + tui.StyleMuted.Render(" │ ") + stats
 
 	// Layout
 	sep := tui.StyleMuted.Render(" │ ")
@@ -1591,7 +1731,8 @@ func (m Model) renderDetailHeader() string {
 			activeCount++
 		}
 	}
-	stats := tui.StyleStatus.Render(fmt.Sprintf("%d/%d", activeCount, len(agents)))
+	stats := m.renderDaemonStatus() + tui.StyleMuted.Render(" │ ") +
+		tui.StyleStatus.Render(fmt.Sprintf("%d/%d", activeCount, len(agents)))
 
 	// Layout
 	sep := tui.StyleMuted.Render(" │ ")
@@ -1798,19 +1939,20 @@ func (m Model) renderNotes() string {
 	var b strings.Builder
 
 	contentHeight := layout.ContentHeight(m.height)
+	notes := m.projectNotes()
 
 	// Notes table
 	noteTable := layout.NewTable([]layout.Column{
-		{Header: "✓", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "NOTE", MinWidth: 50, MaxWidth: 80, Flex: 3},
+		{Header: "✓", MinWidth: 3, MaxWidth: 3, Flex: 0},
+		{Header: "NOTE", MinWidth: 45, MaxWidth: 80, Flex: 3},
 	})
 	noteTable.SetWidth(m.width)
 
 	b.WriteString(noteTable.RenderHeader())
 	b.WriteString("\n\n")
 
-	if len(m.notes) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No notes yet. Quick ideas and todos go here."))
+	if len(notes) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No active notes. Quick ideas and todos go here."))
 		b.WriteString("\n")
 		for i := 1; i < contentHeight-1; i++ {
 			b.WriteString("\n")
@@ -1819,7 +1961,7 @@ func (m Model) renderNotes() string {
 	}
 
 	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(m.notes), m.selected, contentHeight-1)
+	scroll := layout.CalculateScrollWindow(len(notes), m.selected, contentHeight-1)
 
 	// Scroll indicator top
 	if scroll.HasLess {
@@ -1829,12 +1971,12 @@ func (m Model) renderNotes() string {
 
 	// Render visible rows
 	end := scroll.Offset + scroll.VisibleRows
-	if end > len(m.notes) {
-		end = len(m.notes)
+	if end > len(notes) {
+		end = len(notes)
 	}
 
 	for i := scroll.Offset; i < end; i++ {
-		note := m.notes[i]
+		note := notes[i]
 		row := m.renderNoteRow(note, noteTable, i == m.selected)
 		b.WriteString(row)
 		b.WriteString("\n")
@@ -1842,7 +1984,7 @@ func (m Model) renderNotes() string {
 
 	// Scroll indicator bottom
 	if scroll.HasMore {
-		remaining := len(m.notes) - end
+		remaining := len(notes) - end
 		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
 		b.WriteString("\n")
 	}
@@ -2135,6 +2277,72 @@ func (m Model) renderLogs() string {
 
 	// Fixed footer with vi-style help, left-aligned
 	helpText := "j/k:scroll  g/G:top/bottom  ^d/^u:page  f:follow  r:refresh  q:close"
+	footer := "  " + tui.StyleHelp.Render(helpText)
+	return layout.PinFooterToBottom(content.String(), footer, m.height)
+}
+
+func (m Model) renderPlanView() string {
+	var content strings.Builder
+
+	// Header with status badge
+	icon := tui.Logo()
+	content.WriteString(icon + " " + tui.StyleLogo.Render("Implementation Plan"))
+
+	// Status badge
+	var statusStyle lipgloss.Style
+	switch m.planStatus {
+	case "draft":
+		statusStyle = tui.StatusStyle("pending")
+	case "approved":
+		statusStyle = tui.StatusStyle("completed")
+	case "executing":
+		statusStyle = tui.StatusStyle("running")
+	case "completed":
+		statusStyle = tui.StatusStyle("completed")
+	default:
+		statusStyle = tui.StyleMuted
+	}
+	content.WriteString("  " + statusStyle.Render("["+strings.ToUpper(m.planStatus)+"]"))
+	content.WriteString("\n")
+	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n")
+
+	viewportHeight := m.planViewportHeight()
+
+	if m.planRendered == "" {
+		content.WriteString(tui.StyleEmptyState.Render("  No plan content."))
+		content.WriteString("\n")
+	} else {
+		// Split rendered content into lines
+		lines := strings.Split(m.planRendered, "\n")
+		totalLines := len(lines)
+
+		// Apply scroll offset
+		endIdx := min(m.planScroll+viewportHeight, totalLines)
+		startIdx := m.planScroll
+
+		for i := startIdx; i < endIdx; i++ {
+			content.WriteString(lines[i])
+			content.WriteString("\n")
+		}
+
+		// Scroll indicator
+		if totalLines > viewportHeight {
+			position := fmt.Sprintf(" [%d-%d of %d lines]", startIdx+1, endIdx, totalLines)
+			content.WriteString(tui.StyleMuted.Render(position))
+			content.WriteString("\n")
+		}
+	}
+
+	// Footer with available actions
+	var helpText string
+	if m.planStatus == "draft" {
+		helpText = "j/k:scroll  g/G:top/bottom  a:approve  r:refresh  q:close"
+	} else if m.planStatus == "approved" {
+		helpText = "j/k:scroll  g/G:top/bottom  x:execute  r:refresh  q:close"
+	} else {
+		helpText = "j/k:scroll  g/G:top/bottom  r:refresh  q:close"
+	}
 	footer := "  " + tui.StyleHelp.Render(helpText)
 	return layout.PinFooterToBottom(content.String(), footer, m.height)
 }
@@ -2517,10 +2725,53 @@ func (m Model) doPlanView() tea.Cmd {
 	}
 
 	if worktreePath != "" {
-		// Open plan viewer in a new terminal tab
-		m.term.OpenTab(worktreePath, "athena", "plan", worktreePath)
+		return m.fetchPlan(worktreePath, false)
 	}
 	return nil
+}
+
+func (m Model) fetchPlan(worktreePath string, forceRefresh bool) tea.Cmd {
+	return func() tea.Msg {
+		plan, err := m.client.GetPlan(worktreePath, forceRefresh)
+		if err != nil {
+			return errMsg(fmt.Errorf("failed to get plan: %w", err))
+		}
+		return planResultMsg{
+			worktreePath: worktreePath,
+			content:      plan.Content,
+			status:       plan.Status,
+			agentID:      plan.AgentID,
+		}
+	}
+}
+
+func (m Model) approvePlan(worktreePath string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.client.ApprovePlan(worktreePath); err != nil {
+			return errMsg(fmt.Errorf("failed to approve plan: %w", err))
+		}
+		// Refresh the plan to get updated status
+		plan, err := m.client.GetPlan(worktreePath, false)
+		if err != nil {
+			return errMsg(err)
+		}
+		return planResultMsg{
+			worktreePath: worktreePath,
+			content:      plan.Content,
+			status:       plan.Status,
+			agentID:      plan.AgentID,
+		}
+	}
+}
+
+func (m Model) spawnExecutor(worktreePath string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := m.client.SpawnExecutor(worktreePath)
+		if err != nil {
+			return errMsg(fmt.Errorf("failed to spawn executor: %w", err))
+		}
+		return dataUpdateMsg{}
+	}
 }
 
 func (m Model) doRetry() tea.Cmd {
@@ -2605,12 +2856,38 @@ func (m Model) listenForEvents() tea.Cmd {
 		if m.client == nil {
 			return nil
 		}
-		event := <-m.client.Events()
+		event, ok := <-m.client.Events()
+		if !ok {
+			return nil
+		}
 		return eventMsg(event)
 	}
 }
 
-func (m Model) createJob(input string, isQuestion bool) tea.Cmd {
+func (m Model) resolveJobProject() string {
+	if m.level == LevelProject && m.selectedProject != "" {
+		return m.selectedProject
+	}
+
+	switch m.tab {
+	case TabWorktrees:
+		if m.selected < len(m.worktrees) {
+			return m.worktrees[m.selected].Project
+		}
+	case TabAgents:
+		if m.selected < len(m.agents) {
+			return m.agents[m.selected].Project
+		}
+	case TabJobs:
+		if m.selected < len(m.jobs) {
+			return m.jobs[m.selected].Project
+		}
+	}
+
+	return ""
+}
+
+func (m Model) createJob(input string, isQuestion bool, project string) tea.Cmd {
 	return func() tea.Msg {
 		jobType := "feature"
 		if isQuestion {
@@ -2618,7 +2895,7 @@ func (m Model) createJob(input string, isQuestion bool) tea.Cmd {
 		}
 		_, err := m.client.CreateJob(control.CreateJobRequest{
 			Input:   input,
-			Project: m.selectedProject,
+			Project: project,
 			Type:    jobType,
 		})
 		if err != nil {

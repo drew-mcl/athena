@@ -259,7 +259,7 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
 	case claudecode.EventTypeToolResult:
 		payload = fmt.Sprintf(`{"type":"tool_result","content":%q}`, event.Content)
 	case claudecode.EventTypeResult:
-		payload = fmt.Sprintf(`{"type":"result","subtype":"%s"}`, event.Subtype)
+		payload = fmt.Sprintf(`{"type":"result","subtype":"%s","content":%q}`, event.Subtype, event.Content)
 	default:
 		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s"}`, event.Type, event.Subtype)
 	}

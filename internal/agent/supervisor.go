@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/drewfead/athena/internal/config"
@@ -198,9 +200,11 @@ func (s *Supervisor) calculateBackoff(restartCount int) time.Duration {
 
 // processExists checks if a process with the given PID is running.
 func processExists(pid int) bool {
-	// This is defined in daemon.go but we need it here too
-	// In a real implementation, this would be in a shared util package
-	return false // Placeholder - will use actual check
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
 }
 
 // ResumeSpec defines how to resume an agent.

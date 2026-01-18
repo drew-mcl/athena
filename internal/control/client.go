@@ -14,13 +14,13 @@ import (
 
 // Client connects to the athena daemon.
 type Client struct {
-	conn       net.Conn
-	scanner    *bufio.Scanner
-	mu         sync.Mutex
-	pending    map[string]chan *Response
-	events     chan Event
-	done       chan struct{}
-	connected  atomic.Bool
+	conn      net.Conn
+	scanner   *bufio.Scanner
+	mu        sync.Mutex
+	pending   map[string]chan *Response
+	events    chan Event
+	done      chan struct{}
+	connected atomic.Bool
 }
 
 // NewClient creates a new daemon client.
@@ -37,6 +37,7 @@ func NewClient(socketPath string) (*Client, error) {
 		events:  make(chan Event, 100),
 		done:    make(chan struct{}),
 	}
+	c.scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	c.connected.Store(true)
 
 	go c.readLoop()
@@ -53,6 +54,11 @@ func (c *Client) Close() error {
 // Events returns a channel of events from the daemon.
 func (c *Client) Events() <-chan Event {
 	return c.events
+}
+
+// Connected reports whether the client is still connected to the daemon.
+func (c *Client) Connected() bool {
+	return c.connected.Load()
 }
 
 // Call makes an RPC call to the daemon.
@@ -414,6 +420,53 @@ func (c *Client) DeleteChangelog(id string) error {
 	return nil
 }
 
+// GetPlan retrieves the implementation plan for a worktree.
+func (c *Client) GetPlan(worktreePath string, forceRefresh bool) (*PlanInfo, error) {
+	resp, err := c.Call("get_plan", map[string]any{
+		"worktree_path": worktreePath,
+		"force_refresh": forceRefresh,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	data, _ := json.Marshal(resp.Data)
+	var plan PlanInfo
+	json.Unmarshal(data, &plan)
+	return &plan, nil
+}
+
+// ApprovePlan marks a plan as approved.
+func (c *Client) ApprovePlan(worktreePath string) error {
+	resp, err := c.Call("approve_plan", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// SpawnExecutor spawns an executor agent with the plan as context.
+func (c *Client) SpawnExecutor(worktreePath string) (*AgentInfo, error) {
+	resp, err := c.Call("spawn_executor", SpawnExecutorRequest{WorktreePath: worktreePath})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	data, _ := json.Marshal(resp.Data)
+	var agent AgentInfo
+	json.Unmarshal(data, &agent)
+	return &agent, nil
+}
+
 func (c *Client) readLoop() {
 	for c.scanner.Scan() {
 		select {
@@ -422,11 +475,18 @@ func (c *Client) readLoop() {
 		default:
 		}
 
-		var resp Response
-		if err := json.Unmarshal(c.scanner.Bytes(), &resp); err != nil {
-			// Try parsing as event
+		line := c.scanner.Bytes()
+
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			continue
+		}
+
+		if envelope.Type != "" {
 			var event Event
-			if json.Unmarshal(c.scanner.Bytes(), &event) == nil && event.Type != "" {
+			if json.Unmarshal(line, &event) == nil {
 				select {
 				case c.events <- event:
 				default: // Drop if channel full
@@ -435,7 +495,11 @@ func (c *Client) readLoop() {
 			continue
 		}
 
-		// Handle response
+		var resp Response
+		if err := json.Unmarshal(line, &resp); err != nil {
+			continue
+		}
+
 		if resp.ID != "" {
 			c.mu.Lock()
 			if ch, ok := c.pending[resp.ID]; ok {
@@ -478,12 +542,12 @@ type AgentEventInfo struct {
 
 // WorktreeInfo represents worktree data for API responses.
 type WorktreeInfo struct {
-	Path        string `json:"path"`
-	Project     string `json:"project"`
-	Branch      string `json:"branch"`
-	IsMain      bool   `json:"is_main"`
-	AgentID     string `json:"agent_id,omitempty"`
-	Status      string `json:"status"`       // Git status (dirty/clean indicators)
+	Path    string `json:"path"`
+	Project string `json:"project"`
+	Branch  string `json:"branch"`
+	IsMain  bool   `json:"is_main"`
+	AgentID string `json:"agent_id,omitempty"`
+	Status  string `json:"status"` // Git status (dirty/clean indicators)
 	// New fields for ticket-based workflow
 	TicketID    string `json:"ticket_id,omitempty"`    // External ticket ID (e.g., ENG-123)
 	TicketHash  string `json:"ticket_hash,omitempty"`  // 4-char hash for uniqueness
@@ -498,13 +562,13 @@ type JobInfo struct {
 	RawInput        string `json:"raw_input"`
 	NormalizedInput string `json:"normalized_input"`
 	Status          string `json:"status"`
-	Type            string `json:"type"`       // question | quick | feature
+	Type            string `json:"type"` // question | quick | feature
 	Project         string `json:"project"`
 	CreatedAt       string `json:"created_at"`
 	AgentID         string `json:"agent_id,omitempty"`
-	ExternalID      string `json:"external_id,omitempty"`  // Linear/Jira ticket ID
-	ExternalURL     string `json:"external_url,omitempty"` // Link to external tracker
-	Answer          string `json:"answer,omitempty"`       // Response for question jobs
+	ExternalID      string `json:"external_id,omitempty"`   // Linear/Jira ticket ID
+	ExternalURL     string `json:"external_url,omitempty"`  // Link to external tracker
+	Answer          string `json:"answer,omitempty"`        // Response for question jobs
 	WorktreePath    string `json:"worktree_path,omitempty"` // For quick jobs
 }
 
@@ -519,8 +583,8 @@ type SpawnAgentRequest struct {
 type CreateJobRequest struct {
 	Input        string `json:"input"`
 	Project      string `json:"project"`
-	Type         string `json:"type,omitempty"`         // question | quick | feature (default: feature)
-	ExternalID   string `json:"external_id,omitempty"`  // Optional Linear/Jira ID
+	Type         string `json:"type,omitempty"`          // question | quick | feature (default: feature)
+	ExternalID   string `json:"external_id,omitempty"`   // Optional Linear/Jira ID
 	TargetBranch string `json:"target_branch,omitempty"` // For quick jobs (default: main)
 }
 
@@ -590,9 +654,9 @@ type CreateChangelogRequest struct {
 // CreateWorktreeRequest is the request to create a new worktree.
 type CreateWorktreeRequest struct {
 	MainRepoPath string `json:"main_repo_path"` // Path to the main repository
-	Branch       string `json:"branch"`          // Branch name (optional, will be generated)
-	TicketID     string `json:"ticket_id"`       // Ticket ID (e.g., ENG-123)
-	Description  string `json:"description"`     // Description of the work
+	Branch       string `json:"branch"`         // Branch name (optional, will be generated)
+	TicketID     string `json:"ticket_id"`      // Ticket ID (e.g., ENG-123)
+	Description  string `json:"description"`    // Description of the work
 }
 
 // MigrationPlan describes what migration would do.
@@ -609,4 +673,20 @@ type MigrationItem struct {
 	TicketID    string `json:"ticket_id"`
 	Hash        string `json:"hash"`
 	Project     string `json:"project"`
+}
+
+// PlanInfo represents plan data for API responses.
+type PlanInfo struct {
+	ID           string `json:"id"`
+	WorktreePath string `json:"worktree_path"`
+	AgentID      string `json:"agent_id"`
+	Content      string `json:"content"`
+	Status       string `json:"status"` // draft | approved | executing | completed
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// SpawnExecutorRequest is the request to spawn an executor agent.
+type SpawnExecutorRequest struct {
+	WorktreePath string `json:"worktree_path"`
 }
