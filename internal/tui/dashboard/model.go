@@ -565,6 +565,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.noteMode = true
 			m.questionMode = false
 			m.textInput.Placeholder = "Enter note..."
+			m.textInput.Reset()
 			m.textInput.Focus()
 			return m, textarea.Blink
 		}
@@ -573,6 +574,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.questionMode = false
 		m.noteMode = false
 		m.textInput.Placeholder = "Enter task description..."
+		m.textInput.Reset()
 		m.textInput.Focus()
 		return m, textarea.Blink
 
@@ -2102,10 +2104,10 @@ func (m Model) renderNotes() string {
 	contentHeight := layout.ContentHeight(m.height)
 	notes := m.projectNotes()
 
-	// Notes table
+	// Notes table - no MaxWidth so notes never truncate
 	noteTable := layout.NewTable([]layout.Column{
 		{Header: "✓", MinWidth: 3, MaxWidth: 3, Flex: 0},
-		{Header: "NOTE", MinWidth: 45, MaxWidth: 80, Flex: 3},
+		{Header: "NOTE", MinWidth: 45, MaxWidth: 0, Flex: 3}, // MaxWidth 0 = unlimited
 	})
 	noteTable.SetWidth(m.width)
 
