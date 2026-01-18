@@ -4,8 +4,10 @@ package logging
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -18,12 +20,14 @@ type Config struct {
 	SentryDSN string
 	Env       string // "development", "production"
 	Version   string
+	LogFile   string // Path to log file (empty = stderr)
 }
 
 // Logger wraps slog.Logger with Sentry integration.
 type Logger struct {
 	*slog.Logger
 	sentryEnabled bool
+	logFile       *os.File // nil if logging to stderr
 }
 
 var defaultLogger *Logger
@@ -49,15 +53,47 @@ func Init(cfg Config) error {
 		sentryEnabled = true
 	}
 
+	// Determine output destination
+	var output io.Writer = os.Stderr
+	var logFile *os.File
+
+	if cfg.LogFile != "" {
+		// Ensure directory exists
+		dir := filepath.Dir(cfg.LogFile)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("open log file: %w", err)
+		}
+		output = f
+		logFile = f
+	}
+
 	// Create slog handler with our custom handler that sends errors to Sentry
 	handler := &sentryHandler{
-		Handler:       slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.Level}),
+		Handler: slog.NewTextHandler(output, &slog.HandlerOptions{
+			Level:     cfg.Level,
+			AddSource: true,
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				// Use local timezone and consistent format
+				if a.Key == slog.TimeKey {
+					if t, ok := a.Value.Any().(time.Time); ok {
+						a.Value = slog.StringValue(t.Local().Format("2006-01-02T15:04:05.000-07:00"))
+					}
+				}
+				return a
+			},
+		}),
 		sentryEnabled: sentryEnabled,
 	}
 
 	defaultLogger = &Logger{
 		Logger:        slog.New(handler),
 		sentryEnabled: sentryEnabled,
+		logFile:       logFile,
 	}
 
 	// Also set as default slog logger
@@ -66,10 +102,16 @@ func Init(cfg Config) error {
 	return nil
 }
 
-// Flush flushes any buffered events to Sentry. Call before shutdown.
+// Flush flushes any buffered events to Sentry and closes the log file. Call before shutdown.
 func Flush(timeout time.Duration) {
-	if defaultLogger != nil && defaultLogger.sentryEnabled {
-		sentry.Flush(timeout)
+	if defaultLogger != nil {
+		if defaultLogger.sentryEnabled {
+			sentry.Flush(timeout)
+		}
+		if defaultLogger.logFile != nil {
+			defaultLogger.logFile.Sync()
+			defaultLogger.logFile.Close()
+		}
 	}
 }
 

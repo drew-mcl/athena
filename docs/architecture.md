@@ -106,7 +106,7 @@ type AgentSpec struct {
     Model        ModelPref     // fast/balanced/quality + reasoning flag
     SystemPrompt string        // Role context
     TaskPrompt   string        // Specific task
-    MaxTurns     int           // Iteration limit
+    MaxBudgetUSD float64       // Spending limit
 }
 
 type ExecutionMode string
@@ -154,7 +154,7 @@ type ClaudeOptions struct {
 
     // Execution
     Print        bool     // --print (non-interactive)
-    MaxTurns     int      // --max-turns
+    MaxBudgetUSD float64  // --max-budget-usd
     Plan         bool     // -p (plan mode)
 
     // Model

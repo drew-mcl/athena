@@ -32,6 +32,8 @@ var allActions = []Action{
 	{Key: "a", Label: "attach", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Attach requires a worktree or agent selection"},
 	{Key: "e", Label: "edit", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Edit requires a worktree or agent selection"},
 	{Key: "L", Label: "logs", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "Logs requires a worktree with agent or agent selection"},
+	{Key: "p", Label: "plan", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "View implementation plan"},
+	{Key: "r", Label: "retry", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Retry/respawn a crashed agent"},
 	{Key: "s", Label: "shell", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Shell requires a worktree selection"},
 	{Key: "v", Label: "view", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "View requires a worktree with agent or agent selection"},
 	{Key: "x", Label: "kill", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "Kill requires a worktree with agent or agent selection"},

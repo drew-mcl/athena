@@ -1,6 +1,9 @@
 package claudecode
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // SpawnOptions configures how to spawn a Claude Code process.
 type SpawnOptions struct {
@@ -31,14 +34,34 @@ type SpawnOptions struct {
 	// ForkSession forks from an existing session.
 	ForkSession string
 
-	// MaxTurns limits the number of turns before auto-completion.
-	MaxTurns int
+	// MaxBudgetUSD limits spending (only works with --print).
+	MaxBudgetUSD float64
+}
+
+// CommandString returns the full command that would be executed (for logging).
+func (o *SpawnOptions) CommandString() string {
+	args := o.Args()
+	// Quote args that contain spaces
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		if strings.Contains(arg, " ") || strings.Contains(arg, "\n") {
+			// Truncate long prompts for readability
+			if len(arg) > 100 {
+				arg = arg[:97] + "..."
+			}
+			quoted[i] = `"` + arg + `"`
+		} else {
+			quoted[i] = arg
+		}
+	}
+	return "claude " + strings.Join(quoted, " ")
 }
 
 // Args builds the command-line arguments for Claude Code.
 func (o *SpawnOptions) Args() []string {
 	args := []string{
 		"--print",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 	}
@@ -71,14 +94,12 @@ func (o *SpawnOptions) Args() []string {
 		args = append(args, "--fork-session", o.ForkSession)
 	}
 
-	if o.MaxTurns > 0 {
-		args = append(args, "--max-turns", string(rune(o.MaxTurns+'0')))
+	if o.MaxBudgetUSD > 0 {
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(o.MaxBudgetUSD, 'f', 2, 64))
 	}
 
-	// Add prompt as final argument if not resuming
-	if o.Prompt != "" && !o.Resume {
-		args = append(args, o.Prompt)
-	}
+	// Prompt is sent via stdin when using stream-json input format
+	// (not as a CLI argument)
 
 	return args
 }

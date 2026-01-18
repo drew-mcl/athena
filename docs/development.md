@@ -84,6 +84,22 @@ athenad             # Run in foreground
 athenad --debug     # With debug logging
 ```
 
+**Logs:**
+
+Daemon logs to file (doesn't interfere with TUI):
+```bash
+# View logs in real-time
+tail -f ~/.local/share/athena/athena.log
+
+# View with syntax highlighting
+bat -f ~/.local/share/athena/athena.log
+
+# Log format: timestamp level source msg key=value...
+# 2026-01-17T20:22:35.123-05:00 level=INFO source=daemon.go:97 msg="control server listening" socket=/tmp/athena.sock
+```
+
+Agent stderr and crash info are stored in the database and viewable via `L` key in the TUI.
+
 ## Configuration
 
 Config file: `~/.config/athena/config.yaml`

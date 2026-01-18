@@ -2,6 +2,7 @@
 package viewer
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -15,14 +16,14 @@ import (
 
 // Model represents the live viewer for an agent's output.
 type Model struct {
-	agentID   string
-	agentInfo *control.AgentInfo
-	events    []EventLine
-	viewport  viewport.Model
-	width     int
-	height    int
-	client    *control.Client
-	ready     bool
+	agentID    string
+	agentInfo  *control.AgentInfo
+	events     []EventLine
+	viewport   viewport.Model
+	width      int
+	height     int
+	client     *control.Client
+	ready      bool
 	autoScroll bool
 }
 
@@ -93,10 +94,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.fetchEvents, m.tick())
 
 	case eventsMsg:
-		m.events = append(m.events, msg...)
-		m.updateContent()
-		if m.autoScroll {
-			m.viewport.GotoBottom()
+		if len(msg) > 0 {
+			m.events = msg // Replace all events (simpler than deduplication)
+			m.updateContent()
+			if m.autoScroll {
+				m.viewport.GotoBottom()
+			}
 		}
 
 	case agentInfoMsg:
@@ -221,7 +224,76 @@ func (m Model) fetchAgentInfo() tea.Msg {
 }
 
 func (m Model) fetchEvents() tea.Msg {
-	// TODO: Implement event fetching from daemon
-	// For now, return empty - will be filled in when we add event streaming
-	return eventsMsg(nil)
+	if m.client == nil {
+		return nil
+	}
+
+	// Fetch recent events from daemon
+	events, err := m.client.GetAgentLogs(m.agentID, 500)
+	if err != nil {
+		return errMsg(err)
+	}
+
+	// Events come in DESC order, convert to EventLine in chronological order
+	result := make([]EventLine, 0, len(events))
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		ts, _ := time.Parse(time.RFC3339, e.Timestamp)
+		content := extractEventContent(e.EventType, e.Payload)
+
+		result = append(result, EventLine{
+			Time:    ts,
+			Type:    e.EventType,
+			Content: content,
+		})
+	}
+
+	return eventsMsg(result)
+}
+
+// extractEventContent parses the JSON payload and extracts displayable content.
+func extractEventContent(eventType, payload string) string {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return payload
+	}
+
+	switch eventType {
+	case "assistant":
+		if content, ok := data["content"].(string); ok {
+			if subtype, ok := data["subtype"].(string); ok {
+				return fmt.Sprintf("[%s] %s", subtype, content)
+			}
+			return content
+		}
+	case "tool_use":
+		if name, ok := data["name"].(string); ok {
+			if input, ok := data["input"].(string); ok {
+				return fmt.Sprintf("%s: %s", name, input)
+			}
+			return name
+		}
+	case "tool_result":
+		if content, ok := data["content"].(string); ok {
+			return content
+		}
+	case "stderr":
+		if line, ok := data["line"].(string); ok {
+			return line
+		}
+	case "spawn_command":
+		if cmd, ok := data["command"].(string); ok {
+			return cmd
+		}
+	case "spawn_failed", "error":
+		if msg, ok := data["message"].(string); ok {
+			return msg
+		}
+	case "result":
+		if subtype, ok := data["subtype"].(string); ok {
+			return subtype
+		}
+	}
+
+	return payload
 }

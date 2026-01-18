@@ -2,6 +2,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,8 @@ type Model struct {
 	logsMode     bool // showing agent logs
 	logsAgentID  string
 	logs         []*control.AgentEventInfo
+	logsScroll   int  // scroll offset for logs viewport
+	logsFollow   bool // auto-scroll to bottom
 	textInput    textarea.Model
 	spinner      spinner.Model
 	lastUpdate   time.Time
@@ -271,6 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsAgentID = msg.agentID
 		m.logs = msg.logs
 		m.logsMode = true
+		m.logsFollow = true
+		// Start at bottom (most recent) if following
+		m.logsScroll = max(0, len(m.logs)-m.logsViewportHeight())
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -519,6 +525,13 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.doView()
 
+	case "p":
+		// View implementation plan
+		if !IsActionAvailable("p", m.tab, m.level) {
+			return m, m.showStatus(GetActionTooltip("p", m.tab, m.level))
+		}
+		return m, m.doPlanView()
+
 	case "L":
 		// View logs for selected agent
 		if !IsActionAvailable("L", m.tab, m.level) {
@@ -579,6 +592,10 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
+		// On agents tab, retry crashed agents; otherwise refresh data
+		if m.tab == TabAgents {
+			return m, m.doRetry()
+		}
 		return m, m.fetchData
 	}
 
@@ -666,17 +683,57 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleLogsMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxScroll := max(0, len(m.logs)-m.logsViewportHeight())
+	halfPage := max(1, m.logsViewportHeight()/2)
+
 	switch msg.String() {
 	case "esc", "q":
 		m.logsMode = false
 		m.logs = nil
 		m.logsAgentID = ""
+		m.logsScroll = 0
 		return m, nil
 	case "r":
 		// Refresh logs
 		return m, m.fetchLogs(m.logsAgentID)
+
+	// Vi-style scrolling
+	case "j", "down":
+		m.logsFollow = false
+		m.logsScroll = min(m.logsScroll+1, maxScroll)
+	case "k", "up":
+		m.logsFollow = false
+		m.logsScroll = max(m.logsScroll-1, 0)
+	case "g":
+		// Go to top
+		m.logsFollow = false
+		m.logsScroll = 0
+	case "G":
+		// Go to bottom
+		m.logsFollow = true
+		m.logsScroll = maxScroll
+	case "ctrl+d":
+		// Half page down
+		m.logsFollow = false
+		m.logsScroll = min(m.logsScroll+halfPage, maxScroll)
+	case "ctrl+u":
+		// Half page up
+		m.logsFollow = false
+		m.logsScroll = max(m.logsScroll-halfPage, 0)
+	case "f":
+		// Toggle follow mode
+		m.logsFollow = !m.logsFollow
+		if m.logsFollow {
+			m.logsScroll = maxScroll
+		}
 	}
 	return m, nil
+}
+
+// logsViewportHeight returns available lines for log entries
+func (m Model) logsViewportHeight() int {
+	// height - header(2) - footer(1) - padding(1)
+	return max(5, m.height-4)
 }
 
 func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2006,65 +2063,79 @@ func (m Model) renderAgentDetail() string {
 func (m Model) renderLogs() string {
 	var content strings.Builder
 
-	// Header
+	// Header with follow indicator
 	icon := tui.Logo()
 	content.WriteString(icon + " " + tui.StyleLogo.Render("Agent Logs"))
 	content.WriteString(tui.StyleMuted.Render(" │ " + m.logsAgentID[:8] + "..."))
+	if m.logsFollow {
+		content.WriteString("  " + tui.StyleSuccessMsg.Render("[FOLLOW]"))
+	}
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+
+	viewportHeight := m.logsViewportHeight()
 
 	if len(m.logs) == 0 {
 		content.WriteString(tui.StyleEmptyState.Render("  No events recorded."))
 		content.WriteString("\n")
 	} else {
-		// Show logs in chronological order (reverse since they come DESC)
-		// Calculate available lines: height - header(2) - breathing(1) - footer(1)
-		maxLines := max(5, m.height-4)
-		start := 0
-		if len(m.logs) > maxLines {
-			start = len(m.logs) - maxLines
-		}
+		// Logs come in DESC order (newest first), reverse to chronological
+		// Then apply scroll offset to show a window of entries
+		totalLogs := len(m.logs)
 
-		for i := len(m.logs) - 1; i >= start; i-- {
+		// Calculate visible range based on scroll
+		// logsScroll=0 means show oldest logs, logsScroll=max means show newest
+		endIdx := totalLogs - m.logsScroll
+		startIdx := max(0, endIdx-viewportHeight)
+
+		// Render in chronological order (oldest to newest within the window)
+		for i := endIdx - 1; i >= startIdx; i-- {
 			e := m.logs[i]
 			ts, _ := time.Parse(time.RFC3339, e.Timestamp)
-			age := time.Since(ts)
 
-			// Event type badge
+			// Event type styling
 			typeStyle := tui.StyleMuted
 			switch e.EventType {
-			case "spawned":
+			case "spawned", "spawn_command":
 				typeStyle = tui.StatusStyle("running")
+			case "assistant":
+				typeStyle = tui.StyleAccent
 			case "output", "text":
 				typeStyle = tui.StyleAccent
-			case "error", "crashed":
+			case "error", "crashed", "spawn_failed", "stderr":
 				typeStyle = tui.StatusStyle("crashed")
-			case "completed":
+			case "completed", "result":
 				typeStyle = tui.StatusStyle("completed")
 			case "tool_use":
-				typeStyle = tui.StatusStyle("planning")
+				typeStyle = tui.StatusStyle("executing")
+			case "tool_result":
+				typeStyle = tui.StyleMuted
 			}
 
 			content.WriteString("  ")
-			content.WriteString(tui.StyleMuted.Render(formatDuration(age) + " ago"))
+			content.WriteString(tui.StyleMuted.Render(ts.Format("15:04:05")))
 			content.WriteString("  ")
-			content.WriteString(typeStyle.Render(fmt.Sprintf("%-10s", e.EventType)))
-			content.WriteString("  ")
+			content.WriteString(typeStyle.Render(fmt.Sprintf("%-12s", e.EventType)))
+			content.WriteString(" ")
 
-			// Truncate payload for display
-			payload := e.Payload
-			maxPayload := max(20, m.width-30)
-			if len(payload) > maxPayload {
-				payload = payload[:maxPayload-3] + "..."
-			}
-			content.WriteString(payload)
+			// Parse and format payload (full content, with indentation)
+			display := formatLogPayload(e.EventType, e.Payload, 25)
+			content.WriteString(display)
+			content.WriteString("\n")
+		}
+
+		// Scroll indicator
+		if totalLogs > viewportHeight {
+			position := fmt.Sprintf(" [%d-%d of %d]", startIdx+1, endIdx, totalLogs)
+			content.WriteString(tui.StyleMuted.Render(position))
 			content.WriteString("\n")
 		}
 	}
 
-	// Pin footer to bottom
-	footer := tui.StyleHelp.Render("  [r]efresh  [q/Esc] close")
+	// Fixed footer with vi-style help, left-aligned
+	helpText := "j/k:scroll  g/G:top/bottom  ^d/^u:page  f:follow  r:refresh  q:close"
+	footer := "  " + tui.StyleHelp.Render(helpText)
 	return layout.PinFooterToBottom(content.String(), footer, m.height)
 }
 
@@ -2421,6 +2492,76 @@ func (m Model) doKill() tea.Cmd {
 	return nil
 }
 
+func (m Model) doPlanView() tea.Cmd {
+	var wts []*control.WorktreeInfo
+	var agents []*control.AgentInfo
+
+	if m.level == LevelDashboard {
+		wts = m.worktrees
+		agents = m.agents
+	} else {
+		wts = m.projectWorktrees()
+		agents = m.projectAgents()
+	}
+
+	var worktreePath string
+	switch m.tab {
+	case TabWorktrees:
+		if m.selected < len(wts) {
+			worktreePath = wts[m.selected].Path
+		}
+	case TabAgents:
+		if m.selected < len(agents) {
+			worktreePath = agents[m.selected].WorktreePath
+		}
+	}
+
+	if worktreePath != "" {
+		// Open plan viewer in a new terminal tab
+		m.term.OpenTab(worktreePath, "athena", "plan", worktreePath)
+	}
+	return nil
+}
+
+func (m Model) doRetry() tea.Cmd {
+	var agents []*control.AgentInfo
+
+	if m.level == LevelDashboard {
+		agents = m.agents
+	} else {
+		agents = m.projectAgents()
+	}
+
+	if m.tab != TabAgents || m.selected >= len(agents) {
+		return m.showStatus("Select a crashed agent to retry")
+	}
+
+	agent := agents[m.selected]
+	if agent.Status != "crashed" {
+		return m.showStatus("Only crashed agents can be retried")
+	}
+
+	return m.respawnAgent(agent)
+}
+
+func (m Model) respawnAgent(agent *control.AgentInfo) tea.Cmd {
+	return func() tea.Msg {
+		// First kill the crashed agent to clean up
+		_ = m.client.KillAgent(agent.ID)
+
+		// Now spawn a new agent with the same config
+		_, err := m.client.SpawnAgent(control.SpawnAgentRequest{
+			WorktreePath: agent.WorktreePath,
+			Archetype:    agent.Archetype,
+			Prompt:       agent.Prompt,
+		})
+		if err != nil {
+			return errMsg(fmt.Errorf("failed to respawn agent: %w", err))
+		}
+		return dataUpdateMsg{}
+	}
+}
+
 func (m Model) doNormalize() tea.Cmd {
 	return func() tea.Msg {
 		_, err := m.client.Normalize()
@@ -2541,6 +2682,83 @@ func (m Model) fetchLogs(agentID string) tea.Cmd {
 }
 
 // Helpers
+
+// formatLogPayload extracts and formats meaningful content from log payloads.
+// Returns full content without truncation, with proper indentation for multi-line content.
+func formatLogPayload(eventType, payload string, indentWidth int) string {
+	// Try to parse as JSON and extract meaningful content
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		// Not JSON, return raw payload with indentation
+		return indentMultiline(payload, indentWidth)
+	}
+
+	var display string
+	switch eventType {
+	case "assistant":
+		if subtype, ok := data["subtype"].(string); ok {
+			if content, ok := data["content"].(string); ok {
+				display = fmt.Sprintf("[%s] %s", subtype, content)
+			} else {
+				display = fmt.Sprintf("[%s]", subtype)
+			}
+		}
+	case "tool_use":
+		if name, ok := data["name"].(string); ok {
+			if input, ok := data["input"].(string); ok {
+				display = fmt.Sprintf("%s: %s", name, input)
+			} else {
+				display = name
+			}
+		}
+	case "tool_result":
+		if content, ok := data["content"].(string); ok {
+			display = content
+		}
+	case "stderr":
+		if line, ok := data["line"].(string); ok {
+			display = line
+		}
+	case "spawn_command":
+		if cmd, ok := data["command"].(string); ok {
+			display = cmd
+		}
+	case "spawn_failed", "error":
+		if msg, ok := data["message"].(string); ok {
+			display = msg
+		}
+	case "result":
+		if subtype, ok := data["subtype"].(string); ok {
+			display = subtype
+		}
+	default:
+		display = payload
+	}
+
+	if display == "" {
+		display = payload
+	}
+
+	return indentMultiline(display, indentWidth)
+}
+
+// indentMultiline adds indentation to continuation lines for proper alignment.
+func indentMultiline(s string, indentWidth int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 1 {
+		return s
+	}
+
+	indent := strings.Repeat(" ", indentWidth)
+	var result strings.Builder
+	result.WriteString(lines[0])
+	for _, line := range lines[1:] {
+		result.WriteString("\n")
+		result.WriteString(indent)
+		result.WriteString(line)
+	}
+	return result.String()
+}
 
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {

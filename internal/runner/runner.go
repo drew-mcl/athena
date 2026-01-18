@@ -38,7 +38,7 @@ type RunSpec struct {
 	AllowedTools    []string
 	SystemPrompt    string
 	ForkSession     string
-	MaxTurns        int
+	MaxBudgetUSD    float64
 	Plan            bool
 }
 
@@ -51,7 +51,7 @@ type ResumeSpec struct {
 	SkipPermissions bool
 	AllowedTools    []string
 	SystemPrompt    string
-	MaxTurns        int
+	MaxBudgetUSD    float64
 	Plan            bool
 }
 

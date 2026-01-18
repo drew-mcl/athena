@@ -450,16 +450,17 @@ func (c *Client) readLoop() {
 
 // AgentInfo represents agent data for API responses.
 type AgentInfo struct {
-	ID            string `json:"id"`
-	WorktreePath  string `json:"worktree_path"`
-	ProjectName   string `json:"project_name"`
-	Project       string `json:"project"` // Alias for ProjectName (for filtering)
-	Archetype     string `json:"archetype"`
-	Status        string `json:"status"`
-	Prompt        string `json:"prompt,omitempty"`
-	RestartCount  int    `json:"restart_count"`
-	CreatedAt     string `json:"created_at"`
-	LinearIssueID string `json:"linear_issue_id,omitempty"`
+	ID              string `json:"id"`
+	WorktreePath    string `json:"worktree_path"`
+	ProjectName     string `json:"project_name"`
+	Project         string `json:"project"` // Alias for ProjectName (for filtering)
+	Archetype       string `json:"archetype"`
+	Status          string `json:"status"`
+	Prompt          string `json:"prompt,omitempty"`
+	RestartCount    int    `json:"restart_count"`
+	CreatedAt       string `json:"created_at"`
+	LinearIssueID   string `json:"linear_issue_id,omitempty"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"` // For claude --resume
 	// Activity tracking - what the agent is currently doing
 	LastActivity     string `json:"last_activity,omitempty"`      // Human-readable current action
 	LastActivityTime string `json:"last_activity_time,omitempty"` // When the activity happened

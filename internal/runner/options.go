@@ -103,7 +103,6 @@ type ClaudeOptions struct {
 	JSONSchema json.RawMessage // --json-schema
 
 	// === Limits ===
-	MaxTurns     int     // --max-turns
 	MaxBudgetUSD float64 // --max-budget-usd
 
 	// === MCP Configuration ===
@@ -301,10 +300,6 @@ func (b *ClaudeOptionsBuilder) WithAppendSystemPrompt(p string) *ClaudeOptionsBu
 	return b
 }
 
-func (b *ClaudeOptionsBuilder) WithMaxTurns(n int) *ClaudeOptionsBuilder {
-	b.opts.MaxTurns = n
-	return b
-}
 
 func (b *ClaudeOptionsBuilder) WithPrint() *ClaudeOptionsBuilder {
 	b.opts.Print = true
@@ -460,9 +455,6 @@ func (o *ClaudeOptions) Args() []string {
 	}
 
 	// Limits
-	if o.MaxTurns > 0 {
-		args = append(args, "--max-turns", itoa(o.MaxTurns))
-	}
 	if o.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", ftoa(o.MaxBudgetUSD))
 	}

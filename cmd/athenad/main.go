@@ -44,6 +44,7 @@ func run() (exitCode int) {
 		SentryDSN: cfg.Daemon.SentryDSN,
 		Env:       getEnv(),
 		Version:   Version,
+		LogFile:   cfg.Daemon.LogFile,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to initialize logging: %v\n", err)
 	}

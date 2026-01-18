@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/drewfead/athena/internal/agent"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
@@ -32,6 +33,7 @@ type Daemon struct {
 	scanner     *worktree.Scanner
 	provisioner *worktree.Provisioner
 	migrator    *worktree.Migrator
+	spawner     *agent.Spawner
 	executor    *JobExecutor
 
 	agents   map[string]*AgentProcess
@@ -74,6 +76,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		scanner:     worktree.NewScanner(cfg, st),
 		provisioner: worktree.NewProvisioner(cfg, st),
 		migrator:    worktree.NewMigrator(cfg, st),
+		spawner:     agent.NewSpawner(cfg, st),
 		agents:      make(map[string]*AgentProcess),
 		jobQueue:    make(chan string, 100),
 		ctx:         ctx,
@@ -450,31 +453,30 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
 	}
 
-	// For now, create agent record (spawning will be implemented next phase)
-	agent := &store.Agent{
-		ID:              generateID(),
-		WorktreePath:    req.WorktreePath,
-		ProjectName:     wt.Project,
-		Archetype:       req.Archetype,
-		Status:          store.AgentStatusPending,
-		Prompt:          req.Prompt,
-		ClaudeSessionID: generateID(),
+	// Build spawn spec
+	spec := agent.SpawnSpec{
+		WorktreePath: req.WorktreePath,
+		ProjectName:  wt.Project,
+		Archetype:    req.Archetype,
+		Prompt:       req.Prompt,
 	}
 
-	if err := d.store.CreateAgent(agent); err != nil {
-		return nil, err
+	// Actually spawn the agent process
+	spawnedAgent, err := d.spawner.Spawn(d.ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to spawn agent: %w", err)
 	}
 
 	// Associate agent with worktree
-	d.store.AssignAgentToWorktree(req.WorktreePath, agent.ID)
+	d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)
 
 	// Broadcast event
 	d.server.Broadcast(control.Event{
 		Type:    "agent_created",
-		Payload: agentToInfo(agent),
+		Payload: agentToInfo(spawnedAgent),
 	})
 
-	return agentToInfo(agent), nil
+	return agentToInfo(spawnedAgent), nil
 }
 
 func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
@@ -485,15 +487,20 @@ func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	agent, err := d.store.GetAgent(req.ID)
+	agentRecord, err := d.store.GetAgent(req.ID)
 	if err != nil {
 		return nil, err
 	}
-	if agent == nil {
+	if agentRecord == nil {
 		return nil, fmt.Errorf("agent not found: %s", req.ID)
 	}
 
-	// Kill process if running
+	// Kill via spawner (handles process cleanup)
+	if err := d.spawner.Kill(req.ID); err != nil {
+		logging.Debug("spawner kill returned error (may not be running)", "agent_id", req.ID, "error", err)
+	}
+
+	// Also try the legacy agent map
 	d.agentsMu.Lock()
 	if proc, ok := d.agents[req.ID]; ok {
 		proc.Cancel()
@@ -503,7 +510,7 @@ func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 
 	// Update status
 	d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
-	d.store.ClearWorktreeAgent(agent.WorktreePath)
+	d.store.ClearWorktreeAgent(agentRecord.WorktreePath)
 
 	// Broadcast event
 	d.server.Broadcast(control.Event{
@@ -778,15 +785,16 @@ func (d *Daemon) checkAgentHealth() {
 
 func agentToInfo(a *store.Agent) *control.AgentInfo {
 	info := &control.AgentInfo{
-		ID:           a.ID,
-		WorktreePath: a.WorktreePath,
-		ProjectName:  a.ProjectName,
-		Project:      a.ProjectName, // Alias for filtering
-		Archetype:    a.Archetype,
-		Status:       string(a.Status),
-		Prompt:       a.Prompt,
-		RestartCount: a.RestartCount,
-		CreatedAt:    a.CreatedAt.Format(time.RFC3339),
+		ID:              a.ID,
+		WorktreePath:    a.WorktreePath,
+		ProjectName:     a.ProjectName,
+		Project:         a.ProjectName, // Alias for filtering
+		Archetype:       a.Archetype,
+		Status:          string(a.Status),
+		Prompt:          a.Prompt,
+		RestartCount:    a.RestartCount,
+		CreatedAt:       a.CreatedAt.Format(time.RFC3339),
+		ClaudeSessionID: a.ClaudeSessionID, // For claude --resume
 	}
 	if a.LinearIssueID != nil {
 		info.LinearIssueID = *a.LinearIssueID
@@ -1066,11 +1074,60 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		info.Description = *wt.Description
 	}
 
-	// Broadcast event
+	// Broadcast worktree created event
 	d.server.Broadcast(control.Event{
 		Type:    "worktree_created",
 		Payload: info,
 	})
+
+	// Auto-spawn a planning agent for the new worktree
+	description := req.Description
+	if description == "" {
+		description = "New feature worktree"
+	}
+	planPrompt := fmt.Sprintf(`You are a planning agent. Analyze the following feature request and create a detailed implementation plan.
+
+Feature Request: %s
+
+Instructions:
+1. Explore the codebase to understand the architecture and patterns
+2. Identify the files that need to be modified or created
+3. Create a .plan.md file in the worktree root with:
+   - Overview of the feature
+   - Step-by-step implementation plan
+   - Files to modify/create
+   - Testing considerations
+   - Potential risks or edge cases
+
+Do NOT make any code changes. Only explore and create the plan.`, description)
+
+	spec := agent.SpawnSpec{
+		WorktreePath: path,
+		ProjectName:  wt.Project,
+		Archetype:    "planner",
+		Prompt:       planPrompt,
+	}
+
+	spawnedAgent, err := d.spawner.Spawn(d.ctx, spec)
+	if err != nil {
+		logging.Warn("failed to auto-spawn planning agent", "worktree", path, "error", err)
+		// Don't fail the worktree creation, just log the error
+	} else {
+		// Associate agent with worktree
+		d.store.AssignAgentToWorktree(path, spawnedAgent.ID)
+		info.AgentID = spawnedAgent.ID
+
+		// Broadcast agent created event
+		d.server.Broadcast(control.Event{
+			Type:    "agent_created",
+			Payload: agentToInfo(spawnedAgent),
+		})
+
+		logging.Info("auto-spawned planning agent",
+			"worktree", path,
+			"agent_id", spawnedAgent.ID,
+			"session_id", spawnedAgent.ClaudeSessionID)
+	}
 
 	return info, nil
 }

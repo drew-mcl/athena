@@ -89,6 +89,12 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	// Build spawn options based on archetype
 	opts := s.buildOptions(spec, sessionID)
 
+	// Log the command being executed for debugging
+	cmdStr := opts.CommandString()
+	cmdPayload := fmt.Sprintf(`{"type":"spawn_command","command":%q,"workdir":%q}`, cmdStr, spec.WorktreePath)
+	s.store.LogAgentEvent(agentID, "spawn_command", cmdPayload)
+	logging.Debug("spawning claude", "agent_id", agentID, "command", cmdStr)
+
 	// Create cancellable context
 	procCtx, cancel := context.WithCancel(ctx)
 
@@ -97,6 +103,15 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	if err != nil {
 		cancel()
 		s.store.UpdateAgentStatus(agentID, store.AgentStatusCrashed)
+		// Log the spawn failure for visibility in the TUI
+		errPayload := fmt.Sprintf(`{"type":"spawn_failed","message":%q,"command":%q,"workdir":%q}`, err.Error(), cmdStr, spec.WorktreePath)
+		s.store.LogAgentEvent(agentID, "spawn_failed", errPayload)
+		logging.Error("failed to spawn claude",
+			"agent_id", agentID,
+			"command", cmdStr,
+			"workdir", spec.WorktreePath,
+			"archetype", spec.Archetype,
+			"error", err)
 		return nil, fmt.Errorf("failed to spawn claude: %w", err)
 	}
 
@@ -204,6 +219,18 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 				return
 			}
 			logging.Error("agent process error", "agent_id", mp.AgentID, "error", err)
+			// Store the error in agent_events so it's visible in the TUI
+			errPayload := fmt.Sprintf(`{"type":"error","message":%q}`, err.Error())
+			s.store.LogAgentEvent(mp.AgentID, "error", errPayload)
+
+		case line, ok := <-mp.Process.Stderr():
+			if !ok {
+				continue
+			}
+			logging.Warn("agent stderr", "agent_id", mp.AgentID, "line", line)
+			// Store stderr in agent_events for debugging
+			stderrPayload := fmt.Sprintf(`{"type":"stderr","line":%q}`, line)
+			s.store.LogAgentEvent(mp.AgentID, "stderr", stderrPayload)
 
 		case <-mp.Process.Done():
 			s.handleExit(mp)
@@ -222,8 +249,20 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
 		logging.Error("failed to ingest event", "agent_id", mp.AgentID, "error", err)
 	}
 
-	// Legacy: also log to agent_events for backwards compat
-	payload := fmt.Sprintf(`{"type":"%s","subtype":"%s"}`, event.Type, event.Subtype)
+	// Log to agent_events with full content for TUI visibility
+	var payload string
+	switch event.Type {
+	case claudecode.EventTypeAssistant:
+		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s","content":%q}`, event.Type, event.Subtype, event.Content)
+	case claudecode.EventTypeToolUse:
+		payload = fmt.Sprintf(`{"type":"tool_use","name":"%s","input":%s}`, event.Name, string(event.Input))
+	case claudecode.EventTypeToolResult:
+		payload = fmt.Sprintf(`{"type":"tool_result","content":%q}`, event.Content)
+	case claudecode.EventTypeResult:
+		payload = fmt.Sprintf(`{"type":"result","subtype":"%s"}`, event.Subtype)
+	default:
+		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s"}`, event.Type, event.Subtype)
+	}
 	s.store.LogAgentEvent(mp.AgentID, string(event.Type), payload)
 
 	// Update status based on event type
@@ -254,6 +293,10 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 	exitCode := mp.Process.ExitCode()
 	s.store.UpdateAgentExitCode(mp.AgentID, exitCode)
 
+	// Log the exit event with details
+	exitPayload := fmt.Sprintf(`{"type":"exit","exit_code":%d}`, exitCode)
+	s.store.LogAgentEvent(mp.AgentID, "exit", exitPayload)
+
 	// Get current agent state
 	agent, _ := s.store.GetAgent(mp.AgentID)
 	if agent == nil {
@@ -269,7 +312,12 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 
 	if exitCode == 0 {
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCompleted)
+		logging.Info("agent completed successfully", "agent_id", mp.AgentID)
 	} else {
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)
+		logging.Warn("agent crashed", "agent_id", mp.AgentID, "exit_code", exitCode)
+		// Log crash event for visibility
+		crashPayload := fmt.Sprintf(`{"type":"crashed","exit_code":%d,"message":"Process exited with non-zero code"}`, exitCode)
+		s.store.LogAgentEvent(mp.AgentID, "crashed", crashPayload)
 	}
 }

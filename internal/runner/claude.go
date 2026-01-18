@@ -44,7 +44,7 @@ func (r *ClaudeRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, er
 		PermissionMode: spec.PermissionMode,
 		AllowedTools:   spec.AllowedTools,
 		SystemPrompt:   spec.SystemPrompt,
-		MaxTurns:       spec.MaxTurns,
+		MaxBudgetUSD:   spec.MaxBudgetUSD,
 		Plan:           spec.Plan,
 	}, true)
 	proc, err := claudecode.Spawn(ctx, opts)
@@ -134,7 +134,7 @@ func buildClaudeOptions(spec RunSpec, resume bool) *claudecode.SpawnOptions {
 		AllowedTools:   spec.AllowedTools,
 		SystemPrompt:   spec.SystemPrompt,
 		ForkSession:    spec.ForkSession,
-		MaxTurns:       spec.MaxTurns,
+		MaxBudgetUSD:   spec.MaxBudgetUSD,
 		Resume:         resume,
 	}
 
