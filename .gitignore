@@ -1,5 +1,7 @@
 # Binaries
 bin/
+athena
+athenad
 *.exe
 *.exe~
 *.dll
