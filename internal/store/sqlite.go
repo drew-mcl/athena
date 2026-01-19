@@ -434,3 +434,13 @@ type Plan struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+// AgentMetrics holds usage statistics for an agent.
+type AgentMetrics struct {
+	ToolUseCount int
+	FilesRead    int
+	FilesWritten int
+	LinesChanged int
+	MessageCount int
+	Duration     time.Duration
+}

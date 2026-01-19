@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/drewfead/athena/internal/data"
@@ -303,4 +304,107 @@ func nullString(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// GetAgentMetrics computes usage statistics for an agent from its conversation.
+func (s *Store) GetAgentMetrics(agentID string) (*AgentMetrics, error) {
+	conv, err := s.GetConversation(agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics := &AgentMetrics{
+		MessageCount: len(conv.Messages),
+		Duration:     conv.Duration(),
+	}
+
+	// Track unique files
+	filesRead := make(map[string]bool)
+	filesWritten := make(map[string]bool)
+
+	// Analyze tool calls
+	for _, msg := range conv.ToolCalls() {
+		if msg.Tool == nil {
+			continue
+		}
+		metrics.ToolUseCount++
+
+		switch msg.Tool.Name {
+		case "Read":
+			// Parse file_path from input
+			if path := extractFilePath(msg.Tool.Input); path != "" {
+				filesRead[path] = true
+			}
+		case "Write":
+			// Parse file_path from input
+			if path := extractFilePath(msg.Tool.Input); path != "" {
+				filesWritten[path] = true
+			}
+		case "Edit":
+			// Parse file_path from input
+			if path := extractFilePath(msg.Tool.Input); path != "" {
+				filesWritten[path] = true
+			}
+			// Count lines changed (old_string -> new_string difference)
+			metrics.LinesChanged += countLinesChanged(msg.Tool.Input)
+		}
+	}
+
+	metrics.FilesRead = len(filesRead)
+	metrics.FilesWritten = len(filesWritten)
+
+	return metrics, nil
+}
+
+// extractFilePath extracts file_path from tool input JSON.
+func extractFilePath(input []byte) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var params struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return ""
+	}
+	return params.FilePath
+}
+
+// countLinesChanged estimates lines changed from Edit tool input.
+func countLinesChanged(input []byte) int {
+	if len(input) == 0 {
+		return 0
+	}
+	var params struct {
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return 0
+	}
+
+	// Count lines in old and new strings
+	oldLines := countLines(params.OldString)
+	newLines := countLines(params.NewString)
+
+	// Return the net change (can be negative for deletions)
+	diff := newLines - oldLines
+	if diff < 0 {
+		return -diff // Return absolute value for lines removed
+	}
+	return diff
+}
+
+// countLines counts newlines in a string (adding 1 for content).
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	count := 1
+	for _, c := range s {
+		if c == '\n' {
+			count++
+		}
+	}
+	return count
 }

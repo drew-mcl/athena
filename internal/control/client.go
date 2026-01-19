@@ -576,6 +576,18 @@ type AgentInfo struct {
 	LastActivity     string `json:"last_activity,omitempty"`      // Human-readable current action
 	LastActivityTime string `json:"last_activity_time,omitempty"` // When the activity happened
 	LastEventType    string `json:"last_event_type,omitempty"`    // Raw event type
+	// Usage metrics
+	Metrics *AgentMetrics `json:"metrics,omitempty"`
+}
+
+// AgentMetrics holds usage statistics for an agent.
+type AgentMetrics struct {
+	ToolUseCount int   `json:"tool_use_count"`
+	FilesRead    int   `json:"files_read"`
+	FilesWritten int   `json:"files_written"`
+	LinesChanged int   `json:"lines_changed"`
+	MessageCount int   `json:"message_count"`
+	DurationMs   int64 `json:"duration_ms"` // Duration in milliseconds for JSON serialization
 }
 
 // AgentEventInfo represents an agent event for API responses.

@@ -2348,6 +2348,17 @@ func (m Model) renderAgentDetail() string {
 	content.WriteString(fmt.Sprintf("%d", agent.RestartCount))
 	content.WriteString("\n")
 
+	// Usage metrics
+	if agent.Metrics != nil {
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("  Usage:\n"))
+		content.WriteString(fmt.Sprintf("    Tools:    %d calls\n", agent.Metrics.ToolUseCount))
+		content.WriteString(fmt.Sprintf("    Files:    %d read, %d written\n", agent.Metrics.FilesRead, agent.Metrics.FilesWritten))
+		content.WriteString(fmt.Sprintf("    Changes:  +%s lines\n", formatCompactNumber(agent.Metrics.LinesChanged)))
+		content.WriteString(fmt.Sprintf("    Messages: %d\n", agent.Metrics.MessageCount))
+		content.WriteString(fmt.Sprintf("    Duration: %s\n", formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond)))
+	}
+
 	// Prompt/Task
 	if agent.Prompt != "" {
 		content.WriteString("\n")
@@ -3286,6 +3297,17 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// formatCompactNumber formats a number with k/M suffix for readability.
+func formatCompactNumber(n int) string {
+	if n >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // parseCreatedAt parses an RFC3339 timestamp string into a time.Time.

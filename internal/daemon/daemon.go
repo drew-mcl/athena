@@ -396,7 +396,7 @@ func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {
 
 	var result []*control.AgentInfo
 	for _, a := range agents {
-		result = append(result, agentToInfo(a))
+		result = append(result, d.agentToInfo(a))
 	}
 	return result, nil
 }
@@ -417,7 +417,7 @@ func (d *Daemon) handleGetAgent(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("agent not found: %s", req.ID)
 	}
 
-	return agentToInfo(agent), nil
+	return d.agentToInfo(agent), nil
 }
 
 func (d *Daemon) handleGetAgentLogs(params json.RawMessage) (any, error) {
@@ -486,10 +486,10 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 	// Broadcast event
 	d.server.Broadcast(control.Event{
 		Type:    "agent_created",
-		Payload: agentToInfo(spawnedAgent),
+		Payload: d.agentToInfo(spawnedAgent),
 	})
 
-	return agentToInfo(spawnedAgent), nil
+	return d.agentToInfo(spawnedAgent), nil
 }
 
 func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
@@ -829,7 +829,7 @@ func (d *Daemon) checkAgentHealth() {
 	}
 }
 
-func agentToInfo(a *store.Agent) *control.AgentInfo {
+func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 	info := &control.AgentInfo{
 		ID:              a.ID,
 		WorktreePath:    a.WorktreePath,
@@ -845,6 +845,21 @@ func agentToInfo(a *store.Agent) *control.AgentInfo {
 	if a.LinearIssueID != nil {
 		info.LinearIssueID = *a.LinearIssueID
 	}
+
+	// Compute metrics for active agents
+	if a.Status != store.AgentStatusPending {
+		if metrics, err := d.store.GetAgentMetrics(a.ID); err == nil && metrics != nil {
+			info.Metrics = &control.AgentMetrics{
+				ToolUseCount: metrics.ToolUseCount,
+				FilesRead:    metrics.FilesRead,
+				FilesWritten: metrics.FilesWritten,
+				LinesChanged: metrics.LinesChanged,
+				MessageCount: metrics.MessageCount,
+				DurationMs:   metrics.Duration.Milliseconds(),
+			}
+		}
+	}
+
 	return info
 }
 
@@ -1166,7 +1181,7 @@ Do NOT make any code changes. Only explore and create the plan.`, description)
 		// Broadcast agent created event
 		d.server.Broadcast(control.Event{
 			Type:    "agent_created",
-			Payload: agentToInfo(spawnedAgent),
+			Payload: d.agentToInfo(spawnedAgent),
 		})
 
 		logging.Info("auto-spawned planning agent",
@@ -1371,10 +1386,10 @@ Execute this plan precisely. After each step, report what you did.`, planContent
 	// Broadcast event
 	d.server.Broadcast(control.Event{
 		Type:    "agent_created",
-		Payload: agentToInfo(spawnedAgent),
+		Payload: d.agentToInfo(spawnedAgent),
 	})
 
-	return agentToInfo(spawnedAgent), nil
+	return d.agentToInfo(spawnedAgent), nil
 }
 
 func planToInfo(p *store.Plan) *control.PlanInfo {
@@ -1550,7 +1565,7 @@ If the conflicts are too complex to resolve automatically, explain what manual i
 		// Broadcast agent creation
 		d.server.Broadcast(control.Event{
 			Type:    "agent_created",
-			Payload: agentToInfo(spawnedAgent),
+			Payload: d.agentToInfo(spawnedAgent),
 		})
 
 		return &control.MergeLocalResult{
