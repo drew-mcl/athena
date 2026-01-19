@@ -51,28 +51,12 @@ func (l *SQLiteEventLog) Append(ctx context.Context, agentID string, msg *data.M
 }
 
 func (l *SQLiteEventLog) Read(ctx context.Context, agentID string, fromSeq int64, limit int) ([]*data.Message, error) {
-	// Get all messages and filter by sequence
-	// TODO: Add offset support to store.GetMessages for efficiency
-	allMsgs, err := l.store.GetMessages(agentID, 10000)
-	if err != nil {
-		return nil, fmt.Errorf("get messages: %w", err)
-	}
-
-	var result []*data.Message
-	for _, msg := range allMsgs {
-		if msg.Sequence >= fromSeq {
-			result = append(result, msg)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-
-	return result, nil
+	// Use efficient sequence-based pagination
+	return l.store.GetMessagesBySequence(agentID, fromSeq, limit)
 }
 
 func (l *SQLiteEventLog) ReadAll(ctx context.Context, agentID string) ([]*data.Message, error) {
-	msgs, err := l.store.GetMessages(agentID, 100000) // large limit
+	msgs, err := l.store.GetMessages(agentID, store.GetMessagesOptions{Limit: 100000}) // large limit
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
 	}
@@ -107,14 +91,14 @@ func (l *SQLiteEventLog) Snapshot(ctx context.Context, agentID string) (*Snapsho
 	hash := sha256.Sum256(convData)
 	checksum := hex.EncodeToString(hash[:])
 
-	snap := &Snapshot{
+	snap := &store.Snapshot{
 		ID:        uuid.NewString(),
 		AgentID:   agentID,
 		Sequence:  int64(len(conv.Messages) - 1),
 		Timestamp: time.Now(),
 		Checksum:  checksum,
 		Data:      convData,
-		Metadata: SnapshotMeta{
+		Metadata: store.SnapshotMeta{
 			MessageCount:  len(conv.Messages),
 			ToolCallCount: len(conv.ToolCalls()),
 			Duration:      conv.Duration(),

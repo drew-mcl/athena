@@ -4,6 +4,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -43,7 +44,8 @@ func (e *JobExecutor) ExecuteJob(ctx context.Context, job *store.Job) error {
 
 // executeQuestion runs a simple Q&A job (no worktree needed).
 func (e *JobExecutor) executeQuestion(ctx context.Context, job *store.Job) error {
-	logging.Info("executing question job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, 50))
+	_, maxLogTruncateLen := e.daemon.config.GetTruncateLengths()
+	logging.Info("executing question job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, maxLogTruncateLen))
 
 	e.updateJobStatus(job.ID, store.JobStatusExecuting)
 
@@ -76,7 +78,8 @@ func (e *JobExecutor) executeQuestion(ctx context.Context, job *store.Job) error
 
 // executeQuick runs a quick job: temp worktree → change → commit → broadcast to all worktrees.
 func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
-	logging.Info("executing quick job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, 50))
+	_, maxLogTruncateLen := e.daemon.config.GetTruncateLengths()
+	logging.Info("executing quick job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, maxLogTruncateLen))
 
 	e.updateJobStatus(job.ID, store.JobStatusExecuting)
 
@@ -130,7 +133,8 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 	// Safety check: Don't auto-commit massive changes
 	stats, err := e.getChangeStats(tempWtPath)
 	if err == nil {
-		if stats.Files > 50 || stats.Insertions > 1000 || stats.Deletions > 1000 {
+		maxFiles, maxInsertions, maxDeletions := e.daemon.config.GetJobLimits()
+		if stats.Files > maxFiles || stats.Insertions > maxInsertions || stats.Deletions > maxDeletions {
 			logging.Warn("quick job produced massive changes - aborting auto-merge",
 				"job_id", job.ID, "files", stats.Files, "insertions", stats.Insertions)
 			// Don't cleanup - leave for review? Or maybe just fail for now to be safe.
@@ -185,7 +189,8 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 
 // executeFeature spawns a long-lived agent for feature work.
 func (e *JobExecutor) executeFeature(ctx context.Context, job *store.Job) error {
-	logging.Info("executing feature job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, 50))
+	_, maxLogTruncateLen := e.daemon.config.GetTruncateLengths()
+	logging.Info("executing feature job", "job_id", job.ID, "input", truncateStr(job.NormalizedInput, maxLogTruncateLen))
 
 	e.updateJobStatus(job.ID, store.JobStatusExecuting)
 
@@ -395,8 +400,9 @@ func (e *JobExecutor) broadcastToWorktrees(ctx context.Context, job *store.Job, 
 // notifyAgentToMerge sends a message to an agent to merge the latest changes.
 func (e *JobExecutor) notifyAgentToMerge(agent *store.Agent, job *store.Job, commitHash string) {
 	// Create an event that the agent can receive
+	_, maxLogTruncateLen := e.daemon.config.GetTruncateLengths()
 	payload := fmt.Sprintf(`{"commit": "%s", "job_id": "%s", "message": "New changes on main: %s. Please merge when appropriate."}`,
-		commitHash, job.ID, truncateStr(job.NormalizedInput, 100))
+		commitHash, job.ID, truncateStr(job.NormalizedInput, maxLogTruncateLen))
 	e.daemon.store.LogAgentEvent(agent.ID, "merge_request", payload)
 
 	// Broadcast to TUI
@@ -575,7 +581,8 @@ func (e *JobExecutor) commitChanges(repoPath, message string) (string, error) {
 	}
 
 	// Commit
-	commitMsg := truncateStr(message, 72)
+	maxCommitMsgLen, _ := e.daemon.config.GetTruncateLengths()
+	commitMsg := truncateStr(message, maxCommitMsgLen)
 	cmd, err = executil.Command("git", "commit", "-m", commitMsg)
 	if err != nil {
 		return "", err

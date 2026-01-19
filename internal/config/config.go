@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,21 +11,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// JobsConfig defines job execution settings.
+type JobsConfig struct {
+	// Quick job safety limits
+	MaxFiles      int `yaml:"max_files"`
+	MaxInsertions int `yaml:"max_insertions"`
+	MaxDeletions  int `yaml:"max_deletions"`
+
+	// Message truncation
+	MaxCommitMessageLength int `yaml:"max_commit_message_length"`
+	MaxLogTruncateLength   int `yaml:"max_log_truncate_length"`
+
+	// Timeouts
+	QuickJobTimeout time.Duration `yaml:"quick_job_timeout"`
+}
+
 // Config is the root configuration for Athena.
 type Config struct {
-	Repos        ReposConfig        `yaml:"repos"`
-	Agents       AgentsConfig       `yaml:"agents"`
+	Repos        ReposConfig          `yaml:"repos"`
+	Agents       AgentsConfig         `yaml:"agents"`
 	Archetypes   map[string]Archetype `yaml:"archetypes"`
-	Terminal     TerminalConfig     `yaml:"terminal"`
-	Daemon       DaemonConfig       `yaml:"daemon"`
-	Integrations IntegrationsConfig `yaml:"integrations"`
-	UI           UIConfig           `yaml:"ui"`
+	Terminal     TerminalConfig       `yaml:"terminal"`
+	Daemon       DaemonConfig         `yaml:"daemon"`
+	Integrations IntegrationsConfig   `yaml:"integrations"`
+	Gemini       GeminiConfig         `yaml:"gemini"`
+	Jobs         JobsConfig           `yaml:"jobs"`
+	UI           UIConfig             `yaml:"ui"`
+}
+
+// GeminiConfig defines Google Gemini integration settings.
+type GeminiConfig struct {
+	APIKey string `yaml:"api_key"`
+	Model  string `yaml:"model"`
 }
 
 // ReposConfig defines repository discovery settings.
 type ReposConfig struct {
 	BaseDirs     []string      `yaml:"base_dirs"`
-	WorktreeDir  string        `yaml:"worktree_dir"`  // Dedicated directory for worktrees
+	WorktreeDir  string        `yaml:"worktree_dir"` // Dedicated directory for worktrees
 	Exclude      []string      `yaml:"exclude"`
 	Include      []string      `yaml:"include"`
 	ScanInterval time.Duration `yaml:"scan_interval"`
@@ -32,14 +56,14 @@ type ReposConfig struct {
 
 // AgentsConfig defines default agent behavior.
 type AgentsConfig struct {
-	RestartPolicy     string         `yaml:"restart_policy"`
-	MaxRestarts       int            `yaml:"max_restarts"`
-	RestartBackoff    BackoffConfig  `yaml:"restart_backoff"`
-	Model             string         `yaml:"model"`
-	Budget            BudgetConfig   `yaml:"budget"`
-	ContextRetention  time.Duration  `yaml:"context_retention"`
-	HeartbeatInterval time.Duration  `yaml:"heartbeat_interval"`
-	HeartbeatTimeout  time.Duration  `yaml:"heartbeat_timeout"`
+	RestartPolicy     string        `yaml:"restart_policy"`
+	MaxRestarts       int           `yaml:"max_restarts"`
+	RestartBackoff    BackoffConfig `yaml:"restart_backoff"`
+	Model             string        `yaml:"model"`
+	Budget            BudgetConfig  `yaml:"budget"`
+	ContextRetention  time.Duration `yaml:"context_retention"`
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
 }
 
 // BackoffConfig defines exponential backoff parameters.
@@ -156,12 +180,12 @@ func (c *CoAuthorConfig) CoAuthorLine() string {
 
 // LinearConfig defines Linear integration settings.
 type LinearConfig struct {
-	Enabled          bool     `yaml:"enabled"`
-	WebhookSecret    string   `yaml:"webhook_secret"`
-	APIKey           string   `yaml:"api_key"`
-	AutoPlan         bool     `yaml:"auto_plan"`
-	AutoPlanLabels   []string `yaml:"auto_plan_labels"`
-	PostPlanComment  bool     `yaml:"post_plan_comment"`
+	Enabled         bool     `yaml:"enabled"`
+	WebhookSecret   string   `yaml:"webhook_secret"`
+	APIKey          string   `yaml:"api_key"`
+	AutoPlan        bool     `yaml:"auto_plan"`
+	AutoPlanLabels  []string `yaml:"auto_plan_labels"`
+	PostPlanComment bool     `yaml:"post_plan_comment"`
 }
 
 // GitHubConfig defines GitHub integration settings.
@@ -211,7 +235,7 @@ func DefaultConfig() *Config {
 			HeartbeatInterval: 30 * time.Second,
 			HeartbeatTimeout:  2 * time.Minute,
 		},
-		Archetypes: defaultArchetypes(),
+		Archetypes: map[string]Archetype{},
 		Terminal: TerminalConfig{
 			Provider:   "ghostty",
 			AutoAttach: false,
@@ -223,6 +247,17 @@ func DefaultConfig() *Config {
 			LogLevel: "info",
 			Metrics:  MetricsConfig{Enabled: false, Port: 9090},
 		},
+		Gemini: GeminiConfig{
+			Model: "gemini-2.0-flash-exp",
+		},
+		Jobs: JobsConfig{
+			MaxFiles:               50,
+			MaxInsertions:          1000,
+			MaxDeletions:           1000,
+			MaxCommitMessageLength: 72,
+			MaxLogTruncateLength:   50,
+			QuickJobTimeout:        5 * time.Minute,
+		},
 		UI: UIConfig{
 			Theme:           "tokyo-night",
 			ShowActivity:    true,
@@ -233,66 +268,14 @@ func DefaultConfig() *Config {
 	}
 }
 
-func defaultArchetypes() map[string]Archetype {
-	return map[string]Archetype{
-		"planner": {
-			Description:    "Explores codebase and drafts implementation plans",
-			Prompt:         "You are a planning agent. Thoroughly explore the codebase to understand architecture, then use the EnterPlanMode tool to create a detailed implementation plan.\n\nIMPORTANT: Start your plan with YAML frontmatter containing a brief summary:\n---\nsummary: One sentence describing what will be implemented\n---\n\nThen write the full implementation plan.",
-			PermissionMode: "plan", // Read-only, plan stored in Claude's native ~/.claude/plans/
-			AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
-			Model:          "opus",
-		},
-		"executor": {
-			Description:    "Implements approved plans with precision",
-			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval. CRITICAL: When you complete your work, you MUST commit all changes with a descriptive commit message before finishing. Never leave uncommitted changes.",
-			PermissionMode: "bypassPermissions", // User approved plan, executor runs autonomously
-			AllowedTools:   []string{"all"},
-			Model:          "opus",
-		},
-		"reviewer": {
-			Description:    "Reviews code for bugs, security, and style",
-			Prompt:         "You are a code review agent. Analyze changes for logic errors, security vulnerabilities, performance issues, and style consistency.",
-			PermissionMode: "plan",
-			AllowedTools:   []string{"Glob", "Grep", "Read", "Task"},
-			Model:          "sonnet",
-		},
-		"architect": {
-			Description:    "Decomposes large tasks into parallel subtasks",
-			Prompt:         "You are an architect agent. Break down the task into independent subtasks that can run in parallel. Output structured JSON with subtasks, merge_strategy, and integration_notes.",
-			PermissionMode: "plan",
-			AllowedTools:   []string{"Glob", "Grep", "Read", "Task"},
-			Model:          "opus",
-		},
-		"resolver": {
-			Description:    "Resolves merge conflicts via rebase",
-			Prompt:         "You are a conflict resolution agent. Your job is to rebase the current branch onto main and resolve any merge conflicts intelligently. Understand both sides of each conflict and make the right choice. After resolving, commit the result.",
-			PermissionMode: "bypassPermissions", // Needs to run git commands
-			AllowedTools:   []string{"all"},
-			Model:          "sonnet", // Fast for conflict resolution
-		},
-	}
+// GetJobLimits returns configured job safety limits.
+func (c *Config) GetJobLimits() (maxFiles, maxInsertions, maxDeletions int) {
+	return c.Jobs.MaxFiles, c.Jobs.MaxInsertions, c.Jobs.MaxDeletions
 }
 
-// Load reads configuration from the default path or creates default config.
-func Load() (*Config, error) {
-	configPath := DefaultConfigPath()
-
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return DefaultConfig(), nil
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := DefaultConfig()
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
-	}
-
-	cfg.expandEnvVars()
-	return cfg, nil
+// GetTruncateLengths returns configured truncation lengths.
+func (c *Config) GetTruncateLengths() (commitMsg, logMsg int) {
+	return c.Jobs.MaxCommitMessageLength, c.Jobs.MaxLogTruncateLength
 }
 
 // DefaultConfigPath returns the default configuration file path.
@@ -304,10 +287,34 @@ func DefaultConfigPath() string {
 	return filepath.Join(homeDir, ".config/athena/config.yaml")
 }
 
+// Load loads the configuration from the default path.
+func Load() (*Config, error) {
+	configPath := DefaultConfigPath()
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Return default config if file doesn't exist
+		return DefaultConfig(), nil
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %s: %w", configPath, err)
+	}
+
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
+	}
+
+	cfg.expandEnvVars()
+	return cfg, nil
+}
+
 func (c *Config) expandEnvVars() {
 	c.Integrations.Linear.WebhookSecret = os.ExpandEnv(c.Integrations.Linear.WebhookSecret)
 	c.Integrations.Linear.APIKey = os.ExpandEnv(c.Integrations.Linear.APIKey)
 	c.Daemon.SentryDSN = os.ExpandEnv(c.Daemon.SentryDSN)
+	c.Gemini.APIKey = os.ExpandEnv(c.Gemini.APIKey)
 
 	// Expand env vars in identity config
 	if c.Integrations.Identities.Default != nil {

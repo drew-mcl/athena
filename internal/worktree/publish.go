@@ -307,7 +307,7 @@ func (p *Publisher) Cleanup(worktreePath string, deleteBranch bool) error {
 		cmd, err = executil.Command("git", "branch", "-d", branch)
 		if err == nil {
 			cmd.Dir = mainRepoPath
-			output, err = cmd.CombinedOutput()
+			// output, err = cmd.CombinedOutput()
 		}
 		if err != nil {
 			// Try force delete

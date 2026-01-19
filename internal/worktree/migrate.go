@@ -339,11 +339,22 @@ func (m *Migrator) createTodoFile(worktreePath string, opts CreateWorktreeOption
 	if opts.Description != "" {
 		content.WriteString(opts.Description)
 	} else {
-		content.WriteString("TODO: Add description")
+		if opts.TicketID != "" {
+			content.WriteString(fmt.Sprintf("Work for %s", opts.TicketID))
+		} else {
+			content.WriteString(fmt.Sprintf("Feature work on %s", opts.Branch))
+		}
 	}
 	content.WriteString("\n\n")
 	content.WriteString("## Tasks\n")
-	content.WriteString("- [ ] TODO\n")
+	content.WriteString("- [ ] Set up development environment\n")
+	content.WriteString("- [ ] Explore codebase structure\n")
+	if opts.TicketID != "" {
+		content.WriteString(fmt.Sprintf("- [ ] Review requirements for %s\n", opts.TicketID))
+	} else {
+		content.WriteString("- [ ] Define implementation approach\n")
+	}
+	content.WriteString("- [ ] Create implementation plan\n")
 	content.WriteString("\n---\n")
 	content.WriteString(fmt.Sprintf("Ticket: %s\n", opts.TicketID))
 
