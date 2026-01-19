@@ -232,6 +232,11 @@ func (a *Assembler) BuildPromptWithContext(originalPrompt string, opts AssembleO
 		return "", err
 	}
 
+	// Apply token budget
+	if opts.MaxTokens > 0 {
+		block = a.TruncateToTokenBudget(block, opts.MaxTokens)
+	}
+
 	context := a.Format(block)
 	if context == "" {
 		return originalPrompt, nil
