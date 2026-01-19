@@ -1,0 +1,7 @@
+#!/bin/sh
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ "$branch" = "main" ] && [ -z "$ALLOW_MAIN_COMMIT" ]; then
+  echo "Direct commits to main are blocked. Create a feature branch." >&2
+  echo "Set ALLOW_MAIN_COMMIT=1 to bypass for emergency fixes." >&2
+  exit 1
+fi

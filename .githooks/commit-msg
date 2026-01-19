@@ -1,0 +1,16 @@
+#!/bin/sh
+msg_file="$1"
+subject="$(head -n 1 "$msg_file")"
+
+case "$subject" in
+  Merge\ *|Revert\ *)
+    exit 0
+    ;;
+esac
+
+if printf '%s' "$subject" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\([^)]+\))?(!)?: .+'; then
+  exit 0
+fi
+
+echo "Commit message must follow Conventional Commits (e.g., 'feat(ui): add toolbar')." >&2
+exit 1
