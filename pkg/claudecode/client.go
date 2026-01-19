@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 
@@ -14,9 +15,9 @@ import (
 
 // Process represents a running Claude Code process.
 type Process struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
 	stderrPipe io.ReadCloser
 
 	events    chan *Event
@@ -38,11 +39,13 @@ func Spawn(ctx context.Context, opts *SpawnOptions) (*Process, error) {
 	}
 	cmd.Dir = opts.WorkDir
 
-	// Inject git identity environment variables if configured
+	// Inject git identity environment variables if configured.
+	// IMPORTANT: We must start with os.Environ() to inherit the parent environment.
+	// If cmd.Env is nil, Go auto-inherits, but once we set it, we must include everything.
 	if opts.GitIdentity != nil {
 		gitEnv := opts.GitIdentity.Env()
 		if len(gitEnv) > 0 {
-			cmd.Env = append(cmd.Env, gitEnv...)
+			cmd.Env = append(os.Environ(), gitEnv...)
 		}
 	}
 

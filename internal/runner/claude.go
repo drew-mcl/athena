@@ -138,6 +138,15 @@ func buildClaudeOptions(spec RunSpec, resume bool) *claudecode.SpawnOptions {
 		Resume:         resume,
 	}
 
+	// Map git identity from runner spec to claudecode options
+	if spec.GitIdentity != nil {
+		opts.GitIdentity = &claudecode.GitIdentityConfig{
+			AuthorName:   spec.GitIdentity.AuthorName,
+			AuthorEmail:  spec.GitIdentity.AuthorEmail,
+			CoAuthorLine: spec.GitIdentity.CoAuthorLine,
+		}
+	}
+
 	if opts.PermissionMode == "" && spec.Plan {
 		opts.PermissionMode = "plan"
 	}
