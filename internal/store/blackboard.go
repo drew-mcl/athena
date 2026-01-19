@@ -106,7 +106,7 @@ func (s *Store) ListUnresolvedQuestions(worktreePath string) ([]*BlackboardEntry
 }
 
 // ResolveBlackboardQuestion marks a question as resolved.
-func (s *Store) ResolveBlackboardQuestion(id string, resolvedBy string) error {
+func (s *Store) ResolveBlackboardQuestion(id, resolvedBy string) error {
 	query := `UPDATE blackboard SET resolved = 1, resolved_by = ? WHERE id = ?`
 	_, err := s.db.Exec(query, resolvedBy, id)
 	return err
