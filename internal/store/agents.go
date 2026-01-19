@@ -177,6 +177,66 @@ func (s *Store) DeleteAgent(id string) error {
 	return err
 }
 
+// DeleteAgentCascade removes an agent and all dependent records in correct order.
+// This handles foreign key constraints by deleting dependents first:
+// 1. Plans referencing this agent
+// 2. Messages referencing this agent
+// 3. Agent events referencing this agent
+// 4. Clear agent_id from worktrees
+// 5. Clear current_agent_id from jobs
+// 6. Clear agent_id from changelog
+// 7. Handle parent_agent_id self-reference (set to NULL)
+// 8. Finally delete the agent
+func (s *Store) DeleteAgentCascade(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. Delete plans referencing this agent
+	if _, err := tx.Exec(`DELETE FROM plans WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 2. Delete messages referencing this agent
+	if _, err := tx.Exec(`DELETE FROM messages WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 3. Delete agent events referencing this agent
+	if _, err := tx.Exec(`DELETE FROM agent_events WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 4. Clear agent_id from worktrees
+	if _, err := tx.Exec(`UPDATE worktrees SET agent_id = NULL WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 5. Clear current_agent_id from jobs
+	if _, err := tx.Exec(`UPDATE jobs SET current_agent_id = NULL WHERE current_agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 6. Clear agent_id from changelog
+	if _, err := tx.Exec(`UPDATE changelog SET agent_id = NULL WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 7. Handle parent_agent_id self-reference (set to NULL for any children)
+	if _, err := tx.Exec(`UPDATE agents SET parent_agent_id = NULL WHERE parent_agent_id = ?`, id); err != nil {
+		return err
+	}
+
+	// 8. Finally delete the agent
+	if _, err := tx.Exec(`DELETE FROM agents WHERE id = ?`, id); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // LogAgentEvent stores an event for an agent.
 func (s *Store) LogAgentEvent(agentID, eventType, payload string) error {
 	query := `INSERT INTO agent_events (agent_id, event_type, payload) VALUES (?, ?, ?)`
