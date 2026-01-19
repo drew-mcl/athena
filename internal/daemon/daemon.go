@@ -495,7 +495,8 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 
 func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 	var req struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Delete bool   `json:"delete"` // If true, fully delete agent and all data
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
@@ -522,9 +523,18 @@ func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 	}
 	d.agentsMu.Unlock()
 
-	// Update status
-	d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
-	d.store.ClearWorktreeAgent(agentRecord.WorktreePath)
+	if req.Delete {
+		// Full cascade delete - removes agent and all dependent records
+		if err := d.store.DeleteAgentCascade(req.ID); err != nil {
+			logging.Warn("cascade delete failed", "agent_id", req.ID, "error", err)
+			// Fall back to just marking as terminated
+			d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
+		}
+	} else {
+		// Just update status, keep records
+		d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
+		d.store.ClearWorktreeAgent(agentRecord.WorktreePath)
+	}
 
 	// Broadcast event
 	d.server.Broadcast(control.Event{
@@ -850,6 +860,13 @@ func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 	}
 	if a.LinearIssueID != nil {
 		info.LinearIssueID = *a.LinearIssueID
+	}
+
+	// Enrich plan status for planner agents
+	if a.Archetype == "planner" {
+		if plan, err := d.store.GetPlan(a.WorktreePath); err == nil && plan != nil {
+			info.PlanStatus = string(plan.Status)
+		}
 	}
 
 	// Compute metrics for active agents

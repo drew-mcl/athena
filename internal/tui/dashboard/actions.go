@@ -33,16 +33,18 @@ var allActions = []Action{
 
 	// Agent/Worktree actions
 	{Key: "a", Label: "attach", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Attach requires a worktree or agent selection"},
+	{Key: "A", Label: "approve", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Approve a draft plan from planner agent"},
 	{Key: "c", Label: "cleanup", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Remove merged worktree"},
 	{Key: "e", Label: "edit", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Edit requires a worktree or agent selection"},
 	{Key: "L", Label: "logs", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "Logs requires a worktree with agent or agent selection"},
 	{Key: "M", Label: "merge", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Merge to main locally"},
 	{Key: "p", Label: "plan", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "View implementation plan"},
 	{Key: "P", Label: "pr", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Push and create PR for review"},
-	{Key: "r", Label: "retry", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Retry/respawn a crashed agent"},
+	{Key: "r", Label: "retry", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Retry/respawn a crashed or completed planner agent"},
 	{Key: "s", Label: "shell", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Shell requires a worktree selection"},
 	{Key: "v", Label: "view", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "View requires a worktree with agent or agent selection"},
 	{Key: "x", Label: "kill", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "Kill requires a worktree with agent or agent selection"},
+	{Key: "X", Label: "execute", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Spawn executor for approved plan"},
 
 	// Notes actions (drill-in only)
 	{Key: "x", Label: "toggle", Tabs: []Tab{TabNotes}, Levels: []Level{LevelProject}},

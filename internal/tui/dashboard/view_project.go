@@ -57,7 +57,17 @@ func (m Model) renderAgents() string {
 }
 
 func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, selected bool) string {
-	icon := tui.StatusStyle(agent.Status).Render(tui.StatusIcons[agent.Status])
+	// Determine status icon - override for completed planners with pending plans
+	var icon string
+	if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "draft" {
+		// Plan ready - use warning icon to draw attention
+		icon = tui.StyleWarning.Render("!")
+	} else if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "approved" {
+		// Plan approved - use info icon
+		icon = tui.StyleInfo.Render("»")
+	} else {
+		icon = tui.StatusStyle(agent.Status).Render(tui.StatusIcons[agent.Status])
+	}
 	wtName := filepath.Base(agent.WorktreePath)
 	age := formatDuration(time.Since(parseCreatedAt(agent.CreatedAt)))
 
@@ -93,6 +103,22 @@ func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, sel
 // If LastActivity is populated, it shows that with a relative time suffix.
 // Otherwise, it falls back to descriptive status messages.
 func formatActivity(agent *control.AgentInfo) string {
+	// Special handling for completed planner agents with plan status
+	if agent.Archetype == "planner" && agent.Status == "completed" {
+		switch agent.PlanStatus {
+		case "draft":
+			return tui.StyleWarning.Render("Plan ready - [p] view")
+		case "approved":
+			return tui.StyleInfo.Render("Approved - [X] execute")
+		case "executing":
+			return "Executor running..."
+		case "completed":
+			return tui.StyleMuted.Render("Plan executed")
+		case "pending":
+			return "Waiting for plan..."
+		}
+	}
+
 	if agent.LastActivity != "" {
 		// Show activity with relative time if recent
 		if agent.LastActivityTime != "" {
@@ -119,6 +145,8 @@ func formatActivity(agent *control.AgentInfo) string {
 		return "Working..."
 	case "stopped":
 		return "Stopped"
+	case "completed":
+		return tui.StyleMuted.Render("—")
 	default:
 		return agent.Status
 	}
