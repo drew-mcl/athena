@@ -343,6 +343,25 @@ func (s *Store) migrate() error {
 		FOREIGN KEY (superseded_by) REFERENCES project_state(id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_state_project ON project_state(project, state_type);
+
+	-- Snapshots: conversation checkpoints for agent recovery
+	CREATE TABLE IF NOT EXISTS snapshots (
+		id            TEXT PRIMARY KEY,
+		agent_id      TEXT NOT NULL,
+		sequence      INTEGER NOT NULL,
+		timestamp     DATETIME NOT NULL,
+		checksum      TEXT NOT NULL,
+		data          TEXT NOT NULL,              -- JSON serialized conversation
+		message_count INTEGER NOT NULL,
+		tool_call_count INTEGER NOT NULL,
+		duration_ms   INTEGER NOT NULL,
+		is_complete   BOOLEAN DEFAULT FALSE,
+		metadata      TEXT,                      -- JSON metadata
+		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_snapshots_agent ON snapshots(agent_id, sequence DESC);
 	`
 
 	_, err := s.db.Exec(schema)

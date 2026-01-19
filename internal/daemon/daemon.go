@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -650,6 +651,23 @@ func jobToInfo(j *store.Job) *control.JobInfo {
 	return info
 }
 
+// normalizeInput performs basic input cleaning and normalization.
+func normalizeInput(input string) string {
+	// Trim whitespace
+	input = strings.TrimSpace(input)
+
+	// Remove excessive whitespace
+	re := regexp.MustCompile(`\s+`)
+	input = re.ReplaceAllString(input, " ")
+
+	// Limit length to prevent abuse
+	if len(input) > 10000 {
+		input = input[:10000] + "..."
+	}
+
+	return input
+}
+
 func (d *Daemon) handleCreateJob(params json.RawMessage) (any, error) {
 	// Reject new jobs if we're draining
 	if d.isDraining() {
@@ -667,11 +685,11 @@ func (d *Daemon) handleCreateJob(params json.RawMessage) (any, error) {
 		jobType = store.JobTypeFeature
 	}
 
-	// TODO: Normalize input with Haiku (for now, just use as-is)
+	// Normalize input with basic cleaning
 	job := &store.Job{
 		ID:              generateID(),
 		RawInput:        req.Input,
-		NormalizedInput: req.Input, // Will be normalized by AI
+		NormalizedInput: normalizeInput(req.Input),
 		Status:          store.JobStatusPending,
 		Type:            jobType,
 		Project:         req.Project,
@@ -1650,11 +1668,11 @@ If the conflicts are too complex to resolve automatically, explain what manual i
 		})
 
 		return &control.MergeLocalResult{
-			Success:       false,
-			HasConflicts:  true,
-			AgentSpawned:  true,
-			AgentID:       spawnedAgent.ID,
-			Message:       result.Message + " - resolver agent spawned",
+			Success:      false,
+			HasConflicts: true,
+			AgentSpawned: true,
+			AgentID:      spawnedAgent.ID,
+			Message:      result.Message + " - resolver agent spawned",
 		}, nil
 	}
 

@@ -75,8 +75,22 @@ func (s *Store) GetMessage(id string) (*data.Message, error) {
 	return scanMessage(row)
 }
 
-// GetMessages retrieves messages for an agent, ordered by sequence.
-func (s *Store) GetMessages(agentID string, limit int) ([]*data.Message, error) {
+// GetMessagesOptions defines pagination options for GetMessages.
+type GetMessagesOptions struct {
+	Limit  int
+	Offset int
+}
+
+// GetMessages retrieves messages for an agent, ordered by sequence with pagination.
+func (s *Store) GetMessages(agentID string, opts GetMessagesOptions) ([]*data.Message, error) {
+	// Set defaults
+	if opts.Limit <= 0 {
+		opts.Limit = 100
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+
 	query := `
 		SELECT id, agent_id, direction, type, sequence, timestamp,
 		       text, tool_name, tool_input, tool_output,
@@ -84,9 +98,40 @@ func (s *Store) GetMessages(agentID string, limit int) ([]*data.Message, error) 
 		FROM messages
 		WHERE agent_id = ?
 		ORDER BY sequence ASC
+		LIMIT ? OFFSET ?
+	`
+	rows, err := s.db.Query(query, agentID, opts.Limit, opts.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
+// GetMessagesLegacy retrieves messages for an agent using the old interface.
+// This provides backward compatibility.
+func (s *Store) GetMessagesLegacy(agentID string, limit int) ([]*data.Message, error) {
+	return s.GetMessages(agentID, GetMessagesOptions{Limit: limit})
+}
+
+// GetMessagesBySequence retrieves messages from a specific sequence number.
+// This is more efficient for pagination when loading messages sequentially.
+func (s *Store) GetMessagesBySequence(agentID string, fromSeq int64, limit int) ([]*data.Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `
+		SELECT id, agent_id, direction, type, sequence, timestamp,
+		       text, tool_name, tool_input, tool_output,
+		       error_code, error_message, session_id, raw
+		FROM messages
+		WHERE agent_id = ? AND sequence >= ?
+		ORDER BY sequence ASC
 		LIMIT ?
 	`
-	rows, err := s.db.Query(query, agentID, limit)
+	rows, err := s.db.Query(query, agentID, fromSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +191,7 @@ func (s *Store) GetRecentMessages(agentID string, n int) ([]*data.Message, error
 
 // GetConversation retrieves all messages for an agent as a Conversation.
 func (s *Store) GetConversation(agentID string) (*data.Conversation, error) {
-	msgs, err := s.GetMessages(agentID, 100000) // reasonable limit
+	msgs, err := s.GetMessages(agentID, GetMessagesOptions{Limit: 100000}) // reasonable limit
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
+	ProviderGemini = "gemini"
 )
 
 // Capabilities describes what a runner supports.
@@ -95,6 +96,8 @@ func New(provider string) (Runner, error) {
 		return &ClaudeRunner{}, nil
 	case ProviderCodex:
 		return &CodexRunner{}, nil
+	case ProviderGemini:
+		return &GeminiRunner{}, nil
 	default:
 		return nil, fmt.Errorf("unknown runner provider: %s", provider)
 	}
