@@ -15,8 +15,8 @@ func (s *Store) UpsertWorktree(wt *Worktree) error {
 
 	query := `
 		INSERT INTO worktrees (path, project, branch, is_main, agent_id, job_id, discovered_at,
-			ticket_id, ticket_hash, description, project_name, status, pr_url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			project = excluded.project,
 			branch = excluded.branch,
@@ -28,7 +28,8 @@ func (s *Store) UpsertWorktree(wt *Worktree) error {
 			description = COALESCE(excluded.description, worktrees.description),
 			project_name = COALESCE(excluded.project_name, worktrees.project_name),
 			status = COALESCE(excluded.status, worktrees.status),
-			pr_url = COALESCE(excluded.pr_url, worktrees.pr_url)
+			pr_url = COALESCE(excluded.pr_url, worktrees.pr_url),
+			workflow_mode = COALESCE(excluded.workflow_mode, worktrees.workflow_mode)
 	`
 	_, err := s.db.Exec(query,
 		wt.Path,
@@ -44,6 +45,7 @@ func (s *Store) UpsertWorktree(wt *Worktree) error {
 		wt.ProjectName,
 		status,
 		wt.PRURL,
+		wt.WorkflowMode,
 	)
 	return err
 }
@@ -52,7 +54,7 @@ func (s *Store) UpsertWorktree(wt *Worktree) error {
 func (s *Store) GetWorktree(path string) (*Worktree, error) {
 	query := `
 		SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-			ticket_id, ticket_hash, description, project_name, status, pr_url
+			ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 		FROM worktrees WHERE path = ?
 	`
 	row := s.db.QueryRow(query, path)
@@ -67,7 +69,7 @@ func (s *Store) ListWorktrees(project string) ([]*Worktree, error) {
 	if project != "" {
 		query = `
 			SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-				ticket_id, ticket_hash, description, project_name, status, pr_url
+				ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 			FROM worktrees WHERE project = ?
 			ORDER BY is_main DESC, path
 		`
@@ -75,7 +77,7 @@ func (s *Store) ListWorktrees(project string) ([]*Worktree, error) {
 	} else {
 		query = `
 			SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-				ticket_id, ticket_hash, description, project_name, status, pr_url
+				ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 			FROM worktrees ORDER BY project, is_main DESC, path
 		`
 	}
@@ -101,7 +103,7 @@ func (s *Store) ListWorktrees(project string) ([]*Worktree, error) {
 func (s *Store) ListWorktreesWithAgents() ([]*Worktree, error) {
 	query := `
 		SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-			ticket_id, ticket_hash, description, project_name, status, pr_url
+			ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 		FROM worktrees WHERE agent_id IS NOT NULL
 		ORDER BY project, path
 	`
@@ -178,11 +180,18 @@ func (s *Store) UpdateWorktreePRURL(path, prURL string) error {
 	return err
 }
 
+// UpdateWorktreeWorkflowMode sets the workflow mode for a worktree.
+func (s *Store) UpdateWorktreeWorkflowMode(path, workflowMode string) error {
+	query := `UPDATE worktrees SET workflow_mode = ? WHERE path = ?`
+	_, err := s.db.Exec(query, workflowMode, path)
+	return err
+}
+
 // ListWorktreesByTicket retrieves worktrees for a specific ticket.
 func (s *Store) ListWorktreesByTicket(ticketID string) ([]*Worktree, error) {
 	query := `
 		SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-			ticket_id, ticket_hash, description, project_name, status, pr_url
+			ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 		FROM worktrees WHERE ticket_id = ?
 		ORDER BY path
 	`
@@ -207,7 +216,7 @@ func (s *Store) ListWorktreesByTicket(ticketID string) ([]*Worktree, error) {
 func (s *Store) ListWorktreesByStatus(status WorktreeStatus) ([]*Worktree, error) {
 	query := `
 		SELECT path, project, branch, is_main, agent_id, job_id, discovered_at,
-			ticket_id, ticket_hash, description, project_name, status, pr_url
+			ticket_id, ticket_hash, description, project_name, status, pr_url, workflow_mode
 		FROM worktrees WHERE status = ?
 		ORDER BY project, path
 	`
@@ -261,7 +270,7 @@ func scanWorktree(row *sql.Row) (*Worktree, error) {
 	err := row.Scan(
 		&wt.Path, &wt.Project, &wt.Branch, &wt.IsMain,
 		&wt.AgentID, &wt.JobID, &wt.DiscoveredAt,
-		&wt.TicketID, &wt.TicketHash, &wt.Description, &wt.ProjectName, &status, &wt.PRURL,
+		&wt.TicketID, &wt.TicketHash, &wt.Description, &wt.ProjectName, &status, &wt.PRURL, &wt.WorkflowMode,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -280,7 +289,7 @@ func scanWorktreeRows(rows *sql.Rows) (*Worktree, error) {
 	err := rows.Scan(
 		&wt.Path, &wt.Project, &wt.Branch, &wt.IsMain,
 		&wt.AgentID, &wt.JobID, &wt.DiscoveredAt,
-		&wt.TicketID, &wt.TicketHash, &wt.Description, &wt.ProjectName, &status, &wt.PRURL,
+		&wt.TicketID, &wt.TicketHash, &wt.Description, &wt.ProjectName, &status, &wt.PRURL, &wt.WorkflowMode,
 	)
 	if status.Valid {
 		wt.Status = WorktreeStatus(status.String)

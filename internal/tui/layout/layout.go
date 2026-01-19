@@ -29,6 +29,7 @@ type Table struct {
 	Width     int
 	columnW   []int // Calculated widths
 	headerRow string
+	visible   []bool
 }
 
 // NewTable creates a table with the given columns
@@ -44,15 +45,33 @@ func (t *Table) SetWidth(width int) {
 	t.calculateWidths()
 }
 
+// SetVisibleColumns controls which columns are rendered.
+// A nil slice means all columns are visible.
+func (t *Table) SetVisibleColumns(visible []bool) {
+	if visible != nil && len(visible) != len(t.Columns) {
+		t.visible = nil
+	} else {
+		t.visible = visible
+	}
+	t.calculateWidths()
+}
+
 // calculateWidths distributes available width among columns
 func (t *Table) calculateWidths() {
 	if len(t.Columns) == 0 || t.Width <= 0 {
 		return
 	}
 
+	visibleCount := t.visibleCount()
+	if visibleCount == 0 {
+		t.columnW = make([]int, len(t.Columns))
+		t.headerRow = ""
+		return
+	}
+
 	// Calculate available width (minus padding and gaps)
 	available := t.Width - PaddingLeft - PaddingRight
-	gapSpace := ColumnGap * (len(t.Columns) - 1)
+	gapSpace := ColumnGap * (visibleCount - 1)
 	available -= gapSpace
 
 	if available < 0 {
@@ -62,6 +81,9 @@ func (t *Table) calculateWidths() {
 	// First pass: assign minimum widths
 	t.columnW = make([]int, len(t.Columns))
 	for i, col := range t.Columns {
+		if !t.isVisible(i) {
+			continue
+		}
 		t.columnW[i] = col.MinWidth
 	}
 
@@ -71,6 +93,9 @@ func (t *Table) calculateWidths() {
 		usedSpace := 0
 		totalFlex := 0
 		for i, col := range t.Columns {
+			if !t.isVisible(i) {
+				continue
+			}
 			usedSpace += t.columnW[i]
 			// Only count flex for columns not at max
 			if col.Flex > 0 && (col.MaxWidth == 0 || t.columnW[i] < col.MaxWidth) {
@@ -85,6 +110,9 @@ func (t *Table) calculateWidths() {
 
 		// Distribute extra space
 		for i, col := range t.Columns {
+			if !t.isVisible(i) {
+				continue
+			}
 			if col.Flex > 0 && (col.MaxWidth == 0 || t.columnW[i] < col.MaxWidth) {
 				share := (extra * col.Flex) / totalFlex
 				newWidth := t.columnW[i] + share
@@ -106,6 +134,9 @@ func (t *Table) calculateWidths() {
 func (t *Table) buildHeaderRow() string {
 	var parts []string
 	for i, col := range t.Columns {
+		if !t.isVisible(i) {
+			continue
+		}
 		w := t.columnW[i]
 		header := col.Header
 		if len(header) > w {
@@ -126,10 +157,42 @@ func (t *Table) RenderHeader() string {
 	return t.headerRow
 }
 
+// RenderHeaderWithMask renders the header while blanking masked columns.
+func (t *Table) RenderHeaderWithMask(mask []bool) string {
+	if mask == nil || len(mask) != len(t.Columns) {
+		return t.RenderHeader()
+	}
+	if t.headerRow == "" {
+		t.calculateWidths()
+	}
+
+	var parts []string
+	for i, col := range t.Columns {
+		if !t.isVisible(i) {
+			continue
+		}
+		w := t.columnW[i]
+		header := ""
+		if mask[i] {
+			header = col.Header
+			if len(header) > w {
+				header = header[:w]
+			}
+		}
+		parts = append(parts, padRight(header, w))
+	}
+
+	row := strings.Repeat(" ", PaddingLeft) + strings.Join(parts, strings.Repeat(" ", ColumnGap))
+	return tui.StyleColumnHeader.Render(row)
+}
+
 // RenderRow formats a data row with the calculated column widths
 func (t *Table) RenderRow(values []string, selected bool) string {
 	var parts []string
 	for i, w := range t.columnW {
+		if !t.isVisible(i) {
+			continue
+		}
 		val := ""
 		if i < len(values) {
 			val = values[i]
@@ -172,12 +235,59 @@ func (t *Table) RenderRow(values []string, selected bool) string {
 	return indicator + content
 }
 
+// RenderRowWithMask formats a data row while blanking masked columns.
+func (t *Table) RenderRowWithMask(values []string, selected bool, mask []bool) string {
+	if mask == nil || len(mask) != len(t.Columns) {
+		return t.RenderRow(values, selected)
+	}
+
+	var parts []string
+	for i, w := range t.columnW {
+		if !t.isVisible(i) {
+			continue
+		}
+		val := ""
+		if i < len(values) && mask[i] {
+			val = values[i]
+		}
+
+		visibleW := lipgloss.Width(val)
+		if visibleW > w {
+			if visibleW == len(val) {
+				if w > 1 {
+					val = val[:w-1] + "…"
+				} else {
+					val = val[:w]
+				}
+			}
+		}
+		if visibleW < w {
+			val = val + strings.Repeat(" ", w-visibleW)
+		}
+		parts = append(parts, val)
+	}
+
+	indicator := "   "
+	if selected {
+		indicator = tui.StyleSelectedIndicator.Render(" ▌ ")
+	}
+
+	content := strings.Join(parts, strings.Repeat(" ", ColumnGap))
+	if selected {
+		return indicator + tui.StyleSelected.Render(content)
+	}
+	return indicator + content
+}
+
 // RenderRowStyled formats a data row with pre-styled values
 func (t *Table) RenderRowStyled(values []string, selected bool) string {
 	// For styled content, we need to handle width differently
 	// since lipgloss.Width accounts for ANSI codes
 	var parts []string
 	for i, w := range t.columnW {
+		if !t.isVisible(i) {
+			continue
+		}
 		val := ""
 		if i < len(values) {
 			val = values[i]
@@ -215,6 +325,26 @@ func (t *Table) RenderRowStyled(values []string, selected bool) string {
 // ColumnWidths returns the calculated column widths
 func (t *Table) ColumnWidths() []int {
 	return t.columnW
+}
+
+func (t *Table) isVisible(index int) bool {
+	if t.visible == nil || index >= len(t.visible) {
+		return true
+	}
+	return t.visible[index]
+}
+
+func (t *Table) visibleCount() int {
+	if t.visible == nil {
+		return len(t.Columns)
+	}
+	count := 0
+	for i := range t.Columns {
+		if i < len(t.visible) && t.visible[i] {
+			count++
+		}
+	}
+	return count
 }
 
 // Divider returns a full-width divider line

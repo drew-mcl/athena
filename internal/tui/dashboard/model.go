@@ -3,6 +3,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/terminal"
 	"github.com/drewfead/athena/internal/tui"
@@ -38,6 +40,11 @@ const (
 	TabTasks                // Short-lived tasks (drill-in only)
 	TabNotes                // Project-specific notes (drill-in only)
 	TabQuestions            // Quick Q&A - project-less (dashboard only)
+)
+
+const (
+	inputHeightMin = 1
+	inputHeightMax = 3
 )
 
 // Dashboard level tabs (global view)
@@ -121,6 +128,9 @@ type Model struct {
 
 	// Terminal integration
 	term terminal.Terminal
+
+	// Configuration
+	workflowMode config.WorkflowMode
 }
 
 // Messages
@@ -135,6 +145,7 @@ type (
 		jobs      []*control.JobInfo
 		notes     []*control.NoteInfo
 		changelog []*control.ChangelogInfo
+		err       error
 	}
 	logsResultMsg struct {
 		agentID string
@@ -166,12 +177,12 @@ type (
 )
 
 // New creates a new dashboard model
-func New(client *control.Client) Model {
+func New(client *control.Client, cfg *config.Config) Model {
 	ti := textarea.New()
 	ti.Placeholder = "Type here..."
 	ti.CharLimit = 2000
 	ti.SetWidth(80) // Will be updated on resize
-	ti.SetHeight(3) // Start with 3 lines
+	ti.SetHeight(inputHeightMin) // Start with a single line
 	ti.ShowLineNumbers = false
 	ti.FocusedStyle.CursorLine = lipgloss.NewStyle() // No highlight on current line
 	ti.FocusedStyle.Base = lipgloss.NewStyle()       // No border/background
@@ -183,11 +194,10 @@ func New(client *control.Client) Model {
 
 	// Create responsive tables with generous max widths for wide terminals
 	worktreeTable := layout.NewTable([]layout.Column{
-		{Header: "PROJECT", MinWidth: 12, MaxWidth: 30, Flex: 1},
-		{Header: "PATH", MinWidth: 20, MaxWidth: 60, Flex: 3},
-		{Header: "BRANCH", MinWidth: 15, MaxWidth: 40, Flex: 2},
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "GIT", MinWidth: 12, MaxWidth: 40, Flex: 1}, // Starship-style [!?+*→branch]
+		{Header: "BRANCH", MinWidth: 15, MaxWidth: 30, Flex: 1},
+		{Header: "SUMMARY", MinWidth: 30, MaxWidth: 0, Flex: 4}, // Largest column
+		{Header: "STATUS", MinWidth: 10, MaxWidth: 14, Flex: 0},
+		{Header: "GIT", MinWidth: 8, MaxWidth: 12, Flex: 0},
 	})
 
 	jobTable := layout.NewTable([]layout.Column{
@@ -200,12 +210,18 @@ func New(client *control.Client) Model {
 
 	agentTable := layout.NewTable([]layout.Column{
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "PROJECT", MinWidth: 10, MaxWidth: 25, Flex: 1},
-		{Header: "TYPE", MinWidth: 8, MaxWidth: 14, Flex: 0},
-		{Header: "WORKTREE", MinWidth: 18, MaxWidth: 50, Flex: 3},
-		{Header: "STATUS", MinWidth: 10, MaxWidth: 14, Flex: 0},
-		{Header: "AGE", MinWidth: 5, MaxWidth: 10, Flex: 0},
+		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
+		{Header: "WORKTREE", MinWidth: 15, MaxWidth: 25, Flex: 1},
+		{Header: "SUMMARY", MinWidth: 30, MaxWidth: 0, Flex: 4}, // Largest column
+		{Header: "ACTIVITY", MinWidth: 20, MaxWidth: 40, Flex: 1},
+		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
 	})
+
+	// Default workflow mode if config not provided
+	workflowMode := config.WorkflowModeApprove
+	if cfg != nil {
+		workflowMode = cfg.UI.WorkflowMode
+	}
 
 	return Model{
 		client:        client,
@@ -218,6 +234,7 @@ func New(client *control.Client) Model {
 		worktreeTable: worktreeTable,
 		jobTable:      jobTable,
 		agentTable:    agentTable,
+		workflowMode:  workflowMode,
 	}
 }
 
@@ -270,11 +287,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			inputWidth = 100
 		}
 		m.textInput.SetWidth(inputWidth)
+		m.syncInputHeight()
 
 		// Update table widths
 		m.worktreeTable.SetWidth(msg.Width)
 		m.jobTable.SetWidth(msg.Width)
 		m.agentTable.SetWidth(msg.Width)
+
+		if m.planMode {
+			if m.planStatus == "pending" {
+				m.planRendered = m.renderPendingPlan(m.planPlannerStatus)
+			} else {
+				m.planRendered = m.renderMarkdown(m.planContent)
+			}
+		}
 
 	case tickMsg:
 		return m, tea.Batch(m.fetchData, m.tick())
@@ -287,6 +313,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.changelog = msg.changelog
 		m.projects = m.extractProjects()
 		m.lastUpdate = time.Now()
+		if msg.err != nil {
+			m.err = msg.err
+			m.statusMsg = "✗ " + msg.err.Error()
+			m.statusMsgTime = time.Now()
+			cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+				return clearErrMsg{}
+			}))
+		}
 
 	case errMsg:
 		m.err = msg
@@ -309,6 +343,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.fetchData, m.listenForEvents())
 
 	case logsResultMsg:
+		if m.logsAgentID == "" || msg.agentID != m.logsAgentID {
+			return m, nil
+		}
 		m.logsAgentID = msg.agentID
 		m.logs = msg.logs
 		m.logsMode = true
@@ -317,6 +354,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsScroll = max(0, len(m.logs)-m.logsViewportHeight())
 
 	case planResultMsg:
+		if m.planWorktreePath == "" || msg.worktreePath != m.planWorktreePath {
+			return m, nil
+		}
 		m.planWorktreePath = msg.worktreePath
 		m.planContent = msg.content
 		m.planStatus = msg.status
@@ -394,6 +434,12 @@ func findTabIndex(tabs []Tab, tab Tab) int {
 	return 0
 }
 
+func (m *Model) ensureDashboardTab() {
+	if !containsTab(dashboardTabs, m.tab) {
+		m.tab = TabWorktrees
+	}
+}
+
 // questions filters jobs to only return question-type jobs
 func (m Model) questions() []*control.JobInfo {
 	var result []*control.JobInfo
@@ -422,6 +468,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.level = LevelDashboard
 			m.selected = 0
 			m.selectedProject = ""
+			m.ensureDashboardTab()
 			return m, nil
 		}
 		return m, tea.Quit
@@ -434,6 +481,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.level = LevelDashboard
 			m.selected = 0
 			m.selectedProject = ""
+			m.ensureDashboardTab()
 			return m, nil
 		}
 
@@ -555,7 +603,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.worktreeDesc = ""
 			m.worktreeProjectIdx = 0
 			m.textInput.Placeholder = "Ticket ID (or leave blank)..."
-			m.textInput.Reset()
+			m.resetTextInput()
 			m.textInput.Focus()
 			return m, textarea.Blink
 		}
@@ -565,7 +613,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.noteMode = true
 			m.questionMode = false
 			m.textInput.Placeholder = "Enter note..."
-			m.textInput.Reset()
+			m.resetTextInput()
 			m.textInput.Focus()
 			return m, textarea.Blink
 		}
@@ -574,7 +622,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.questionMode = false
 		m.noteMode = false
 		m.textInput.Placeholder = "Enter task description..."
-		m.textInput.Reset()
+		m.resetTextInput()
 		m.textInput.Focus()
 		return m, textarea.Blink
 
@@ -590,6 +638,11 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.textInput.Placeholder = "Ask a question..."
 		m.textInput.Focus()
 		return m, textarea.Blink
+
+	case "w":
+		// Cycle workflow mode: automatic → approve → manual → automatic
+		m.workflowMode = m.workflowMode.CycleWorkflowMode()
+		return m, m.showStatus(fmt.Sprintf("Workflow mode: %s", m.workflowMode))
 
 	case "a":
 		if !IsActionAvailable("a", m.tab, m.level) {
@@ -745,16 +798,15 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = false
 		m.noteMode = false
-		m.textInput.Reset()
+		m.resetTextInput()
+		return m, nil
+
+	case "shift+enter":
+		m.textInput.InsertString("\n")
+		m.syncInputHeight()
 		return m, nil
 
 	case "enter":
-		// Alt+Enter inserts newline
-		if msg.Alt {
-			m.textInput.InsertString("\n")
-			return m, nil
-		}
-
 		// Plain Enter submits
 		input := strings.TrimSpace(m.textInput.Value())
 		if input != "" {
@@ -762,7 +814,7 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Add note via API
 				m.inputMode = false
 				m.noteMode = false
-				m.textInput.Reset()
+				m.resetTextInput()
 				return m, m.createNote(input)
 			}
 			isQuestion := m.questionMode
@@ -770,24 +822,25 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if project == "" {
 				m.inputMode = false
 				m.questionMode = false
-				m.textInput.Reset()
+				m.resetTextInput()
 				return m, m.showStatus("Select a project before creating a job")
 			}
 			m.inputMode = false
 			m.questionMode = false
-			m.textInput.Reset()
+			m.resetTextInput()
 			return m, m.createJob(input, isQuestion, project)
 		}
 		return m, nil
 
 	case "ctrl+j":
-		// Ctrl+J is traditional terminal newline
 		m.textInput.InsertString("\n")
+		m.syncInputHeight()
 		return m, nil
 	}
 
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
+	m.syncInputHeight()
 	return m, cmd
 }
 
@@ -976,7 +1029,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		// Cancel wizard
 		m.worktreeMode = false
-		m.textInput.Reset()
+		m.resetTextInput()
 		return m, nil
 
 	case "enter":
@@ -984,7 +1037,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 0: // Ticket ID step
 			ticketID := strings.TrimSpace(m.textInput.Value())
 			m.worktreeTicketID = ticketID
-			m.textInput.Reset()
+			m.resetTextInput()
 
 			if ticketID == "" {
 				// No ticket - prompt for description
@@ -1004,7 +1057,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.showStatus("Description required when no ticket ID")
 			}
 			m.worktreeDesc = desc
-			m.textInput.Reset()
+			m.resetTextInput()
 			m.worktreeStep = 2
 			return m, nil
 
@@ -1041,7 +1094,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Tab skips ticket entry with empty value
 		if m.worktreeStep == 0 {
 			m.worktreeTicketID = ""
-			m.textInput.Reset()
+			m.resetTextInput()
 			m.worktreeStep = 1
 			m.textInput.Placeholder = "Description for worktree..."
 			m.textInput.Focus()
@@ -1053,6 +1106,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.worktreeStep < 2 {
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
+		m.syncInputHeight()
 		return m, cmd
 	}
 
@@ -1086,6 +1140,7 @@ func (m Model) createWorktreeCmd(project, ticketID, description string) tea.Cmd 
 			MainRepoPath: mainRepoPath,
 			TicketID:     ticketID,
 			Description:  description,
+			WorkflowMode: string(m.workflowMode),
 		})
 		if err != nil {
 			return errMsg(err)
@@ -1158,6 +1213,7 @@ func (m Model) promoteNoteCmd(project, noteID, noteText string) tea.Cmd {
 			MainRepoPath: mainRepoPath,
 			TicketID:     "", // No ticket for promoted notes
 			Description:  noteText,
+			WorkflowMode: string(m.workflowMode),
 		})
 		if err != nil {
 			return errMsg(err)
@@ -1353,6 +1409,22 @@ func (m Model) renderDaemonStatus() string {
 	return tui.StyleDanger.Render("x daemon")
 }
 
+func (m Model) renderWorkflowStatus() string {
+	// Color coding: automatic=green, approve=yellow, manual=gray
+	var style lipgloss.Style
+	switch m.workflowMode {
+	case config.WorkflowModeAutomatic:
+		style = tui.StyleSuccess // Green - fully automated
+	case config.WorkflowModeApprove:
+		style = tui.StyleWarning // Yellow - needs approval
+	case config.WorkflowModeManual:
+		style = tui.StyleMuted // Gray - manual control
+	default:
+		style = tui.StyleMuted
+	}
+	return style.Render(string(m.workflowMode))
+}
+
 func (m Model) renderHeader() string {
 	// Logo + title
 	logo := tui.Logo()
@@ -1413,7 +1485,11 @@ func (m Model) renderHeader() string {
 	} else {
 		stats = tui.StyleStatus.Render(fmt.Sprintf("%d/%d agents", activeCount, len(m.agents)))
 	}
-	stats = m.renderDaemonStatus() + tui.StyleMuted.Render(" │ ") + stats
+	// Format: daemon │ workflow: mode │ stats
+	stats = m.renderDaemonStatus() +
+		tui.StyleMuted.Render(" │ ") +
+		tui.StyleMuted.Render("workflow: ") + m.renderWorkflowStatus() +
+		tui.StyleMuted.Render(" │ ") + stats
 
 	// Layout
 	sep := tui.StyleMuted.Render(" │ ")
@@ -1448,359 +1524,6 @@ func (m Model) renderFooter() string {
 		footerPad = 1
 	}
 	return tui.StyleHelp.Render(help) + strings.Repeat(" ", footerPad) + tui.StyleStatus.Render(update)
-}
-
-func (m Model) renderDashboardContent() string {
-	switch m.tab {
-	case TabProjects:
-		return m.renderProjects()
-	case TabWorktrees:
-		return m.renderAllWorktrees()
-	case TabJobs:
-		return m.renderAllJobs()
-	case TabQuestions:
-		return m.renderQuestions()
-	}
-	return ""
-}
-
-func (m Model) renderProjects() string {
-	var b strings.Builder
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Projects table - overview of all projects
-	projectTable := layout.NewTable([]layout.Column{
-		{Header: "PROJECT", MinWidth: 15, MaxWidth: 30, Flex: 2},
-		{Header: "WORKTREES", MinWidth: 10, MaxWidth: 12, Flex: 0},
-		{Header: "AGENTS", MinWidth: 8, MaxWidth: 10, Flex: 0},
-		{Header: "STATUS", MinWidth: 12, MaxWidth: 18, Flex: 1},
-	})
-	projectTable.SetWidth(m.width)
-
-	b.WriteString(projectTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(m.projects) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No projects found. Configure base_dirs in ~/.config/athena/config.yaml"))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(m.projects), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(m.projects) {
-		end = len(m.projects)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		project := m.projects[i]
-		row := m.renderProjectRow(project, projectTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(m.projects) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderProjectRow(project string, table *layout.Table, selected bool) string {
-	// Count worktrees for this project
-	wtCount := 0
-	for _, wt := range m.worktrees {
-		if wt.Project == project {
-			wtCount++
-		}
-	}
-
-	// Count agents for this project
-	agentCount := 0
-	runningCount := 0
-	for _, a := range m.agents {
-		if a.Project == project {
-			agentCount++
-			if a.Status == "running" || a.Status == "planning" || a.Status == "executing" {
-				runningCount++
-			}
-		}
-	}
-
-	// Determine status summary
-	status := tui.StyleMuted.Render("idle")
-	if runningCount > 0 {
-		status = tui.StyleSuccess.Render(fmt.Sprintf("%d running", runningCount))
-	} else if agentCount > 0 {
-		status = tui.StyleNeutral.Render("agents idle")
-	}
-
-	values := []string{
-		project,
-		fmt.Sprintf("%d", wtCount),
-		fmt.Sprintf("%d", agentCount),
-		status,
-	}
-
-	return table.RenderRow(values, selected)
-}
-
-func (m Model) renderAllWorktrees() string {
-	var b strings.Builder
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Column headers
-	b.WriteString(m.worktreeTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(m.worktrees) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No worktrees found. Configure base_dirs in ~/.config/athena/config.yaml"))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(m.worktrees), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(m.worktrees) {
-		end = len(m.worktrees)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		wt := m.worktrees[i]
-		row := m.renderGlobalWorktreeRow(wt, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(m.worktrees) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, selected bool) string {
-	// Determine the status icon based on worktree lifecycle and agent status
-	icon := tui.StyleMuted.Render("─")
-
-	// Check worktree lifecycle status first
-	if wt.WTStatus == "merged" {
-		icon = tui.StyleNeutral.Render("✓") // Merged - can be deleted
-	} else if wt.WTStatus == "stale" {
-		icon = tui.StyleWarning.Render("!") // Stale - needs attention
-	} else if wt.AgentID != "" {
-		// Active worktree with agent - show agent status
-		for _, a := range m.agents {
-			if a.ID == wt.AgentID {
-				icon = tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
-				break
-			}
-		}
-	}
-
-	path := filepath.Base(wt.Path)
-	if wt.IsMain {
-		path = path + " (main)"
-	}
-
-	values := []string{
-		wt.Project,
-		path,
-		wt.Branch,
-		icon,
-		wt.Status,
-	}
-
-	row := m.worktreeTable.RenderRow(values, selected)
-
-	// Render merged worktrees in muted style (unless selected)
-	if wt.WTStatus == "merged" && !selected {
-		return tui.StyleMuted.Render(row)
-	}
-
-	return row
-}
-
-func (m Model) renderAllJobs() string {
-	var b strings.Builder
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Column headers
-	b.WriteString(m.jobTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(m.jobs) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No jobs. Enter a project and press [n] to create one."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(m.jobs), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(m.jobs) {
-		end = len(m.jobs)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		job := m.jobs[i]
-		row := m.renderGlobalJobRow(job, i, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(m.jobs) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	// Fill remaining space
-	return b.String()
-}
-
-func (m Model) renderGlobalJobRow(job *control.JobInfo, idx int, selected bool) string {
-	agentIcon := tui.StyleMuted.Render("─")
-	if job.AgentID != "" {
-		for _, a := range m.agents {
-			if a.ID == job.AgentID {
-				agentIcon = tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
-				break
-			}
-		}
-	}
-
-	values := []string{
-		fmt.Sprintf("%d", idx+1),
-		job.Project,
-		job.NormalizedInput,
-		job.Status,
-		agentIcon,
-	}
-
-	return m.jobTable.RenderRow(values, selected)
-}
-
-func (m Model) renderQuestions() string {
-	var b strings.Builder
-	questions := m.questions()
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Questions table - simpler than jobs, focused on Q&A
-	questionTable := layout.NewTable([]layout.Column{
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "QUESTION", MinWidth: 40, MaxWidth: 0, Flex: 4},
-		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
-	})
-	questionTable.SetWidth(m.width)
-
-	b.WriteString(questionTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(questions) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No questions. Press [?] to ask a quick question."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(questions), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(questions) {
-		end = len(questions)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		q := questions[i]
-		row := m.renderQuestionRow(q, questionTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(questions) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderQuestionRow(job *control.JobInfo, table *layout.Table, selected bool) string {
-	// Status icon
-	icon := tui.StatusStyle(job.Status).Render(tui.StatusIcons[job.Status])
-
-	// Calculate age from created_at
-	age := ""
-	if t, err := time.Parse(time.RFC3339, job.CreatedAt); err == nil {
-		age = formatDuration(time.Since(t))
-	}
-
-	values := []string{
-		icon,
-		job.NormalizedInput,
-		age,
-	}
-
-	return table.RenderRow(values, selected)
 }
 
 func (m Model) renderProjectDetail() string {
@@ -1873,383 +1596,6 @@ func (m Model) renderDetailHeader() string {
 	return left + strings.Repeat(" ", padding) + stats
 }
 
-func (m Model) renderDetailContent() string {
-	switch m.tab {
-	case TabWorktrees:
-		return m.renderWorktrees()
-	case TabAgents:
-		return m.renderAgents()
-	case TabTasks:
-		return m.renderTasks()
-	case TabNotes:
-		return m.renderNotes()
-	}
-	return ""
-}
-
-func (m Model) renderWorktrees() string {
-	var b strings.Builder
-	wts := m.projectWorktrees()
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Column headers - project-level uses different columns (no PROJECT column)
-	projectTable := layout.NewTable([]layout.Column{
-		{Header: "PATH", MinWidth: 25, MaxWidth: 40, Flex: 2},
-		{Header: "BRANCH", MinWidth: 15, MaxWidth: 25, Flex: 1},
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "GIT", MinWidth: 3, MaxWidth: 8, Flex: 0},
-	})
-	projectTable.SetWidth(m.width)
-
-	b.WriteString(projectTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(wts) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No worktrees for this project."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(wts), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(wts) {
-		end = len(wts)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		wt := wts[i]
-		row := m.renderWorktreeRow(wt, projectTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(wts) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderWorktreeRow(wt *control.WorktreeInfo, table *layout.Table, selected bool) string {
-	// Determine the status icon based on worktree lifecycle and agent status
-	icon := tui.StyleMuted.Render("─")
-
-	// Check worktree lifecycle status first
-	if wt.WTStatus == "merged" {
-		icon = tui.StyleNeutral.Render("✓") // Merged - can be deleted
-	} else if wt.WTStatus == "stale" {
-		icon = tui.StyleWarning.Render("!") // Stale - needs attention
-	} else if wt.AgentID != "" {
-		// Active worktree with agent - show agent status
-		for _, a := range m.agents {
-			if a.ID == wt.AgentID {
-				icon = tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
-				break
-			}
-		}
-	}
-
-	path := filepath.Base(wt.Path)
-	if wt.IsMain {
-		path = path + " (main)"
-	}
-
-	values := []string{
-		path,
-		wt.Branch,
-		icon,
-		wt.Status,
-	}
-
-	row := table.RenderRow(values, selected)
-
-	// Render merged worktrees in muted style (unless selected)
-	if wt.WTStatus == "merged" && !selected {
-		return tui.StyleMuted.Render(row)
-	}
-
-	return row
-}
-
-func (m Model) renderAgents() string {
-	var b strings.Builder
-	agents := m.projectAgents()
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Project-level agent table (no PROJECT column, Notes-style layout for activity)
-	projectAgentTable := layout.NewTable([]layout.Column{
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
-		{Header: "WORKTREE", MinWidth: 18, MaxWidth: 30, Flex: 1},
-		{Header: "ACTIVITY", MinWidth: 30, MaxWidth: 80, Flex: 3}, // What the agent is doing
-		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
-	})
-	projectAgentTable.SetWidth(m.width)
-
-	b.WriteString(projectAgentTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(agents) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No agents running."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(agents), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(agents) {
-		end = len(agents)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		agent := agents[i]
-		row := m.renderAgentRow(agent, projectAgentTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(agents) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, selected bool) string {
-	icon := tui.StatusStyle(agent.Status).Render(tui.StatusIcons[agent.Status])
-	wtName := filepath.Base(agent.WorktreePath)
-	age := formatDuration(time.Since(parseCreatedAt(agent.CreatedAt)))
-
-	values := []string{
-		icon,
-		agent.Archetype,
-		wtName,
-		formatActivity(agent),
-		age,
-	}
-
-	return table.RenderRow(values, selected)
-}
-
-// formatActivity returns a human-readable description of what the agent is doing.
-// If LastActivity is populated, it shows that with a relative time suffix.
-// Otherwise, it falls back to descriptive status messages.
-func formatActivity(agent *control.AgentInfo) string {
-	if agent.LastActivity != "" {
-		// Show activity with relative time if recent
-		if agent.LastActivityTime != "" {
-			activityTime := parseCreatedAt(agent.LastActivityTime)
-			if !activityTime.IsZero() && time.Since(activityTime) < 5*time.Minute {
-				relTime := formatDuration(time.Since(activityTime))
-				return fmt.Sprintf("%s (%s ago)", agent.LastActivity, relTime)
-			}
-		}
-		return agent.LastActivity
-	}
-
-	// Fallback to status-based descriptions
-	switch agent.Status {
-	case "awaiting":
-		return "Waiting for user input"
-	case "crashed":
-		return "Process crashed - needs restart"
-	case "planning":
-		return "Creating implementation plan..."
-	case "executing":
-		return "Executing implementation..."
-	case "running":
-		return "Working..."
-	case "stopped":
-		return "Stopped"
-	default:
-		return agent.Status
-	}
-}
-
-func (m Model) renderNotes() string {
-	var b strings.Builder
-
-	contentHeight := layout.ContentHeight(m.height)
-	notes := m.projectNotes()
-
-	// Notes table - no MaxWidth so notes never truncate
-	noteTable := layout.NewTable([]layout.Column{
-		{Header: "✓", MinWidth: 3, MaxWidth: 3, Flex: 0},
-		{Header: "NOTE", MinWidth: 45, MaxWidth: 0, Flex: 3}, // MaxWidth 0 = unlimited
-	})
-	noteTable.SetWidth(m.width)
-
-	b.WriteString(noteTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(notes) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No active notes. Quick ideas and todos go here."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(notes), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(notes) {
-		end = len(notes)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		note := notes[i]
-		row := m.renderNoteRow(note, noteTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(notes) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderNoteRow(note *control.NoteInfo, table *layout.Table, selected bool) string {
-	check := "○"
-	if note.Done {
-		check = "●"
-	}
-
-	values := []string{
-		check,
-		note.Content,
-	}
-
-	row := table.RenderRow(values, selected)
-	if note.Done && !selected {
-		return tui.StyleMuted.Render(row)
-	}
-	return row
-}
-
-func (m Model) renderTasks() string {
-	var b strings.Builder
-	tasks := m.projectTasks()
-
-	contentHeight := layout.ContentHeight(m.height)
-
-	// Tasks table (short-lived jobs)
-	taskTable := layout.NewTable([]layout.Column{
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "TASK", MinWidth: 35, MaxWidth: 60, Flex: 3},
-		{Header: "STATUS", MinWidth: 10, MaxWidth: 12, Flex: 0},
-		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
-	})
-	taskTable.SetWidth(m.width)
-
-	b.WriteString(taskTable.RenderHeader())
-	b.WriteString("\n\n")
-
-	if len(tasks) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No tasks. Press [n] to create one."))
-		b.WriteString("\n")
-		for i := 1; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(tasks), m.selected, contentHeight-1)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(tasks) {
-		end = len(tasks)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		task := tasks[i]
-		row := m.renderTaskRow(task, taskTable, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(tasks) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) renderTaskRow(task *control.JobInfo, table *layout.Table, selected bool) string {
-	icon := tui.StatusStyle(task.Status).Render(tui.StatusIcons[task.Status])
-
-	age := ""
-	if t, err := time.Parse(time.RFC3339, task.CreatedAt); err == nil {
-		age = formatDuration(time.Since(t))
-	}
-
-	values := []string{
-		icon,
-		task.NormalizedInput,
-		task.Status,
-		age,
-	}
-
-	return table.RenderRow(values, selected)
-}
-
 func (m Model) renderJobDetail() string {
 	var content strings.Builder
 	job := m.detailJob
@@ -2289,7 +1635,7 @@ func (m Model) renderJobDetail() string {
 		// For feature jobs show more info
 		if job.AgentID != "" {
 			content.WriteString(tui.StyleMuted.Render("  Agent: "))
-			content.WriteString(job.AgentID[:8] + "...")
+			content.WriteString(shortID(job.AgentID, 8))
 			content.WriteString("\n")
 		}
 		if job.WorktreePath != "" {
@@ -2382,7 +1728,7 @@ func (m Model) renderLogs() string {
 	// Header with follow indicator
 	icon := tui.Logo()
 	content.WriteString(icon + " " + tui.StyleLogo.Render("Agent Logs"))
-	content.WriteString(tui.StyleMuted.Render(" │ " + m.logsAgentID[:8] + "..."))
+	content.WriteString(tui.StyleMuted.Render(" │ " + shortID(m.logsAgentID, 8)))
 	if m.logsFollow {
 		content.WriteString("  " + tui.StyleSuccessMsg.Render("[FOLLOW]"))
 	}
@@ -2703,9 +2049,21 @@ func (m Model) renderInputPanel() string {
 	b.WriteString(tui.StyleMuted.Render(prompt))
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n")
-	b.WriteString(tui.StyleMuted.Render("Enter to send · Alt+Enter or Ctrl+J for newline · Esc to cancel"))
+	b.WriteString(tui.StyleMuted.Render("Enter to send · Shift+Enter for newline · Esc to cancel"))
 
 	return b.String()
+}
+
+func (m *Model) syncInputHeight() {
+	height := min(inputHeightMax, max(inputHeightMin, m.textInput.LineCount()))
+	if height != m.textInput.Height() {
+		m.textInput.SetHeight(height)
+	}
+}
+
+func (m *Model) resetTextInput() {
+	m.textInput.Reset()
+	m.syncInputHeight()
 }
 
 func (m Model) renderDetailFooter() string {
@@ -2826,7 +2184,7 @@ func (m *Model) doShell() {
 	}
 }
 
-func (m Model) doLogs() tea.Cmd {
+func (m *Model) doLogs() tea.Cmd {
 	var wts []*control.WorktreeInfo
 	var agents []*control.AgentInfo
 
@@ -2921,7 +2279,7 @@ func (m Model) doCleanup(wt *control.WorktreeInfo) tea.Cmd {
 	}
 }
 
-func (m Model) doPlanView() tea.Cmd {
+func (m *Model) doPlanView() tea.Cmd {
 	var wts []*control.WorktreeInfo
 	var agents []*control.AgentInfo
 
@@ -2951,7 +2309,8 @@ func (m Model) doPlanView() tea.Cmd {
 	return nil
 }
 
-func (m Model) fetchPlan(worktreePath string, forceRefresh bool) tea.Cmd {
+func (m *Model) fetchPlan(worktreePath string, forceRefresh bool) tea.Cmd {
+	m.planWorktreePath = worktreePath
 	return func() tea.Msg {
 		plan, err := m.client.GetPlan(worktreePath, forceRefresh)
 		if err != nil {
@@ -3090,11 +2449,38 @@ func (m Model) fetchData() tea.Msg {
 		return errMsg(fmt.Errorf("not connected"))
 	}
 
-	wts, _ := m.client.ListWorktrees()
-	agents, _ := m.client.ListAgents()
-	jobs, _ := m.client.ListJobs()
-	notes, _ := m.client.ListNotes()
-	changelog, _ := m.client.ListChangelog("", 100)
+	var errs []error
+
+	wts, err := m.client.ListWorktrees()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list worktrees: %w", err))
+		wts = m.worktrees
+	}
+	agents, err := m.client.ListAgents()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list agents: %w", err))
+		agents = m.agents
+	}
+	jobs, err := m.client.ListJobs()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list jobs: %w", err))
+		jobs = m.jobs
+	}
+	notes, err := m.client.ListNotes()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list notes: %w", err))
+		notes = m.notes
+	}
+	changelog, err := m.client.ListChangelog("", 100)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list changelog: %w", err))
+		changelog = m.changelog
+	}
+
+	var fetchErr error
+	if len(errs) > 0 {
+		fetchErr = errors.Join(errs...)
+	}
 
 	return fetchDataResultMsg{
 		worktrees: wts,
@@ -3102,6 +2488,7 @@ func (m Model) fetchData() tea.Msg {
 		jobs:      jobs,
 		notes:     notes,
 		changelog: changelog,
+		err:       fetchErr,
 	}
 }
 
@@ -3202,7 +2589,8 @@ func (m Model) deleteNote(id string) tea.Cmd {
 	}
 }
 
-func (m Model) fetchLogs(agentID string) tea.Cmd {
+func (m *Model) fetchLogs(agentID string) tea.Cmd {
+	m.logsAgentID = agentID
 	return func() tea.Msg {
 		logs, err := m.client.GetAgentLogs(agentID, 100)
 		if err != nil {
@@ -3289,6 +2677,13 @@ func indentMultiline(s string, indentWidth int) string {
 		result.WriteString(line)
 	}
 	return result.String()
+}
+
+func shortID(id string, maxLen int) string {
+	if len(id) <= maxLen {
+		return id
+	}
+	return id[:maxLen] + "..."
 }
 
 func formatDuration(d time.Duration) string {

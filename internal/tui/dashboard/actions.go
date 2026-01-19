@@ -23,6 +23,9 @@ var allActions = []Action{
 	{Key: "tab", Label: "switch", Tabs: nil, Levels: nil},
 	{Key: "j/k", Label: "move", Tabs: nil, Levels: nil},
 
+	// Global actions
+	{Key: "w", Label: "workflow", Tabs: nil, Levels: nil, Tooltip: "Cycle workflow mode (automatic/approve/manual)"},
+
 	// Creation
 	{Key: "n", Label: "new", Tabs: nil, Levels: nil},
 	{Key: "?", Label: "ask", Tabs: []Tab{TabWorktrees, TabJobs, TabAgents, TabTasks, TabQuestions}, Levels: nil},

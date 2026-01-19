@@ -614,6 +614,7 @@ type WorktreeInfo struct {
 	ProjectName string `json:"project_name,omitempty"` // Cached from git remote origin
 	WTStatus    string `json:"wt_status,omitempty"`    // Worktree lifecycle: active | published | merged | stale
 	PRURL       string `json:"pr_url,omitempty"`       // GitHub PR URL if published
+	Summary     string `json:"summary,omitempty"`      // Plan summary from frontmatter
 }
 
 // JobInfo represents job data for API responses.
@@ -717,6 +718,7 @@ type CreateWorktreeRequest struct {
 	Branch       string `json:"branch"`         // Branch name (optional, will be generated)
 	TicketID     string `json:"ticket_id"`      // Ticket ID (e.g., ENG-123)
 	Description  string `json:"description"`    // Description of the work
+	WorkflowMode string `json:"workflow_mode"`  // Workflow mode: automatic, approve, or manual
 }
 
 // MigrationPlan describes what migration would do.
@@ -741,8 +743,9 @@ type PlanInfo struct {
 	WorktreePath  string `json:"worktree_path"`
 	AgentID       string `json:"agent_id"`
 	Content       string `json:"content"`
-	Status        string `json:"status"`         // pending | draft | approved | executing | completed
-	PlannerStatus string `json:"planner_status"` // Status of the planner agent (for visibility when pending)
+	Summary       string `json:"summary,omitempty"` // Brief summary extracted from frontmatter
+	Status        string `json:"status"`            // pending | draft | approved | executing | completed
+	PlannerStatus string `json:"planner_status"`    // Status of the planner agent (for visibility when pending)
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
 }

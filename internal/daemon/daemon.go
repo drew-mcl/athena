@@ -20,6 +20,7 @@ import (
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 // ShutdownTimeout is how long to wait for graceful shutdown.
@@ -568,6 +569,11 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 			info.PRURL = *wt.PRURL
 		}
 
+		// Get plan summary for this worktree
+		if summary, err := d.store.GetPlanSummary(wt.Path); err == nil && summary != "" {
+			info.Summary = summary
+		}
+
 		// Get git status
 		status, _ := d.provisioner.GetStatus(wt.Path)
 		if status != nil {
@@ -1098,6 +1104,7 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		Branch:       req.Branch,
 		TicketID:     req.TicketID,
 		Description:  req.Description,
+		WorkflowMode: req.WorkflowMode,
 	}
 
 	path, err := d.migrator.CreateWorktree(opts)
@@ -1141,6 +1148,13 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		Payload: info,
 	})
 
+	// In manual mode, don't auto-spawn a planning agent
+	// In automatic and approve modes, spawn the planner
+	if req.WorkflowMode == string(config.WorkflowModeManual) {
+		logging.Info("manual mode: skipping auto-spawn of planning agent", "worktree", path)
+		return info, nil
+	}
+
 	// Auto-spawn a planning agent for the new worktree
 	description := req.Description
 	if description == "" {
@@ -1153,12 +1167,19 @@ Feature Request: %s
 Instructions:
 1. Explore the codebase to understand the architecture and patterns
 2. Identify the files that need to be modified or created
-3. Create a .plan.md file in the worktree root with:
-   - Overview of the feature
-   - Step-by-step implementation plan
-   - Files to modify/create
-   - Testing considerations
-   - Potential risks or edge cases
+3. Use the EnterPlanMode tool to create your plan
+
+IMPORTANT: Start your plan with YAML frontmatter containing a brief summary:
+---
+summary: One sentence describing what will be implemented
+---
+
+Then write the full plan with:
+- Overview of the feature
+- Step-by-step implementation plan
+- Files to modify/create
+- Testing considerations
+- Potential risks or edge cases
 
 Do NOT make any code changes. Only explore and create the plan.`, description)
 
@@ -1232,14 +1253,21 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 	if plannerAgent != nil && plannerAgent.ClaudeSessionID != "" {
 		content, err := readClaudePlan(req.WorktreePath, plannerAgent.ClaudeSessionID)
 		if err == nil && content != "" {
+			// Parse frontmatter to extract summary
+			summary, _ := parsePlanFrontmatter(content)
+
 			// Plan found - cache in DB and return
 			existingPlan, _ := d.store.GetPlan(req.WorktreePath)
 			if existingPlan != nil {
 				d.store.UpdatePlanContent(req.WorktreePath, content)
+				if summary != "" && existingPlan.Summary != summary {
+					d.store.UpdatePlanSummary(req.WorktreePath, summary)
+				}
 				if existingPlan.Status == store.PlanStatusPending {
 					d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusDraft)
 				}
 				existingPlan.Content = content
+				existingPlan.Summary = summary
 				existingPlan.Status = store.PlanStatusDraft
 				info := planToInfo(existingPlan)
 				info.PlannerStatus = string(plannerAgent.Status)
@@ -1252,6 +1280,7 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 				WorktreePath: req.WorktreePath,
 				AgentID:      plannerAgent.ID,
 				Content:      content,
+				Summary:      summary,
 				Status:       store.PlanStatusDraft,
 			}
 			if err := d.store.CreatePlan(plan); err != nil {
@@ -1398,6 +1427,7 @@ func planToInfo(p *store.Plan) *control.PlanInfo {
 		WorktreePath: p.WorktreePath,
 		AgentID:      p.AgentID,
 		Content:      p.Content,
+		Summary:      p.Summary,
 		Status:       string(p.Status),
 		CreatedAt:    p.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    p.UpdatedAt.Format(time.RFC3339),
@@ -1634,4 +1664,55 @@ func (d *Daemon) handleCleanupWorktree(params json.RawMessage) (any, error) {
 	})
 
 	return map[string]bool{"success": true}, nil
+}
+
+// parsePlanFrontmatter extracts the summary from YAML frontmatter in a plan.
+// Frontmatter is delimited by --- at the start and end:
+//
+//	---
+//	summary: Brief description of the plan
+//	---
+//	# Plan content...
+func parsePlanFrontmatter(content string) (summary string, body string) {
+	// Check for frontmatter delimiter
+	if !strings.HasPrefix(content, "---") {
+		return "", content
+	}
+
+	// Find the closing delimiter
+	lines := strings.SplitN(content, "\n", -1)
+	if len(lines) < 3 {
+		return "", content
+	}
+
+	// Find the end of frontmatter (second ---)
+	endIndex := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			endIndex = i
+			break
+		}
+	}
+
+	if endIndex == -1 {
+		return "", content
+	}
+
+	// Extract and parse the YAML frontmatter
+	frontmatterYAML := strings.Join(lines[1:endIndex], "\n")
+	var frontmatter map[string]any
+	if err := yaml.Unmarshal([]byte(frontmatterYAML), &frontmatter); err != nil {
+		return "", content
+	}
+
+	// Extract summary field
+	if s, ok := frontmatter["summary"].(string); ok {
+		summary = s
+	}
+
+	// Body is everything after the closing delimiter
+	body = strings.Join(lines[endIndex+1:], "\n")
+	body = strings.TrimPrefix(body, "\n") // Remove leading newline
+
+	return summary, body
 }

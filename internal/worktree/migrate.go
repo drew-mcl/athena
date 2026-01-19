@@ -221,6 +221,7 @@ type CreateWorktreeOptions struct {
 	Branch       string // Branch name to checkout/create
 	TicketID     string // Ticket ID (e.g., ENG-123)
 	Description  string // Description of the work
+	WorkflowMode string // automatic | approve | manual
 }
 
 // CreateWorktree creates a new worktree with the standard naming convention.
@@ -284,16 +285,24 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 		descPtr = &opts.Description
 	}
 
+	// Default workflow mode to approve if not set
+	workflowMode := opts.WorkflowMode
+	if workflowMode == "" {
+		workflowMode = "approve"
+	}
+	workflowModePtr := &workflowMode
+
 	wt := &store.Worktree{
-		Path:        targetPath,
-		Project:     projectName,
-		Branch:      branch,
-		IsMain:      false,
-		TicketID:    ticketIDPtr,
-		TicketHash:  hashPtr,
-		Description: descPtr,
-		ProjectName: projectNamePtr,
-		Status:      store.WorktreeStatusActive,
+		Path:         targetPath,
+		Project:      projectName,
+		Branch:       branch,
+		IsMain:       false,
+		TicketID:     ticketIDPtr,
+		TicketHash:   hashPtr,
+		Description:  descPtr,
+		ProjectName:  projectNamePtr,
+		Status:       store.WorktreeStatusActive,
+		WorkflowMode: workflowModePtr,
 	}
 
 	if err := m.store.UpsertWorktree(wt); err != nil {

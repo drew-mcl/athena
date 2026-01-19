@@ -313,6 +313,9 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 	if exitCode == 0 {
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCompleted)
 		logging.Info("agent completed successfully", "agent_id", mp.AgentID)
+
+		// Check for automatic workflow: auto-approve plan and spawn executor
+		s.maybeAutoSpawnExecutor(agent)
 	} else {
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)
 		logging.Warn("agent crashed", "agent_id", mp.AgentID, "exit_code", exitCode)
@@ -320,4 +323,69 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 		crashPayload := fmt.Sprintf(`{"type":"crashed","exit_code":%d,"message":"Process exited with non-zero code"}`, exitCode)
 		s.store.LogAgentEvent(mp.AgentID, "crashed", crashPayload)
 	}
+}
+
+// maybeAutoSpawnExecutor checks if automatic workflow mode should trigger executor spawn.
+func (s *Spawner) maybeAutoSpawnExecutor(agent *store.Agent) {
+	// Only auto-spawn for planner agents
+	if agent.Archetype != "planner" {
+		return
+	}
+
+	// Get the worktree to check its workflow mode
+	wt, err := s.store.GetWorktree(agent.WorktreePath)
+	if err != nil || wt == nil {
+		logging.Debug("no worktree found for auto-executor check", "path", agent.WorktreePath)
+		return
+	}
+
+	// Check if workflow mode is automatic
+	if wt.WorkflowMode == nil || *wt.WorkflowMode != string(config.WorkflowModeAutomatic) {
+		return
+	}
+
+	// Get the plan
+	plan, err := s.store.GetPlan(agent.WorktreePath)
+	if err != nil || plan == nil {
+		logging.Debug("no plan found for auto-executor", "path", agent.WorktreePath)
+		return
+	}
+
+	// Only proceed if plan is in draft status
+	if plan.Status != store.PlanStatusDraft {
+		logging.Debug("plan not in draft status, skipping auto-executor",
+			"path", agent.WorktreePath, "status", plan.Status)
+		return
+	}
+
+	logging.Info("automatic mode: auto-approving plan and spawning executor",
+		"worktree", agent.WorktreePath,
+		"plan_id", plan.ID)
+
+	// Approve the plan
+	if err := s.store.UpdatePlanStatus(agent.WorktreePath, store.PlanStatusApproved); err != nil {
+		logging.Error("failed to auto-approve plan", "error", err)
+		return
+	}
+
+	// Spawn executor agent
+	spec := SpawnSpec{
+		WorktreePath: agent.WorktreePath,
+		ProjectName:  agent.ProjectName,
+		Archetype:    "executor",
+		Prompt:       "Execute the approved implementation plan at .plan.md in this worktree.",
+		ParentID:     agent.ID,
+	}
+
+	ctx := context.Background()
+	_, err = s.Spawn(ctx, spec)
+	if err != nil {
+		logging.Error("failed to auto-spawn executor", "error", err, "worktree", agent.WorktreePath)
+		// Revert plan status on failure
+		s.store.UpdatePlanStatus(agent.WorktreePath, store.PlanStatusDraft)
+		return
+	}
+
+	// Update plan to executing status
+	s.store.UpdatePlanStatus(agent.WorktreePath, store.PlanStatusExecuting)
 }

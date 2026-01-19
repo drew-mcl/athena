@@ -4,34 +4,42 @@ import "time"
 
 // CreatePlan inserts a new implementation plan.
 func (s *Store) CreatePlan(plan *Plan) error {
-	query := `INSERT INTO plans (id, worktree_path, agent_id, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO plans (id, worktree_path, agent_id, content, summary, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	now := time.Now()
-	_, err := s.db.Exec(query, plan.ID, plan.WorktreePath, plan.AgentID, plan.Content, plan.Status, now, now)
+	_, err := s.db.Exec(query, plan.ID, plan.WorktreePath, plan.AgentID, plan.Content, plan.Summary, plan.Status, now, now)
 	return err
 }
 
 // GetPlan retrieves a plan by worktree path.
 func (s *Store) GetPlan(worktreePath string) (*Plan, error) {
-	query := `SELECT id, worktree_path, agent_id, content, status, created_at, updated_at FROM plans WHERE worktree_path = ? ORDER BY created_at DESC LIMIT 1`
+	query := `SELECT id, worktree_path, agent_id, content, summary, status, created_at, updated_at FROM plans WHERE worktree_path = ? ORDER BY created_at DESC LIMIT 1`
 	row := s.db.QueryRow(query, worktreePath)
 
 	var p Plan
-	err := row.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	var summary *string
+	err := row.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &summary, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if summary != nil {
+		p.Summary = *summary
 	}
 	return &p, nil
 }
 
 // GetPlanByID retrieves a plan by its ID.
 func (s *Store) GetPlanByID(id string) (*Plan, error) {
-	query := `SELECT id, worktree_path, agent_id, content, status, created_at, updated_at FROM plans WHERE id = ?`
+	query := `SELECT id, worktree_path, agent_id, content, summary, status, created_at, updated_at FROM plans WHERE id = ?`
 	row := s.db.QueryRow(query, id)
 
 	var p Plan
-	err := row.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	var summary *string
+	err := row.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &summary, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if summary != nil {
+		p.Summary = *summary
 	}
 	return &p, nil
 }
@@ -59,7 +67,7 @@ func (s *Store) DeletePlan(worktreePath string) error {
 
 // ListPlansByStatus retrieves plans with a specific status.
 func (s *Store) ListPlansByStatus(status PlanStatus) ([]*Plan, error) {
-	query := `SELECT id, worktree_path, agent_id, content, status, created_at, updated_at FROM plans WHERE status = ? ORDER BY updated_at DESC`
+	query := `SELECT id, worktree_path, agent_id, content, summary, status, created_at, updated_at FROM plans WHERE status = ? ORDER BY updated_at DESC`
 	rows, err := s.db.Query(query, status)
 	if err != nil {
 		return nil, err
@@ -69,10 +77,35 @@ func (s *Store) ListPlansByStatus(status PlanStatus) ([]*Plan, error) {
 	var plans []*Plan
 	for rows.Next() {
 		var p Plan
-		if err := rows.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var summary *string
+		if err := rows.Scan(&p.ID, &p.WorktreePath, &p.AgentID, &p.Content, &summary, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if summary != nil {
+			p.Summary = *summary
 		}
 		plans = append(plans, &p)
 	}
 	return plans, rows.Err()
+}
+
+// UpdatePlanSummary updates a plan's summary field.
+func (s *Store) UpdatePlanSummary(worktreePath, summary string) error {
+	query := `UPDATE plans SET summary = ?, updated_at = ? WHERE worktree_path = ?`
+	_, err := s.db.Exec(query, summary, time.Now(), worktreePath)
+	return err
+}
+
+// GetPlanSummary retrieves just the summary for a worktree's plan.
+func (s *Store) GetPlanSummary(worktreePath string) (string, error) {
+	query := `SELECT summary FROM plans WHERE worktree_path = ? ORDER BY created_at DESC LIMIT 1`
+	var summary *string
+	err := s.db.QueryRow(query, worktreePath).Scan(&summary)
+	if err != nil {
+		return "", err
+	}
+	if summary == nil {
+		return "", nil
+	}
+	return *summary, nil
 }

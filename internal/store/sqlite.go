@@ -82,6 +82,7 @@ func (s *Store) migrateWorktreeColumns() error {
 		{"project_name", "TEXT"},
 		{"status", "TEXT DEFAULT 'active'"},
 		{"pr_url", "TEXT"},
+		{"workflow_mode", "TEXT DEFAULT 'approve'"},
 	}
 
 	// Add missing columns
@@ -97,9 +98,51 @@ func (s *Store) migrateWorktreeColumns() error {
 	return nil
 }
 
+// migratePlanColumns adds new columns to the plans table if they don't exist.
+func (s *Store) migratePlanColumns() error {
+	// Check if plans table exists
+	var tableName string
+	err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='plans'").Scan(&tableName)
+	if err != nil {
+		// Table doesn't exist yet, will be created by main schema
+		return nil
+	}
+
+	// Get existing columns
+	rows, err := s.db.Query("PRAGMA table_info(plans)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultVal *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		existingCols[name] = true
+	}
+
+	// Add summary column if missing
+	if !existingCols["summary"] {
+		if _, err := s.db.Exec("ALTER TABLE plans ADD COLUMN summary TEXT"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) migrate() error {
 	// First, run any ALTER TABLE migrations for existing databases
 	if err := s.migrateWorktreeColumns(); err != nil {
+		return err
+	}
+	if err := s.migratePlanColumns(); err != nil {
 		return err
 	}
 
@@ -205,6 +248,7 @@ func (s *Store) migrate() error {
 		project_name  TEXT,                      -- Cached from git remote origin
 		status        TEXT DEFAULT 'active',     -- active | published | merged | stale
 		pr_url        TEXT,                      -- GitHub PR URL if published via PR flow
+		workflow_mode TEXT DEFAULT 'approve',    -- automatic | approve | manual
 
 		FOREIGN KEY (agent_id) REFERENCES agents(id),
 		FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -240,6 +284,7 @@ func (s *Store) migrate() error {
 		worktree_path TEXT NOT NULL,
 		agent_id      TEXT NOT NULL,              -- planner agent that created it
 		content       TEXT NOT NULL,              -- markdown content
+		summary       TEXT,                       -- brief summary from frontmatter
 		status        TEXT DEFAULT 'draft',       -- draft | approved | executing | completed
 		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -376,12 +421,13 @@ type Worktree struct {
 	JobID        *string
 	DiscoveredAt time.Time
 	// New fields for ticket-based workflow
-	TicketID    *string        // External ticket ID (e.g., ENG-123)
-	TicketHash  *string        // 4-char hash for uniqueness
-	Description *string        // Worktree description/purpose
-	ProjectName *string        // Cached from git remote origin
-	Status      WorktreeStatus // active | published | merged | stale
-	PRURL       *string        // GitHub PR URL if published via PR flow
+	TicketID     *string        // External ticket ID (e.g., ENG-123)
+	TicketHash   *string        // 4-char hash for uniqueness
+	Description  *string        // Worktree description/purpose
+	ProjectName  *string        // Cached from git remote origin
+	Status       WorktreeStatus // active | published | merged | stale
+	PRURL        *string        // GitHub PR URL if published via PR flow
+	WorkflowMode *string        // automatic | approve | manual
 }
 
 // AgentEvent represents a logged event from an agent.
@@ -431,6 +477,7 @@ type Plan struct {
 	WorktreePath string
 	AgentID      string // planner agent that created it
 	Content      string // markdown content
+	Summary      string // brief summary extracted from frontmatter
 	Status       PlanStatus
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

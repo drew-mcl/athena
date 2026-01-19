@@ -110,13 +110,23 @@ type GitHubConfig struct {
 	PRTemplate string `yaml:"pr_template"`
 }
 
+// WorkflowMode controls automation level for agent spawning
+type WorkflowMode string
+
+const (
+	WorkflowModeAutomatic WorkflowMode = "automatic" // Auto-plan, auto-approve, auto-execute
+	WorkflowModeApprove   WorkflowMode = "approve"   // Auto-plan, manual approval, then execute
+	WorkflowModeManual    WorkflowMode = "manual"    // Everything requires explicit user input
+)
+
 // UIConfig defines TUI appearance.
 type UIConfig struct {
-	Theme          string            `yaml:"theme"`
-	Colors         map[string]string `yaml:"colors"`
-	ShowActivity   bool              `yaml:"show_activity"`
-	ActivityHeight int               `yaml:"activity_height"`
-	RefreshInterval time.Duration    `yaml:"refresh_interval"`
+	Theme           string            `yaml:"theme"`
+	Colors          map[string]string `yaml:"colors"`
+	ShowActivity    bool              `yaml:"show_activity"`
+	ActivityHeight  int               `yaml:"activity_height"`
+	RefreshInterval time.Duration     `yaml:"refresh_interval"`
+	WorkflowMode    WorkflowMode      `yaml:"workflow_mode"`
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -157,6 +167,7 @@ func DefaultConfig() *Config {
 			ShowActivity:    true,
 			ActivityHeight:  5,
 			RefreshInterval: time.Second,
+			WorkflowMode:    WorkflowModeApprove, // Default to approve - sensible middle ground
 		},
 	}
 }
@@ -165,7 +176,7 @@ func defaultArchetypes() map[string]Archetype {
 	return map[string]Archetype{
 		"planner": {
 			Description:    "Explores codebase and drafts implementation plans",
-			Prompt:         "You are a planning agent. Thoroughly explore the codebase to understand architecture, then use the EnterPlanMode tool to create a detailed implementation plan.",
+			Prompt:         "You are a planning agent. Thoroughly explore the codebase to understand architecture, then use the EnterPlanMode tool to create a detailed implementation plan.\n\nIMPORTANT: Start your plan with YAML frontmatter containing a brief summary:\n---\nsummary: One sentence describing what will be implemented\n---\n\nThen write the full implementation plan.",
 			PermissionMode: "plan", // Read-only, plan stored in Claude's native ~/.claude/plans/
 			AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
 			Model:          "opus",
@@ -236,4 +247,18 @@ func (c *Config) expandEnvVars() {
 	c.Integrations.Linear.WebhookSecret = os.ExpandEnv(c.Integrations.Linear.WebhookSecret)
 	c.Integrations.Linear.APIKey = os.ExpandEnv(c.Integrations.Linear.APIKey)
 	c.Daemon.SentryDSN = os.ExpandEnv(c.Daemon.SentryDSN)
+}
+
+// CycleWorkflowMode cycles through workflow modes: automatic → approve → manual → automatic
+func (m WorkflowMode) CycleWorkflowMode() WorkflowMode {
+	switch m {
+	case WorkflowModeAutomatic:
+		return WorkflowModeApprove
+	case WorkflowModeApprove:
+		return WorkflowModeManual
+	case WorkflowModeManual:
+		return WorkflowModeAutomatic
+	default:
+		return WorkflowModeApprove
+	}
 }
