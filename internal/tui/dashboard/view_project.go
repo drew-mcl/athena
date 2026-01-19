@@ -86,9 +86,10 @@ func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, sel
 		summary = tui.StyleMuted.Render("—")
 	}
 
-	// Columns: ST, TYPE, WORKTREE, SUMMARY, ACTIVITY, AGE
+	// Columns: ST, IMPL, TYPE, WORKTREE, SUMMARY, ACTIVITY, AGE
 	values := []string{
 		icon,
+		tui.StyleMuted.Render("Claude Code"), // Default harness (TODO: dynamic)
 		agent.Archetype,
 		wtName,
 		summary,
@@ -97,6 +98,101 @@ func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, sel
 	}
 
 	return table.RenderRow(values, selected)
+}
+
+// Fun status messages by agent state
+var funStatusMessages = map[string][]string{
+	"planning": {
+		"Brainstorming...",
+		"Calculating...",
+		"Wondering...",
+		"Pondering the orb...",
+		"Strategizing...",
+		"Connecting dots...",
+		"Reviewing the plan...",
+		"Consulting the oracle...",
+		"Simulating outcomes...",
+		"Thinking deeply...",
+		"Analyzing requirements...",
+		"Mapping the territory...",
+		"Sketching ideas...",
+		"Formulating hypothesis...",
+		"Checking the map...",
+		"Plotting course...",
+		"Synthesizing data...",
+		"Optimizing route...",
+		"Designing solution...",
+		"Architecting...",
+		"Dreaming up code...",
+		"Consulting rubber duck...",
+		"Parsing intent...",
+		"Decoding matrix...",
+		"Checking specifications...",
+	},
+	"executing": {
+		"Grafting...",
+		"Putting in the work...",
+		"Doing your work...",
+		"Writing code...",
+		"Crushing tickets...",
+		"Shipping features...",
+		"Generating value...",
+		"Refactoring reality...",
+		"Compiling success...",
+		"Executing order 66...",
+		"Applying fixes...",
+		"Hammering the keyboard...",
+		"Typing furiously...",
+		"Injecting logic...",
+		"Polishing pixels...",
+		"Wiring circuits...",
+		"Building the future...",
+		"Deploying brilliance...",
+		"Making it happen...",
+		"Crunching bits...",
+		"Assembling bytes...",
+		"Weaving software...",
+		"Crafting elegance...",
+		"Solving puzzles...",
+		"Getting it done...",
+	},
+	"running": {
+		"Working...",
+		"Busy...",
+		"On the job...",
+		"Processing...",
+		"Handling it...",
+		"In the zone...",
+		"Flow state...",
+		"Running cycles...",
+		"Spinning up...",
+		"Active...",
+	},
+}
+
+// getFunStatus returns a consistent random message based on agent ID and state.
+// We use the ID as a seed so the message doesn't flicker on every render frame.
+func getFunStatus(id, state string) string {
+	msgs, ok := funStatusMessages[state]
+	if !ok || len(msgs) == 0 {
+		return ""
+	}
+	
+	// Simple hash of ID to pick a message
+	hash := 0
+	for _, c := range id {
+		hash += int(c)
+	}
+	
+	// Add state length to vary it when state changes
+	hash += len(state)
+	
+	// Use time (minute) to rotate messages occasionally but not too fast
+	// This keeps it "alive" but readable
+	hash += time.Now().Minute()
+	
+	idx := hash % len(msgs)
+	return msgs[idx]
 }
 
 // formatActivity returns a human-readable description of what the agent is doing.
@@ -131,18 +227,17 @@ func formatActivity(agent *control.AgentInfo) string {
 		return agent.LastActivity
 	}
 
-	// Fallback to status-based descriptions
+	// Fallback to status-based descriptions with fun flavor
+	funMsg := getFunStatus(agent.ID, agent.Status)
+	if funMsg != "" {
+		return tui.StyleDanger.Render(funMsg) // "nice pink" as requested
+	}
+
 	switch agent.Status {
 	case "awaiting":
 		return "Waiting for user input"
 	case "crashed":
-		return "Process crashed - needs restart"
-	case "planning":
-		return "Creating implementation plan..."
-	case "executing":
-		return "Executing implementation..."
-	case "running":
-		return "Working..."
+		return tui.StyleDanger.Render("Process crashed - needs restart")
 	case "stopped":
 		return "Stopped"
 	case "completed":
@@ -239,12 +334,20 @@ func (m Model) renderTaskRow(task *control.JobInfo, table *layout.Table, selecte
 		age = formatDuration(time.Since(t))
 	}
 
+	// Style the task description based on status
+	taskDesc := task.NormalizedInput
+	if task.Status == "completed" {
+		taskDesc = tui.StyleMuted.Render(taskDesc)
+	} else if task.Status == "running" || task.Status == "executing" {
+		taskDesc = tui.StyleAccent.Render(taskDesc)
+	}
+
 	values := []string{
 		icon,
-		task.NormalizedInput,
-		task.Status,
+		taskDesc,
+		tui.StatusStyle(task.Status).Render(task.Status),
 		age,
 	}
 
-	return table.RenderRow(values, selected)
+	return table.RenderRowStyled(values, selected)
 }

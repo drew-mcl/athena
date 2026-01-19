@@ -130,19 +130,49 @@ func (m Model) renderAllWorktrees() string {
 
 func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.Table, selected bool) string {
 	// Determine status based on worktree lifecycle and agent
-	status := tui.StyleMuted.Render("idle")
-	if wt.WTStatus == "merged" {
-		status = tui.StyleNeutral.Render("merged")
-	} else if wt.WTStatus == "stale" {
-		status = tui.StyleWarning.Render("stale")
-	} else if wt.AgentID != "" {
+	statusText := "IDLE"
+	statusStyle := tui.StyleMuted
+	
+	// Check agent status first (most specific)
+	agentActive := false
+	if wt.AgentID != "" {
 		for _, a := range m.agents {
 			if a.ID == wt.AgentID {
-				status = tui.StatusStyle(a.Status).Render(a.Status)
+				agentActive = true
+				statusText = strings.ToUpper(a.Status)
+				if a.Status == "running" || a.Status == "executing" {
+					statusStyle = tui.StylePillActive
+				} else if a.Status == "planning" {
+					statusStyle = tui.StylePillReview
+				} else {
+					statusStyle = tui.StatusStyle(a.Status)
+				}
 				break
 			}
 		}
 	}
+
+	// Fallback to worktree status if no active agent overrides it
+	if !agentActive {
+		if wt.WTStatus == "merged" {
+			statusText = "MERGED"
+			statusStyle = tui.StyleNeutral
+		} else if wt.WTStatus == "stale" {
+			statusText = "STALE"
+			statusStyle = tui.StylePillStale
+		} else if wt.WTStatus == "active" {
+			statusText = "ACTIVE"
+			statusStyle = tui.StylePillActive
+		}
+	}
+	
+	// Format as fixed-width pill: [ STATUS    ]
+	// Truncate if too long (unlikely with standard statuses)
+	if len(statusText) > 9 {
+		statusText = statusText[:9]
+	}
+	paddedStatus := fmt.Sprintf("%-9s", statusText)
+	status := tui.StyleMuted.Render("[ ") + statusStyle.Render(paddedStatus) + tui.StyleMuted.Render(" ]")
 
 	// Summary - use description as fallback if no plan summary
 	summary := wt.Summary
@@ -153,12 +183,35 @@ func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.T
 		summary = tui.StyleMuted.Render("—")
 	}
 
-	// Columns: BRANCH, SUMMARY, STATUS, GIT
+	// Git status coloring
+	gitStatus := wt.Status
+	if strings.Contains(gitStatus, "dirty") || strings.Contains(gitStatus, "M") {
+		gitStatus = tui.StyleWarning.Render(gitStatus)
+	} else if strings.Contains(gitStatus, "clean") {
+		gitStatus = tui.StyleSuccess.Render(gitStatus)
+	} else {
+		gitStatus = tui.StyleMuted.Render(gitStatus)
+	}
+	
+	// Count agents
+	count := 0
+	for _, a := range m.agents {
+		if a.WorktreePath == wt.Path {
+			count++
+		}
+	}
+	agentCount := tui.StyleMuted.Render("-")
+	if count > 0 {
+		agentCount = tui.StyleInfo.Render(fmt.Sprintf("%d", count)) // Cyan color
+	}
+
+	// Columns: BRANCH, SUMMARY, AGENTS, STATUS, GIT
 	values := []string{
 		wt.Branch,
 		summary,
+		agentCount,
 		status,
-		wt.Status, // Git status
+		gitStatus,
 	}
 
 	row := table.RenderRow(values, selected)

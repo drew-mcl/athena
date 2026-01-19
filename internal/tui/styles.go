@@ -27,19 +27,19 @@ var (
 	ColorAccentDim = lipgloss.Color("#a67744") // Softer accent for borders
 )
 
-// StatusIcons - Starship-compatible ASCII symbols (work in all terminals)
+// StatusIcons - Clean symbols (no emojis)
 var StatusIcons = map[string]string{
-	"running":    "*", // Active
-	"planning":   "~", // Thinking
-	"executing":  ">", // In progress
-	"awaiting":   ".", // Waiting
-	"crashed":    "x", // Failed
-	"pending":    "-", // Queued
-	"completed":  "✓", // Done (widely supported)
-	"terminated": "#", // Stopped
-	"idle":       "-", // Inactive
-	"spawning":   "↑", // Starting up
-	"attached":   "@", // Interactive console
+	"running":    "●", // Active (Green)
+	"planning":   "○", // Thinking (Blue)
+	"executing":  "▶", // In progress (Green)
+	"awaiting":   "?", // Waiting (Amber)
+	"crashed":    "X", // Failed (Red)
+	"pending":    "·", // Queued (Amber)
+	"completed":  "✓", // Done (Green) - Checkmark is usually acceptable text symbol
+	"terminated": "■", // Stopped (Muted)
+	"idle":       "-", // Inactive (Muted)
+	"spawning":   "^", // Starting up (Amber)
+	"attached":   "@", // Interactive console (Blue)
 }
 
 // AgentIcons provides backwards-compatible agent icons (maps to StatusIcons)
@@ -70,6 +70,18 @@ func StatusStyle(status string) lipgloss.Style {
 
 // Core styles with proper hierarchy
 var (
+	// Input Box
+	StyleInputBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorAccentDim).
+			Padding(0, 1)
+
+	// App Container
+	StyleAppBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorAccentDim).
+			Padding(0, 1)
+
 	// Logo and branding
 	StyleLogo = lipgloss.NewStyle().
 			Foreground(ColorAccent).
@@ -167,6 +179,19 @@ var (
 
 	StyleDanger = lipgloss.NewStyle().
 		Foreground(ColorDanger)
+
+	// Status Pills - Clean and sleek (no big blocks)
+	StylePillActive = lipgloss.NewStyle().
+			Foreground(ColorSuccess).
+			Bold(true)
+
+	StylePillReview = lipgloss.NewStyle().
+			Foreground(ColorInfo).
+			Bold(true)
+
+	StylePillStale = lipgloss.NewStyle().
+			Foreground(ColorDanger).
+			Bold(true)
 )
 
 // Logo returns the ASCII art logo

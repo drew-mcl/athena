@@ -73,6 +73,7 @@ type SpawnSpec struct {
 	Archetype    string
 	Prompt       string
 	ParentID     string
+	Provider     string
 }
 
 // Spawn creates and starts a new Claude Code agent.
@@ -240,7 +241,10 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 		runSpec.Model = s.config.Agents.Model
 	}
 
-	provider := archetype.Provider
+	provider := spec.Provider
+	if provider == "" {
+		provider = archetype.Provider
+	}
 	if provider == "" {
 		provider = s.config.Agents.Provider
 	}

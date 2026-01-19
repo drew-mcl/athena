@@ -786,6 +786,7 @@ type SpawnAgentRequest struct {
 	WorktreePath string `json:"worktree_path"`
 	Archetype    string `json:"archetype"`
 	Prompt       string `json:"prompt"`
+	Provider     string `json:"provider"`
 }
 
 // CreateJobRequest is the request to create a new job.
@@ -867,6 +868,7 @@ type CreateWorktreeRequest struct {
 	TicketID     string `json:"ticket_id"`      // Ticket ID (e.g., ENG-123)
 	Description  string `json:"description"`    // Description of the work
 	WorkflowMode string `json:"workflow_mode"`  // Workflow mode: automatic, approve, or manual
+	Provider     string `json:"provider"`       // AI Provider (claude, gemini, etc.)
 }
 
 // MigrationPlan describes what migration would do.

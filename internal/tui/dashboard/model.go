@@ -73,14 +73,17 @@ type Model struct {
 	scrollOffset map[Tab]int
 
 	// UI state
-	width        int
-	height       int
+	width        int // Inner content width
+	height       int // Inner content height
+	termWidth    int // Full terminal width
+	termHeight   int // Full terminal height
 	inputMode    bool
 	questionMode bool // true = question, false = job
 	noteMode     bool // true = adding note
 	detailMode   bool // showing detail view
 	detailJob    *control.JobInfo
 	detailAgent  *control.AgentInfo
+	detailWorktree *control.WorktreeInfo // showing worktree detail
 	logsMode     bool // showing agent logs
 	logsAgentID  string
 	logs         []*control.AgentEventInfo
@@ -97,12 +100,15 @@ type Model struct {
 	worktreeTicketID   string // ticket ID from step 0
 	worktreeDesc       string // description from step 1
 	worktreeProjectIdx int    // selected project index in step 2
+	worktreeWorkflow   config.WorkflowMode // selected workflow for this worktree (step 3)
 
 	// Note promotion wizard
 	promoteMode       bool   // true = promoting note to feature
 	promoteNoteID     string // ID of note being promoted
 	promoteNoteText   string // content of note being promoted
 	promoteProjectIdx int    // selected project index
+	promoteStep       int    // 0=Project, 1=Agent
+	promoteAgentIdx   int    // selected agent provider index
 
 	// Plan viewer mode
 	planMode          bool   // true = viewing plan
@@ -196,6 +202,7 @@ type (
 func New(client *control.Client, cfg *config.Config) Model {
 	ti := textarea.New()
 	ti.Placeholder = "Type here..."
+	ti.Prompt = "" // No prompt in the textarea itself (we render it outside)
 	ti.CharLimit = 2000
 	ti.SetWidth(80) // Will be updated on resize
 	ti.SetHeight(inputHeightMin) // Start with a single line
@@ -212,7 +219,8 @@ func New(client *control.Client, cfg *config.Config) Model {
 	worktreeTable := layout.NewTable([]layout.Column{
 		{Header: "BRANCH", MinWidth: 15, MaxWidth: 30, Flex: 1},
 		{Header: "SUMMARY", MinWidth: 30, MaxWidth: 0, Flex: 4}, // Largest column
-		{Header: "STATUS", MinWidth: 10, MaxWidth: 14, Flex: 0},
+		{Header: "AGENTS", MinWidth: 6, MaxWidth: 8, Flex: 0},   // Agent count
+		{Header: "STATUS", MinWidth: 14, MaxWidth: 14, Flex: 0}, // Fixed width status
 		{Header: "GIT", MinWidth: 8, MaxWidth: 12, Flex: 0},
 	})
 
@@ -226,6 +234,7 @@ func New(client *control.Client, cfg *config.Config) Model {
 
 	agentTable := layout.NewTable([]layout.Column{
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
+		{Header: "IMPL", MinWidth: 10, MaxWidth: 12, Flex: 0}, // New Implementation column
 		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
 		{Header: "WORKTREE", MinWidth: 15, MaxWidth: 25, Flex: 1},
 		{Header: "SUMMARY", MinWidth: 30, MaxWidth: 0, Flex: 4}, // Largest column
@@ -270,6 +279,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Global keybindings
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
 		if m.promoteMode {
 			return m.handlePromoteNote(msg)
 		}
@@ -294,11 +308,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalMode(msg)
 
 	case tea.WindowSizeMsg:
+		m.termWidth = msg.Width
+		m.termHeight = msg.Height
+		
+		// Inner dimensions match terminal initially (reduced when input is active)
 		m.width = msg.Width
 		m.height = msg.Height
-
+		
 		// Update text input width dynamically
-		inputWidth := msg.Width - 10
+		inputWidth := m.width - 10
 		if inputWidth < 30 {
 			inputWidth = 30
 		}
@@ -309,9 +327,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncInputHeight()
 
 		// Update table widths
-		m.worktreeTable.SetWidth(msg.Width)
-		m.jobTable.SetWidth(msg.Width)
-		m.agentTable.SetWidth(msg.Width)
+		m.worktreeTable.SetWidth(m.width)
+		m.jobTable.SetWidth(m.width)
+		m.agentTable.SetWidth(m.width)
 
 		if m.planMode {
 			if m.planStatus == "pending" {
@@ -564,6 +582,13 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.level == LevelProject {
 			switch m.tab {
+			case TabWorktrees:
+				wts := m.projectWorktrees()
+				if m.selected < len(wts) {
+					m.detailWorktree = wts[m.selected]
+					m.detailMode = true
+					return m, nil
+				}
 			case TabAgents:
 				agents := m.projectAgents()
 				if m.selected < len(agents) {
@@ -633,6 +658,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.worktreeTicketID = ""
 			m.worktreeDesc = ""
 			m.worktreeProjectIdx = 0
+			m.worktreeWorkflow = m.workflowMode // Default to global setting
 			m.textInput.Placeholder = "Ticket ID (or leave blank)..."
 			m.resetTextInput()
 			m.textInput.Focus()
@@ -775,10 +801,29 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if len(m.projects) == 0 {
 					return m, m.showStatus("No projects available")
 				}
+				
 				m.promoteMode = true
 				m.promoteNoteID = note.ID
 				m.promoteNoteText = note.Content
-				m.promoteProjectIdx = 0
+				m.promoteAgentIdx = 0 // Default to first agent
+				
+				// Smart step selection
+				if m.level == LevelProject && m.selectedProject != "" {
+					// Already in a project, skip step 0
+					m.promoteStep = 1
+					// Find project index
+					for i, p := range m.projects {
+						if p == m.selectedProject {
+							m.promoteProjectIdx = i
+							break
+						}
+					}
+				} else {
+					// Dashboard level, ask for project
+					m.promoteStep = 0
+					m.promoteProjectIdx = 0
+				}
+				
 				return m, nil
 			}
 		}
@@ -850,7 +895,7 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = false
 		m.noteMode = false
-		m.resetTextInput()
+		m.resetTextInput() // Calls syncInputHeight
 		return m, nil
 
 	case "shift+enter":
@@ -866,7 +911,7 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Add note via API
 				m.inputMode = false
 				m.noteMode = false
-				m.resetTextInput()
+				m.resetTextInput() // Calls syncInputHeight
 				return m, m.createNote(input)
 			}
 			isQuestion := m.questionMode
@@ -874,12 +919,12 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if project == "" {
 				m.inputMode = false
 				m.questionMode = false
-				m.resetTextInput()
+				m.resetTextInput() // Calls syncInputHeight
 				return m, m.showStatus("Select a project before creating a job")
 			}
 			m.inputMode = false
 			m.questionMode = false
-			m.resetTextInput()
+			m.resetTextInput() // Calls syncInputHeight
 			return m, m.createJob(input, isQuestion, project)
 		}
 		return m, nil
@@ -902,6 +947,7 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detailMode = false
 		m.detailJob = nil
 		m.detailAgent = nil
+		m.detailWorktree = nil
 		return m, nil
 
 	// Actions available in agent detail
@@ -1299,11 +1345,16 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.projects) == 0 {
 				return m, m.showStatus("No projects available")
 			}
-			// Create the worktree
+			// Move to workflow selection
+			m.worktreeStep = 3
+			return m, nil
+			
+		case 3: // Workflow selection step
+			// Create the worktree with the selected workflow
 			project := m.projects[m.worktreeProjectIdx]
 			m.worktreeMode = false
 
-			return m, m.createWorktreeCmd(project, m.worktreeTicketID, m.worktreeDesc)
+			return m, m.createWorktreeCmd(project, m.worktreeTicketID, m.worktreeDesc, m.worktreeWorkflow)
 		}
 
 	case "j", "down":
@@ -1314,6 +1365,11 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// In workflow selection, cycle modes
+		if m.worktreeStep == 3 {
+			m.worktreeWorkflow = m.worktreeWorkflow.CycleWorkflowMode()
+			return m, nil
+		}
 
 	case "k", "up":
 		// In project selection, move up
@@ -1321,6 +1377,11 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.worktreeProjectIdx > 0 {
 				m.worktreeProjectIdx--
 			}
+			return m, nil
+		}
+		// In workflow selection, cycle modes (backwards logic same as forward for 3 items)
+		if m.worktreeStep == 3 {
+			m.worktreeWorkflow = m.worktreeWorkflow.CycleWorkflowMode()
 			return m, nil
 		}
 
@@ -1347,7 +1408,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) createWorktreeCmd(project, ticketID, description string) tea.Cmd {
+func (m Model) createWorktreeCmd(project, ticketID, description string, workflow config.WorkflowMode) tea.Cmd {
 	return func() tea.Msg {
 		// Find the main repo path for this project
 		var mainRepoPath string
@@ -1374,7 +1435,7 @@ func (m Model) createWorktreeCmd(project, ticketID, description string) tea.Cmd 
 			MainRepoPath: mainRepoPath,
 			TicketID:     ticketID,
 			Description:  description,
-			WorkflowMode: string(m.workflowMode),
+			WorkflowMode: string(workflow),
 		})
 		if err != nil {
 			return errMsg(err)
@@ -1390,37 +1451,77 @@ func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.promoteMode = false
 		m.promoteNoteID = ""
 		m.promoteNoteText = ""
+		m.promoteStep = 0
 		return m, nil
 
 	case "enter":
-		// Promote note to worktree
-		if len(m.projects) == 0 {
-			return m, m.showStatus("No projects available")
+		if m.promoteStep == 0 {
+			// Project selected, move to Agent selection
+			if len(m.projects) == 0 {
+				return m, m.showStatus("No projects available")
+			}
+			m.promoteStep = 1
+			return m, nil
+		} else if m.promoteStep == 1 {
+			// Agent selected, execute promotion
+			project := m.projects[m.promoteProjectIdx]
+			noteID := m.promoteNoteID
+			noteText := m.promoteNoteText
+			
+			// Map index to provider ID
+			var provider string
+			switch m.promoteAgentIdx {
+			case 0:
+				provider = "claude"
+			case 1:
+				provider = "gemini"
+			case 2:
+				provider = "codex"
+			default:
+				provider = "claude"
+			}
+			
+			m.promoteMode = false
+			return m, m.promoteNoteCmd(project, noteID, noteText, provider)
 		}
-		project := m.projects[m.promoteProjectIdx]
-		noteID := m.promoteNoteID
-		noteText := m.promoteNoteText
-		m.promoteMode = false
-
-		return m, m.promoteNoteCmd(project, noteID, noteText)
 
 	case "j", "down":
-		if m.promoteProjectIdx < len(m.projects)-1 {
-			m.promoteProjectIdx++
+		if m.promoteStep == 0 {
+			if m.promoteProjectIdx < len(m.projects)-1 {
+				m.promoteProjectIdx++
+			}
+		} else {
+			// Agent selection (hardcoded list for now)
+			if m.promoteAgentIdx < 2 { // 3 providers: 0, 1, 2
+				m.promoteAgentIdx++
+			}
 		}
 		return m, nil
 
 	case "k", "up":
-		if m.promoteProjectIdx > 0 {
-			m.promoteProjectIdx--
+		if m.promoteStep == 0 {
+			if m.promoteProjectIdx > 0 {
+				m.promoteProjectIdx--
+			}
+		} else {
+			if m.promoteAgentIdx > 0 {
+				m.promoteAgentIdx--
+			}
 		}
 		return m, nil
+		
+	case "backspace", "delete", "h", "left":
+		// Go back a step
+		if m.promoteStep > 0 {
+			m.promoteStep--
+			return m, nil
+		}
 	}
 
 	return m, nil
 }
 
-func (m Model) promoteNoteCmd(project, noteID, noteText string) tea.Cmd {
+func (m Model) promoteNoteCmd(project, noteID, noteText, provider string) tea.Cmd {
 	return func() tea.Msg {
 		// Find the main repo path for this project
 		var mainRepoPath string
@@ -1448,6 +1549,7 @@ func (m Model) promoteNoteCmd(project, noteID, noteText string) tea.Cmd {
 			TicketID:     "", // No ticket for promoted notes
 			Description:  noteText,
 			WorkflowMode: string(m.workflowMode),
+			Provider:     provider,
 		})
 		if err != nil {
 			return errMsg(err)
@@ -1567,59 +1669,54 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
+	var content, footer string
+
 	// Detail overlays
 	if m.detailMode {
 		if m.detailJob != nil {
-			return m.renderJobDetail()
+			content, footer = m.renderJobDetail()
+		} else if m.detailAgent != nil {
+			content, footer = m.renderAgentDetail()
+		} else if m.detailWorktree != nil {
+			content, footer = m.renderWorktreeDetail()
 		}
-		if m.detailAgent != nil {
-			return m.renderAgentDetail()
-		}
-	}
-
-	// Logs overlay
-	if m.logsMode {
-		return m.renderLogs()
-	}
-
-	// Plan viewer overlay
-	if m.planMode {
-		return m.renderPlanView()
-	}
-
-	// Context viewer overlay
-	if m.contextMode {
+	} else if m.logsMode { // Logs overlay
+		content, footer = m.renderLogs()
+	} else if m.planMode { // Plan viewer overlay
+		content, footer = m.renderPlanView()
+	} else if m.contextMode { // Context viewer overlay
+		// Context view still returns single string? Let's check.
+		// It wasn't in the list of refactored methods.
+		// We should probably refactor it too or handle it specially.
+		// For now, let's assume it returns string and has footer embedded?
+		// Checking renderContextView implementation... it calls PinFooterToBottom.
+		// So it returns full page.
 		return m.renderContextView()
-	}
-
-	// Worktree creation wizard
-	if m.worktreeMode {
-		return m.renderWorktreeWizard()
-	}
-
-	// Note promotion wizard
-	if m.promoteMode {
-		return m.renderPromoteWizard()
-	}
-
-	var b strings.Builder
-
-	if m.level == LevelDashboard {
-		b.WriteString(m.renderDashboard())
+	} else if m.worktreeMode { // Worktree creation wizard
+		content, footer = m.renderWorktreeWizard()
+	} else if m.promoteMode { // Note promotion wizard
+		content, footer = m.renderPromoteWizard()
 	} else {
-		b.WriteString(m.renderProjectDetail())
+		// Main dashboard
+		if m.level == LevelDashboard {
+			content, footer = m.renderDashboard()
+		} else {
+			content, footer = m.renderProjectDetail()
+		}
 	}
+
+	// Combine content and footer
+	fullView := layout.PinFooterToBottom(content, footer, m.height)
 
 	// Input overlay - pinned to bottom
 	if m.inputMode {
-		content := b.String()
-		return m.applyInputOverlay(content)
+		fullView = m.applyInputOverlay(fullView)
 	}
 
-	return b.String()
+	return fullView
 }
 
-func (m Model) renderDashboard() string {
+func (m Model) renderDashboard() (string, string) {
 	var content strings.Builder
 
 	// Header with icon, title, and tabs
@@ -1636,9 +1733,7 @@ func (m Model) renderDashboard() string {
 	// Content based on current tab
 	content.WriteString(m.renderDashboardContent())
 
-	// Pin footer to bottom
-	footer := m.renderFooter()
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), m.renderFooter()
 }
 
 func (m Model) renderDaemonStatus() string {
@@ -1765,7 +1860,7 @@ func (m Model) renderFooter() string {
 	return tui.StyleHelp.Render(help) + strings.Repeat(" ", footerPad) + tui.StyleStatus.Render(update)
 }
 
-func (m Model) renderProjectDetail() string {
+func (m Model) renderProjectDetail() (string, string) {
 	var content strings.Builder
 
 	// Header with project name and tabs
@@ -1782,9 +1877,7 @@ func (m Model) renderProjectDetail() string {
 	// Content
 	content.WriteString(m.renderDetailContent())
 
-	// Pin footer to bottom
-	footer := m.renderDetailFooter()
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), m.renderDetailFooter()
 }
 
 func (m Model) renderDetailHeader() string {
@@ -1821,7 +1914,12 @@ func (m Model) renderDetailHeader() string {
 			activeCount++
 		}
 	}
-	stats := m.renderDaemonStatus() + tui.StyleMuted.Render(" │ ") +
+	
+	// Format: daemon │ workflow: mode │ stats
+	stats := m.renderDaemonStatus() +
+		tui.StyleMuted.Render(" │ ") +
+		tui.StyleMuted.Render("workflow: ") + m.renderWorkflowStatus() +
+		tui.StyleMuted.Render(" │ ") +
 		tui.StyleStatus.Render(fmt.Sprintf("%d/%d", activeCount, len(agents)))
 
 	// Layout
@@ -1835,7 +1933,7 @@ func (m Model) renderDetailHeader() string {
 	return left + strings.Repeat(" ", padding) + stats
 }
 
-func (m Model) renderJobDetail() string {
+func (m Model) renderJobDetail() (string, string) {
 	var content strings.Builder
 	job := m.detailJob
 
@@ -1845,7 +1943,11 @@ func (m Model) renderJobDetail() string {
 	if job.Type == "question" {
 		typeLabel = "Question"
 	}
-	content.WriteString(icon + " " + tui.StyleLogo.Render(typeLabel))
+	header := icon + " " + tui.StyleLogo.Render(typeLabel)
+	if job.Project != "" {
+		header += tui.StyleMuted.Render(" @ ") + tui.StyleAccent.Render(job.Project)
+	}
+	content.WriteString(header)
 	content.WriteString(tui.StyleMuted.Render(" │ " + job.Status))
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
@@ -1853,7 +1955,15 @@ func (m Model) renderJobDetail() string {
 
 	// Task/Question
 	content.WriteString(tui.StyleMuted.Render("  Task: "))
-	content.WriteString(job.NormalizedInput)
+	content.WriteString("\n")
+	
+	// Wrap task in a box for better readability
+	taskBox := tui.StyleInputBox.
+		Width(m.width - 6).
+		Padding(0, 1).
+		Render(job.NormalizedInput)
+	
+	content.WriteString("  " + taskBox)
 	content.WriteString("\n\n")
 
 	// Answer (for question jobs)
@@ -1884,12 +1994,10 @@ func (m Model) renderJobDetail() string {
 		}
 	}
 
-	// Pin footer to bottom
-	footer := tui.StyleHelp.Render("  Press Esc or Enter to close")
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), tui.StyleHelp.Render("  Press Esc or Enter to close")
 }
 
-func (m Model) renderAgentDetail() string {
+func (m Model) renderAgentDetail() (string, string) {
 	var content strings.Builder
 	agent := m.detailAgent
 
@@ -1916,6 +2024,16 @@ func (m Model) renderAgentDetail() string {
 	content.WriteString(agent.Archetype)
 	content.WriteString("\n")
 
+	content.WriteString(tui.StyleMuted.Render("  Harness:   "))
+	// TODO: Get actual provider from backend when available.
+	// For now, Claude Code is the default implementation.
+	harness := "Claude Code"
+	if agent.ClaudeSessionID != "" {
+		harness = "Claude Code (Opus)"
+	}
+	content.WriteString(tui.StyleAccent.Render(harness))
+	content.WriteString("\n")
+
 	content.WriteString(tui.StyleMuted.Render("  Worktree:  "))
 	content.WriteString(agent.WorktreePath)
 	content.WriteString("\n")
@@ -1935,116 +2053,344 @@ func (m Model) renderAgentDetail() string {
 	content.WriteString(fmt.Sprintf("%d", agent.RestartCount))
 	content.WriteString("\n")
 
-	// Usage metrics
+	// Worktree Summary (Full)
+	var summary string
+	for _, wt := range m.worktrees {
+		if wt.Path == agent.WorktreePath {
+			summary = wt.Summary
+			if summary == "" && wt.Description != "" {
+				summary = wt.Description
+			}
+			break
+		}
+	}
+	if summary != "" {
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("  Summary:"))
+		content.WriteString("\n")
+		// Wrap the summary nicely
+		summaryLines := wrapText(summary, m.width-6)
+		for _, line := range summaryLines {
+			content.WriteString("    " + line + "\n")
+		}
+	}
+
+	// Usage metrics - Summary View
 	if agent.Metrics != nil {
 		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("  Usage:\n"))
-		content.WriteString(fmt.Sprintf("    Tools:    %d calls\n", agent.Metrics.ToolUseCount))
-		content.WriteString(fmt.Sprintf("    Files:    %d read, %d written\n", agent.Metrics.FilesRead, agent.Metrics.FilesWritten))
-		content.WriteString(fmt.Sprintf("    Changes:  +%s lines\n", formatCompactNumber(agent.Metrics.LinesChanged)))
-		content.WriteString(fmt.Sprintf("    Messages: %d\n", agent.Metrics.MessageCount))
-		content.WriteString(fmt.Sprintf("    Tokens:   %s in, %s out\n", formatCompactNumber(agent.Metrics.InputTokens), formatCompactNumber(agent.Metrics.OutputTokens)))
-		if agent.Metrics.CacheReads > 0 {
-			content.WriteString(fmt.Sprintf("    Cache:    %s reads\n", formatCompactNumber(agent.Metrics.CacheReads)))
-		}
-		content.WriteString(fmt.Sprintf("    Duration: %s\n", formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond)))
+		content.WriteString(tui.StyleAccent.Render("  Summary Statistics"))
+		content.WriteString("\n\n")
+
+		// Create a grid-like layout using fixed widths
+		// Row 1: Duration | Cache | Tokens
+		row1 := fmt.Sprintf("  DUR: %-18s  MEM: %-18s  TOK: %-18s", 
+			formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond),
+			formatCompactNumber(agent.Metrics.CacheReads)+" reads",
+			formatCompactNumber(agent.Metrics.TotalTokens)+" total",
+		)
+		
+		// Row 2: Tools | Files | Changes
+		row2 := fmt.Sprintf("  CMD: %-18s  FIL: %-18s  DIF: %-18s", 
+			fmt.Sprintf("%d calls", agent.Metrics.ToolUseCount),
+			fmt.Sprintf("%d R / %d W", agent.Metrics.FilesRead, agent.Metrics.FilesWritten),
+			fmt.Sprintf("+%s lines", formatCompactNumber(agent.Metrics.LinesChanged)),
+		)
+
+		content.WriteString(row1)
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("       Duration              Cache Hits            Total Tokens"))
+		content.WriteString("\n\n")
+		
+		content.WriteString(row2)
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("       Tool Calls            File Ops              Changes"))
+		content.WriteString("\n")
 	}
 
 	// Prompt/Task
 	if agent.Prompt != "" {
 		content.WriteString("\n")
 		content.WriteString(tui.StyleMuted.Render("  Task:\n"))
-		lines := wrapText(agent.Prompt, m.width-6)
-		for _, line := range lines {
-			content.WriteString("    " + line + "\n")
-		}
+		
+		// Render markdown for better formatting
+		renderedTask := m.renderMarkdown(agent.Prompt)
+		
+		// Wrap in a box
+		taskBox := tui.StyleInputBox.
+			Width(m.width - 6).
+			Padding(0, 1).
+			Render(renderedTask)
+			
+		content.WriteString("  " + taskBox)
+		content.WriteString("\n")
 	}
 
-	// Pin footer to bottom
-	footer := tui.StyleHelp.Render("  [L]ogs [a]ttach [e]nvim [s]hell [x]kill │ Esc to close")
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), tui.StyleHelp.Render("  [L]ogs [a]ttach [e]nvim [s]hell [x]kill │ Esc to close")
 }
 
-func (m Model) renderLogs() string {
+func (m Model) renderWorktreeDetail() (string, string) {
 	var content strings.Builder
+	wt := m.detailWorktree
 
-	// Header with follow indicator
+	// Header
 	icon := tui.Logo()
-	content.WriteString(icon + " " + tui.StyleLogo.Render("Agent Logs"))
-	content.WriteString(tui.StyleMuted.Render(" │ " + shortID(m.logsAgentID, 8)))
-	if m.logsFollow {
-		content.WriteString("  " + tui.StyleSuccessMsg.Render("[FOLLOW]"))
+	content.WriteString(icon + " " + tui.StyleLogo.Render("Worktree"))
+	
+	// Status Pill
+	var statusPill string
+	agentActive := false
+	
+	// Check for active agent first
+	if wt.AgentID != "" {
+		for _, a := range m.agents {
+			if a.ID == wt.AgentID {
+				agentActive = true
+				text := strings.ToUpper(a.Status)
+				if a.Status == "running" || a.Status == "executing" {
+					statusPill = tui.StyleMuted.Render("[") + tui.StylePillActive.Render(text) + tui.StyleMuted.Render("]")
+				} else if a.Status == "planning" {
+					statusPill = tui.StyleMuted.Render("[") + tui.StylePillReview.Render(text) + tui.StyleMuted.Render("]")
+				} else {
+					statusPill = tui.StyleMuted.Render("[") + tui.StatusStyle(a.Status).Render(text) + tui.StyleMuted.Render("]")
+				}
+				break
+			}
+		}
 	}
+	
+	if !agentActive {
+		if wt.WTStatus == "active" {
+			statusPill = tui.StyleMuted.Render("[") + tui.StylePillActive.Render("ACTIVE") + tui.StyleMuted.Render("]")
+		} else if wt.WTStatus == "stale" {
+			statusPill = tui.StyleMuted.Render("[") + tui.StylePillStale.Render("STALE") + tui.StyleMuted.Render("]")
+		} else if wt.WTStatus == "merged" {
+			statusPill = tui.StyleMuted.Render("[") + tui.StyleNeutral.Render("MERGED") + tui.StyleMuted.Render("]")
+		} else {
+			statusPill = tui.StyleMuted.Render("[") + tui.StyleMuted.Render(strings.ToUpper(wt.WTStatus)) + tui.StyleMuted.Render("]")
+		}
+	}
+	
+	content.WriteString(" " + statusPill)
+	
+	if wt.TicketID != "" {
+		content.WriteString(tui.StyleMuted.Render(" │ " + wt.TicketID))
+	}
+	
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n\n")
+
+	// Core Feature / Description
+	content.WriteString(tui.StyleMuted.Render("  Feature:"))
 	content.WriteString("\n")
+	desc := wt.Summary
+	if desc == "" {
+		desc = wt.Description
+	}
+	if desc == "" {
+		desc = "No description provided."
+	}
+	
+	// Wrap description in a box
+	descBox := tui.StyleInputBox.
+		Width(m.width - 6).
+		Padding(0, 1).
+		Render(m.renderMarkdown(desc))
+	content.WriteString("  " + descBox)
+	content.WriteString("\n\n")
+
+	// Agents that worked on this
+	content.WriteString(tui.StyleAccent.Render("  Agents:"))
+	content.WriteString("\n")
+	
+	foundAgents := false
+	for _, a := range m.agents {
+		if a.WorktreePath == wt.Path {
+			foundAgents = true
+			statusIcon := tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
+			age := formatDuration(time.Since(parseCreatedAt(a.CreatedAt)))
+			
+			line := fmt.Sprintf("  %s %s (%s) - %s", 
+				statusIcon, 
+				a.ID[:8], 
+				a.Archetype,
+				age)
+			content.WriteString(line + "\n")
+		}
+	}
+	
+	if !foundAgents {
+		content.WriteString(tui.StyleMuted.Render("    No agents associated with this worktree."))
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
+
+	// Git Status
+	content.WriteString(tui.StyleAccent.Render("  Git Status:"))
+	content.WriteString(" " + wt.Status)
+	content.WriteString("\n")
+	
+	// Path
+	content.WriteString(tui.StyleMuted.Render("  Path: "))
+	content.WriteString(tui.StyleMuted.Render(wt.Path))
+	content.WriteString("\n")
+
+	return content.String(), tui.StyleHelp.Render("  [p] view plan  [M]erge  [c]leanup │ Esc to close")
+}
+
+func (m Model) renderLogs() (string, string) {
+
+	var content strings.Builder
+
+
+
+	// Header with follow indicator
+
+	icon := tui.Logo()
+
+	content.WriteString(icon + " " + tui.StyleLogo.Render("Agent Logs"))
+
+	content.WriteString(tui.StyleMuted.Render(" │ " + shortID(m.logsAgentID, 8)))
+
+	if m.logsFollow {
+
+		content.WriteString("  " + tui.StyleSuccessMsg.Render("[FOLLOW]"))
+
+	}
+
+	content.WriteString("\n")
+
+	content.WriteString(tui.Divider(m.width))
+
+	content.WriteString("\n")
+
+
 
 	viewportHeight := m.logsViewportHeight()
 
+
+
 	if len(m.logs) == 0 {
+
 		content.WriteString(tui.StyleEmptyState.Render("  No events recorded."))
+
 		content.WriteString("\n")
+
 	} else {
+
 		// Logs come in DESC order (newest first), reverse to chronological
+
 		// Then apply scroll offset to show a window of entries
+
 		totalLogs := len(m.logs)
 
+
+
 		// Calculate visible range based on scroll
+
 		// logsScroll=0 means show oldest logs, logsScroll=max means show newest
+
 		endIdx := totalLogs - m.logsScroll
+
 		startIdx := max(0, endIdx-viewportHeight)
 
+
+
 		// Render in chronological order (oldest to newest within the window)
+
 		for i := endIdx - 1; i >= startIdx; i-- {
+
 			e := m.logs[i]
+
 			ts, _ := time.Parse(time.RFC3339, e.Timestamp)
 
 			// Event type styling
+
 			typeStyle := tui.StyleMuted
+
 			switch e.EventType {
+
 			case "spawned", "spawn_command":
+
 				typeStyle = tui.StatusStyle("running")
+
 			case "assistant":
+
 				typeStyle = tui.StyleAccent
+
 			case "output", "text":
+
 				typeStyle = tui.StyleAccent
+
 			case "error", "crashed", "spawn_failed", "stderr":
+
 				typeStyle = tui.StatusStyle("crashed")
+
 			case "completed", "result":
+
 				typeStyle = tui.StatusStyle("completed")
+
 			case "tool_use":
+
 				typeStyle = tui.StatusStyle("executing")
+
 			case "tool_result":
+
 				typeStyle = tui.StyleMuted
+
 			}
 
+
+
 			content.WriteString("  ")
+
 			content.WriteString(tui.StyleMuted.Render(ts.Format("15:04:05")))
+
 			content.WriteString("  ")
+
 			content.WriteString(typeStyle.Render(fmt.Sprintf("%-12s", e.EventType)))
+
 			content.WriteString(" ")
 
+
+
 			// Parse and format payload (full content, with indentation)
+
 			display := formatLogPayload(e.EventType, e.Payload, 25)
+
 			content.WriteString(display)
+
 			content.WriteString("\n")
+
 		}
+
+
 
 		// Scroll indicator
+
 		if totalLogs > viewportHeight {
+
 			position := fmt.Sprintf(" [%d-%d of %d]", startIdx+1, endIdx, totalLogs)
+
 			content.WriteString(tui.StyleMuted.Render(position))
+
 			content.WriteString("\n")
+
 		}
+
 	}
 
+
+
 	// Fixed footer with vi-style help, left-aligned
+
 	helpText := "j/k:scroll  g/G:top/bottom  ^d/^u:page  f:follow  r:refresh  q:close"
-	footer := "  " + tui.StyleHelp.Render(helpText)
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+
+	return content.String(), "  " + tui.StyleHelp.Render(helpText)
+
 }
 
-func (m Model) renderPlanView() string {
+func (m Model) renderPlanView() (string, string) {
 	var content strings.Builder
 
 	// Header with status badge
@@ -2118,11 +2464,10 @@ func (m Model) renderPlanView() string {
 	default:
 		helpText = "j/k:scroll  g/G:top/bottom  r:refresh  q:close"
 	}
-	footer := "  " + tui.StyleHelp.Render(helpText)
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), "  " + tui.StyleHelp.Render(helpText)
 }
 
-func (m Model) renderWorktreeWizard() string {
+func (m Model) renderWorktreeWizard() (string, string) {
 	var content strings.Builder
 
 	// Header
@@ -2133,7 +2478,7 @@ func (m Model) renderWorktreeWizard() string {
 	content.WriteString("\n\n")
 
 	// Step indicator
-	steps := []string{"Ticket", "Description", "Project"}
+	steps := []string{"Ticket", "Description", "Project", "Workflow"}
 	var stepIndicator []string
 	for i, step := range steps {
 		if i < m.worktreeStep {
@@ -2193,14 +2538,48 @@ func (m Model) renderWorktreeWizard() string {
 			}
 			content.WriteString("\n")
 		}
+		
+	case 3: // Workflow selection
+		if m.worktreeTicketID != "" {
+			content.WriteString(tui.StyleMuted.Render("  Ticket: "))
+			content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
+			content.WriteString("\n")
+		}
+		content.WriteString(tui.StyleMuted.Render("  Project: "))
+		content.WriteString(tui.StyleAccent.Render(m.projects[m.worktreeProjectIdx]))
+		content.WriteString("\n\n")
+		
+		content.WriteString(tui.StyleMuted.Render("  Select workflow mode (j/k to cycle, Enter to confirm):"))
+		content.WriteString("\n\n")
+		
+		// Display current selection with explanation
+		mode := m.worktreeWorkflow
+		var desc string
+		var style lipgloss.Style
+		
+		switch mode {
+		case config.WorkflowModeAutomatic:
+			desc = "Agent works autonomously until complete."
+			style = tui.StyleSuccess
+		case config.WorkflowModeApprove:
+			desc = "Agent asks for approval before executing changes."
+			style = tui.StyleWarning
+		case config.WorkflowModeManual:
+			desc = "User drives the agent manually."
+			style = tui.StyleMuted
+		}
+		
+		content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
+		content.WriteString(style.Bold(true).Render(string(mode)))
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("    " + desc))
+		content.WriteString("\n")
 	}
 
-	// Pin footer to bottom
-	footer := tui.StyleHelp.Render("  Enter to continue · Esc to cancel")
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), tui.StyleHelp.Render("  Enter to continue · Esc to cancel")
 }
 
-func (m Model) renderPromoteWizard() string {
+func (m Model) renderPromoteWizard() (string, string) {
 	var content strings.Builder
 
 	// Header
@@ -2210,33 +2589,66 @@ func (m Model) renderPromoteWizard() string {
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
 
-	// Show note content
-	content.WriteString(tui.StyleMuted.Render("  Note:"))
-	content.WriteString("\n")
-	noteLines := wrapText(m.promoteNoteText, m.width-6)
-	for _, line := range noteLines {
-		content.WriteString("    " + line + "\n")
+	// Step Indicator
+	steps := []string{"Project", "Agent"}
+	var stepIndicator []string
+	for i, step := range steps {
+		if i < m.promoteStep {
+			stepIndicator = append(stepIndicator, tui.StyleSuccessMsg.Render("✓ "+step))
+		} else if i == m.promoteStep {
+			stepIndicator = append(stepIndicator, tui.StyleAccent.Render("→ "+step))
+		} else {
+			stepIndicator = append(stepIndicator, tui.StyleMuted.Render("○ "+step))
+		}
 	}
-	content.WriteString("\n")
-
-	// Project selection
-	content.WriteString(tui.StyleMuted.Render("  Select project (j/k to move, Enter to confirm):"))
+	content.WriteString("  " + strings.Join(stepIndicator, "  "))
 	content.WriteString("\n\n")
 
-	for i, project := range m.projects {
-		if i == m.promoteProjectIdx {
-			content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
-			content.WriteString(tui.StyleSelected.Render(project))
-		} else {
-			content.WriteString("    ")
-			content.WriteString(project)
+	// Show note content (always visible but muted)
+	content.WriteString(tui.StyleMuted.Render("  Note: "))
+	// Truncate note for display
+	notePreview := m.promoteNoteText
+	if len(notePreview) > 60 {
+		notePreview = notePreview[:57] + "..."
+	}
+	content.WriteString(tui.StyleMuted.Render(notePreview))
+	content.WriteString("\n\n")
+
+	if m.promoteStep == 0 {
+		// Step 1: Project selection
+		content.WriteString(tui.StyleMuted.Render("  Select project (j/k to move, Enter to confirm):"))
+		content.WriteString("\n\n")
+
+		for i, project := range m.projects {
+			if i == m.promoteProjectIdx {
+				content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
+				content.WriteString(tui.StyleSelected.Render(project))
+			} else {
+				content.WriteString("    ")
+				content.WriteString(project)
+			}
+			content.WriteString("\n")
 		}
-		content.WriteString("\n")
+	} else {
+		// Step 2: Agent selection
+		content.WriteString(tui.StyleMuted.Render("  Select Agent Harness (j/k to move, Enter to confirm):"))
+		content.WriteString("\n\n")
+		
+		providers := []string{"Claude Code (Opus)", "Gemini Auto", "Codex 5.2"}
+		
+		for i, provider := range providers {
+			if i == m.promoteAgentIdx {
+				content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
+				content.WriteString(tui.StyleSelected.Render(provider))
+			} else {
+				content.WriteString("    ")
+				content.WriteString(provider)
+			}
+			content.WriteString("\n")
+		}
 	}
 
-	// Pin footer to bottom
-	footer := tui.StyleHelp.Render("  Enter to promote · Esc to cancel")
-	return layout.PinFooterToBottom(content.String(), footer, m.height)
+	return content.String(), tui.StyleHelp.Render("  Enter to continue · Backspace to go back · Esc to cancel")
 }
 
 func wrapText(text string, width int) []string {
@@ -2267,17 +2679,19 @@ func wrapText(text string, width int) []string {
 
 // applyInputOverlay renders the input panel as a bottom overlay
 func (m Model) applyInputOverlay(content string) string {
-	// Build the input panel (divider + input content)
-	var inputPanel strings.Builder
-	inputPanel.WriteString(tui.Divider(m.width))
-	inputPanel.WriteString("\n")
-	inputPanel.WriteString(m.renderInputPanel())
+	// The content passed here was rendered with m.height (which should be reduced when input is active)
+	// We just need to append the input panel at the bottom.
+	// Since m.height + inputPanelHeight = m.termHeight, we can just join them.
 
-	// Use PinFooterToBottom to handle the layout
-	return layout.PinFooterToBottom(content, inputPanel.String(), m.height)
+	// However, PinFooterToBottom was used before to ensure alignment.
+	// If we trust m.height is correct for content, we can just append.
+	// But let's use PinFooterToBottom with full termHeight to be safe and handle any off-by-one errors.
+	
+	inputPanel := m.renderInputPanel()
+	return layout.PinFooterToBottom(content, inputPanel, m.termHeight)
 }
 
-// renderInputPanel renders just the input panel content (clean, full-width like Claude Code)
+// renderInputPanel renders the input panel content wrapped in a sleek box
 func (m Model) renderInputPanel() string {
 	var b strings.Builder
 
@@ -2294,13 +2708,40 @@ func (m Model) renderInputPanel() string {
 	b.WriteString("\n")
 	b.WriteString(tui.StyleMuted.Render("Enter to send · Shift+Enter for newline · Esc to cancel"))
 
-	return b.String()
+	// Wrap in sleek box
+	// Use m.termWidth for the full width box
+	return tui.StyleInputBox.
+		Width(m.termWidth - 2). // -2 for borders (left/right padding handled by style)
+		Render(b.String())
 }
 
 func (m *Model) syncInputHeight() {
-	height := min(inputHeightMax, max(inputHeightMin, m.textInput.LineCount()))
-	if height != m.textInput.Height() {
-		m.textInput.SetHeight(height)
+	// Allow input to grow up to half the screen
+	maxHeight := m.termHeight / 2
+	if maxHeight < inputHeightMax {
+		maxHeight = inputHeightMax
+	}
+	
+	inputContentHeight := min(maxHeight, max(inputHeightMin, m.textInput.LineCount()))
+	if inputContentHeight != m.textInput.Height() {
+		m.textInput.SetHeight(inputContentHeight)
+	}
+
+	// Calculate total input panel height
+	// Content = input lines + footer line (1)
+	// Box = +2 (border top/bottom)
+	totalInputHeight := inputContentHeight + 1 + 2
+	
+	// Update available content height
+	if m.inputMode {
+		m.height = m.termHeight - totalInputHeight
+	} else {
+		m.height = m.termHeight
+	}
+	
+	// Ensure positive height
+	if m.height < 1 {
+		m.height = 1
 	}
 }
 
