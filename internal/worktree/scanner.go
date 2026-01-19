@@ -3,12 +3,12 @@ package worktree
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/store"
 )
 
@@ -302,7 +302,10 @@ func (s *Scanner) scanRepo(path string) (DiscoveredRepo, bool) {
 func (s *Scanner) findWorktrees(mainRepoPath string) []DiscoveredWorktree {
 	var worktrees []DiscoveredWorktree
 
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd, err := executil.Command("git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return worktrees
+	}
 	cmd.Dir = mainRepoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -363,7 +366,10 @@ func (s *Scanner) isExcluded(path string) bool {
 }
 
 func getCurrentBranch(repoPath string) string {
-	cmd := exec.Command("git", "branch", "--show-current")
+	cmd, err := executil.Command("git", "branch", "--show-current")
+	if err != nil {
+		return ""
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -393,7 +399,10 @@ func ExtractTicketID(branch string) string {
 // GetProjectNameFromRemote extracts the project name from git remote URL.
 // Supports: git@github.com:user/project.git, https://github.com/user/project.git
 func GetProjectNameFromRemote(repoPath string) string {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd, err := executil.Command("git", "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -452,7 +461,10 @@ func isBranchMerged(repoPath, branch string) bool {
 
 	defaultBranch := getDefaultBranch(repoPath)
 
-	cmd := exec.Command("git", "branch", "--merged", defaultBranch)
+	cmd, err := executil.Command("git", "branch", "--merged", defaultBranch)
+	if err != nil {
+		return false
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -472,17 +484,22 @@ func isBranchMerged(repoPath, branch string) bool {
 // getDefaultBranch determines the default branch for a repository (main or master).
 func getDefaultBranch(repoPath string) string {
 	// Try to get from remote
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
+	cmd, err := executil.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
 	if err == nil {
-		branch := strings.TrimSpace(string(output))
-		return strings.TrimPrefix(branch, "origin/")
+		cmd.Dir = repoPath
+		output, err := cmd.Output()
+		if err == nil {
+			branch := strings.TrimSpace(string(output))
+			return strings.TrimPrefix(branch, "origin/")
+		}
 	}
 
 	// Fall back to checking if main or master exists
 	for _, branch := range []string{"main", "master"} {
-		cmd = exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		cmd, err = executil.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		if err != nil {
+			continue
+		}
 		cmd.Dir = repoPath
 		if cmd.Run() == nil {
 			return branch

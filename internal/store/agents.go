@@ -148,6 +148,20 @@ func (s *Store) UpdateAgentPID(id string, pid int) error {
 	return err
 }
 
+// UpdateAgentSessionID updates an agent's session ID.
+func (s *Store) UpdateAgentSessionID(id, sessionID string) error {
+	query := `UPDATE agents SET session_id = ?, updated_at = ? WHERE id = ?`
+	_, err := s.db.Exec(query, sessionID, time.Now(), id)
+	return err
+}
+
+// UpdateAgentClaudeSessionID updates an agent's Claude session ID.
+func (s *Store) UpdateAgentClaudeSessionID(id, sessionID string) error {
+	query := `UPDATE agents SET claude_session_id = ?, updated_at = ? WHERE id = ?`
+	_, err := s.db.Exec(query, sessionID, time.Now(), id)
+	return err
+}
+
 // UpdateAgentExitCode updates an agent's exit code.
 func (s *Store) UpdateAgentExitCode(id string, exitCode int) error {
 	query := `UPDATE agents SET exit_code = ?, updated_at = ? WHERE id = ?`

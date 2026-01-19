@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/drewfead/athena/internal/executil"
 )
 
 // Ghostty provides integration with the Ghostty terminal emulator.
@@ -66,7 +68,11 @@ tell application "Ghostty"
 end tell
 `, escapeAppleScript(cmdStr))
 
-	return exec.Command("osascript", "-e", script).Run()
+	cmd, err := executil.Command("osascript", "-e", script)
+	if err != nil {
+		return err
+	}
+	return cmd.Run()
 }
 
 func (g *Ghostty) openSplitMacOS(workDir string, horizontal bool, command ...string) error {
@@ -91,7 +97,11 @@ tell application "Ghostty"
 end tell
 `, keystroke, escapeAppleScript(cmdStr))
 
-	return exec.Command("osascript", "-e", script).Run()
+	cmd, err := executil.Command("osascript", "-e", script)
+	if err != nil {
+		return err
+	}
+	return cmd.Run()
 }
 
 func (g *Ghostty) openWindow(workDir string, command ...string) error {
@@ -103,7 +113,10 @@ func (g *Ghostty) openWindow(workDir string, command ...string) error {
 		args = append(args, "-e")
 		args = append(args, command...)
 	}
-	cmd := exec.Command("ghostty", args...)
+	cmd, err := executil.Command("ghostty", args...)
+	if err != nil {
+		return err
+	}
 	return cmd.Start()
 }
 
@@ -135,7 +148,11 @@ func escapeAppleScript(s string) string {
 // FocusGhostty brings Ghostty to the foreground.
 func (g *Ghostty) FocusGhostty() error {
 	if runtime.GOOS == "darwin" {
-		return exec.Command("osascript", "-e", `tell application "Ghostty" to activate`).Run()
+		cmd, err := executil.Command("osascript", "-e", `tell application "Ghostty" to activate`)
+		if err != nil {
+			return err
+		}
+		return cmd.Run()
 	}
 	return nil
 }
@@ -156,7 +173,11 @@ tell application "Ghostty"
 end tell
 `, escapeAppleScript(keys))
 
-	return exec.Command("osascript", "-e", script).Run()
+	cmd, err := executil.Command("osascript", "-e", script)
+	if err != nil {
+		return err
+	}
+	return cmd.Run()
 }
 
 // WaitAndSendKeys waits then sends keystrokes.
@@ -224,4 +245,3 @@ func Detect() Terminal {
 	// Could add iTerm, Kitty, WezTerm, etc.
 	return NewGhostty() // Default to Ghostty commands
 }
-
