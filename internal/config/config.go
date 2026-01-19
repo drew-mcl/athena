@@ -238,7 +238,28 @@ func DefaultConfig() *Config {
 			HeartbeatInterval: 30 * time.Second,
 			HeartbeatTimeout:  2 * time.Minute,
 		},
-		Archetypes: map[string]Archetype{},
+		Archetypes: map[string]Archetype{
+			"planner": {
+				Description:    "Planning agent that explores codebases and creates implementation plans",
+				Prompt:         "You are a planning agent. Explore the codebase thoroughly and draft a detailed implementation plan. Do NOT modify any files.",
+				PermissionMode: "plan",
+				AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
+				Model:          "opus",
+			},
+			"executor": {
+				Description:    "Execution agent that implements plans and commits changes",
+				Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after each step.\n\nIMPORTANT: When you complete your work, you MUST commit all changes before finishing. Use conventional commit format (feat:, fix:, refactor:, etc.) with a clear subject line and a body explaining what was changed and why. Never leave uncommitted changes in the worktree.",
+				PermissionMode: "default",
+				Model:          "sonnet",
+			},
+			"reviewer": {
+				Description:    "Code review agent that analyzes changes",
+				Prompt:         "You are a code review agent. Analyze changes for bugs, security issues, and style violations.",
+				PermissionMode: "plan",
+				AllowedTools:   []string{"Glob", "Grep", "Read", "Task"},
+				Model:          "sonnet",
+			},
+		},
 		Terminal: TerminalConfig{
 			Provider:   "ghostty",
 			AutoAttach: false,
