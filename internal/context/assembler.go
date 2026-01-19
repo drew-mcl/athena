@@ -95,66 +95,76 @@ func (a *Assembler) Format(block *ContextBlock) string {
 	}
 
 	var sb strings.Builder
-
 	sb.WriteString("# Context\n\n")
 
-	// Project state section
-	if len(block.StateEntries) > 0 {
-		sb.WriteString("## Project State\n")
-		a.formatStateEntries(&sb, block.StateEntries)
-		sb.WriteString("\n")
-	}
-
-	// Blackboard sections
-	hasBlackboard := len(block.Decisions) > 0 ||
-		len(block.Findings) > 0 ||
-		len(block.Attempts) > 0 ||
-		len(block.Questions) > 0 ||
-		len(block.Artifacts) > 0
-
-	if hasBlackboard {
-		sb.WriteString("## Current Workflow\n")
-
-		if block.WorktreePath != "" {
-			sb.WriteString(fmt.Sprintf("Worktree: %s\n", block.WorktreePath))
-		}
-		if block.TicketID != "" {
-			sb.WriteString(fmt.Sprintf("Ticket: %s\n", block.TicketID))
-		}
-		sb.WriteString("\n")
-
-		if len(block.Decisions) > 0 {
-			sb.WriteString("### Decisions Made\n")
-			a.formatBlackboardEntries(&sb, block.Decisions)
-			sb.WriteString("\n")
-		}
-
-		if len(block.Findings) > 0 {
-			sb.WriteString("### Findings\n")
-			a.formatBlackboardEntries(&sb, block.Findings)
-			sb.WriteString("\n")
-		}
-
-		if len(block.Attempts) > 0 {
-			sb.WriteString("### What Was Tried\n")
-			a.formatBlackboardEntries(&sb, block.Attempts)
-			sb.WriteString("\n")
-		}
-
-		if len(block.Questions) > 0 {
-			sb.WriteString("### Open Questions\n")
-			a.formatBlackboardEntries(&sb, block.Questions)
-			sb.WriteString("\n")
-		}
-
-		if len(block.Artifacts) > 0 {
-			sb.WriteString("### Created Artifacts\n")
-			a.formatBlackboardEntries(&sb, block.Artifacts)
-			sb.WriteString("\n")
-		}
-	}
+	a.formatProjectState(&sb, block)
+	a.formatWorkflowSections(&sb, block)
 
 	return sb.String()
+}
+
+// formatProjectState renders the project state section.
+func (a *Assembler) formatProjectState(sb *strings.Builder, block *ContextBlock) {
+	if len(block.StateEntries) == 0 {
+		return
+	}
+	sb.WriteString("## Project State\n")
+	a.formatStateEntries(sb, block.StateEntries)
+	sb.WriteString("\n")
+}
+
+// formatWorkflowSections renders all blackboard sections.
+func (a *Assembler) formatWorkflowSections(sb *strings.Builder, block *ContextBlock) {
+	sections := []struct {
+		title   string
+		entries []*BlackboardEntry
+	}{
+		{"Decisions Made", block.Decisions},
+		{"Findings", block.Findings},
+		{"What Was Tried", block.Attempts},
+		{"Open Questions", block.Questions},
+		{"Created Artifacts", block.Artifacts},
+	}
+
+	// Check if any sections have entries
+	hasEntries := false
+	for _, s := range sections {
+		if len(s.entries) > 0 {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return
+	}
+
+	sb.WriteString("## Current Workflow\n")
+	a.formatWorkflowHeader(sb, block)
+
+	for _, s := range sections {
+		a.formatBlackboardSection(sb, s.title, s.entries)
+	}
+}
+
+// formatWorkflowHeader renders the worktree and ticket info.
+func (a *Assembler) formatWorkflowHeader(sb *strings.Builder, block *ContextBlock) {
+	if block.WorktreePath != "" {
+		sb.WriteString(fmt.Sprintf("Worktree: %s\n", block.WorktreePath))
+	}
+	if block.TicketID != "" {
+		sb.WriteString(fmt.Sprintf("Ticket: %s\n", block.TicketID))
+	}
+	sb.WriteString("\n")
+}
+
+// formatBlackboardSection renders a single blackboard section if it has entries.
+func (a *Assembler) formatBlackboardSection(sb *strings.Builder, title string, entries []*BlackboardEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	sb.WriteString("### " + title + "\n")
+	a.formatBlackboardEntries(sb, entries)
+	sb.WriteString("\n")
 }
 
 // formatStateEntries renders state entries grouped by type.
