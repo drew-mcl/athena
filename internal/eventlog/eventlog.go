@@ -7,19 +7,20 @@
 //   - Replicator: Async replication to external storage (MySQL/Postgres)
 //
 // Events flow: Runner → EventLog → EventBus → Subscribers
-//                          ↓
-//                    ContextCache
-//                          ↓
-//                     Replicator → External DB
+//
+//	      ↓
+//	ContextCache
+//	      ↓
+//	 Replicator → External DB
 package eventlog
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"time"
 
 	"github.com/drewfead/athena/internal/data"
+	"github.com/drewfead/athena/internal/store"
 )
 
 // =============================================================================
@@ -41,21 +42,10 @@ type EventLog interface {
 	LastSequence(ctx context.Context, agentID string) (int64, error)
 
 	// Snapshot creates a checkpoint for fast restoration.
-	Snapshot(ctx context.Context, agentID string) (*Snapshot, error)
+	Snapshot(ctx context.Context, agentID string) (*store.Snapshot, error)
 
 	// RestoreFromSnapshot loads state from a snapshot.
-	RestoreFromSnapshot(ctx context.Context, snap *Snapshot) error
-}
-
-// Snapshot represents a point-in-time checkpoint.
-type Snapshot struct {
-	ID        string          `json:"id"`
-	AgentID   string          `json:"agent_id"`
-	Sequence  int64           `json:"sequence"`    // Last event sequence included
-	Timestamp time.Time       `json:"timestamp"`
-	Checksum  string          `json:"checksum"`    // For integrity verification
-	Data      json.RawMessage `json:"data"`        // Serialized conversation state
-	Metadata  SnapshotMeta    `json:"metadata"`
+	RestoreFromSnapshot(ctx context.Context, snap *store.Snapshot) error
 }
 
 // SnapshotMeta contains metadata about the snapshot.
@@ -90,7 +80,7 @@ type CachedContext struct {
 	AgentID      string
 	Conversation *data.Conversation
 	LastUpdated  time.Time
-	Snapshot     *Snapshot // nil if built from events
+	Snapshot     *store.Snapshot // nil if built from events
 }
 
 // =============================================================================
@@ -152,13 +142,13 @@ type Replicator interface {
 
 // ReplicatorStatus reports replication health.
 type ReplicatorStatus struct {
-	Healthy         bool
-	PendingEvents   int
-	LastReplicated  time.Time
-	LagDuration     time.Duration
-	ErrorCount      int
-	LastError       error
-	LastErrorTime   *time.Time
+	Healthy        bool
+	PendingEvents  int
+	LastReplicated time.Time
+	LagDuration    time.Duration
+	ErrorCount     int
+	LastError      error
+	LastErrorTime  *time.Time
 }
 
 // =============================================================================
@@ -167,9 +157,9 @@ type ReplicatorStatus struct {
 
 // Pipeline orchestrates the event flow through all layers.
 type Pipeline struct {
-	Log       EventLog
-	Cache     ContextCache
-	Bus       EventBus
+	Log        EventLog
+	Cache      ContextCache
+	Bus        EventBus
 	Replicator Replicator // optional
 
 	mu sync.RWMutex
