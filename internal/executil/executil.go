@@ -109,6 +109,11 @@ func isSafeDir(info os.FileInfo) bool {
 	if runtime.GOOS == "windows" {
 		return true
 	}
+	// On macOS, Homebrew directories are group-writable but still safe
+	// Check if world-writable (not just group-writable)
+	if runtime.GOOS == "darwin" {
+		return info.Mode().Perm()&0o002 == 0 // Only check world-writable
+	}
 	return info.Mode().Perm()&0o022 == 0
 }
 
