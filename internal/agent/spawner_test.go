@@ -52,8 +52,8 @@ func setupTestEnv(t *testing.T) (*store.Store, *config.Config, func()) {
 	return st, cfg, cleanup
 }
 
-// TestSpawnerBuildOptions tests that spawn options are correctly built from archetypes
-func TestSpawnerBuildOptions(t *testing.T) {
+// TestSpawnerBuildRunSpec tests that run specs are correctly built from archetypes
+func TestSpawnerBuildRunSpec(t *testing.T) {
 	st, cfg, cleanup := setupTestEnv(t)
 	defer cleanup()
 
@@ -67,26 +67,26 @@ func TestSpawnerBuildOptions(t *testing.T) {
 			Prompt:       "Create a plan for adding dark mode",
 		}
 
-		opts := spawner.buildOptions(spec, "session-123")
+		runSpec, _ := spawner.buildRunSpec(spec, "session-123")
 
-		if opts.SessionID != "session-123" {
-			t.Errorf("Expected session ID 'session-123', got '%s'", opts.SessionID)
+		if runSpec.SessionID != "session-123" {
+			t.Errorf("Expected session ID 'session-123', got '%s'", runSpec.SessionID)
 		}
 
-		if opts.WorkDir != spec.WorktreePath {
-			t.Errorf("Expected work dir '%s', got '%s'", spec.WorktreePath, opts.WorkDir)
+		if runSpec.WorkDir != spec.WorktreePath {
+			t.Errorf("Expected work dir '%s', got '%s'", spec.WorktreePath, runSpec.WorkDir)
 		}
 
-		if opts.Model != "sonnet" {
-			t.Errorf("Expected model 'sonnet', got '%s'", opts.Model)
+		if runSpec.Model != "sonnet" {
+			t.Errorf("Expected model 'sonnet', got '%s'", runSpec.Model)
 		}
 
-		if opts.PermissionMode != "plan" {
-			t.Errorf("Expected permission mode 'plan', got '%s'", opts.PermissionMode)
+		if runSpec.PermissionMode != "plan" {
+			t.Errorf("Expected permission mode 'plan', got '%s'", runSpec.PermissionMode)
 		}
 
-		if len(opts.AllowedTools) != 3 {
-			t.Errorf("Expected 3 allowed tools, got %d", len(opts.AllowedTools))
+		if len(runSpec.AllowedTools) != 3 {
+			t.Errorf("Expected 3 allowed tools, got %d", len(runSpec.AllowedTools))
 		}
 	})
 
@@ -98,15 +98,15 @@ func TestSpawnerBuildOptions(t *testing.T) {
 			Prompt:       "Implement the dark mode feature",
 		}
 
-		opts := spawner.buildOptions(spec, "session-456")
+		runSpec, _ := spawner.buildRunSpec(spec, "session-456")
 
-		if opts.PermissionMode != "default" {
-			t.Errorf("Expected permission mode 'default', got '%s'", opts.PermissionMode)
+		if runSpec.PermissionMode != "default" {
+			t.Errorf("Expected permission mode 'default', got '%s'", runSpec.PermissionMode)
 		}
 
 		// Executor should have all tools (nil means all)
-		if opts.AllowedTools != nil {
-			t.Errorf("Expected nil allowed tools for executor, got %v", opts.AllowedTools)
+		if runSpec.AllowedTools != nil {
+			t.Errorf("Expected nil allowed tools for executor, got %v", runSpec.AllowedTools)
 		}
 	})
 
@@ -118,11 +118,11 @@ func TestSpawnerBuildOptions(t *testing.T) {
 			Prompt:       "Do something",
 		}
 
-		opts := spawner.buildOptions(spec, "session-789")
+		runSpec, _ := spawner.buildRunSpec(spec, "session-789")
 
 		// Should fall back to default model
-		if opts.Model != "sonnet" {
-			t.Errorf("Expected fallback model 'sonnet', got '%s'", opts.Model)
+		if runSpec.Model != "sonnet" {
+			t.Errorf("Expected fallback model 'sonnet', got '%s'", runSpec.Model)
 		}
 	})
 }
