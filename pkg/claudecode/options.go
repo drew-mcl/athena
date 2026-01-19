@@ -185,7 +185,9 @@ func ExecutorOptions(sessionID, workDir, prompt string) *SpawnOptions {
 		Prompt:         prompt,
 		Model:          "sonnet",
 		PermissionMode: "default",
-		SystemPrompt:   "You are an execution agent. Follow the provided plan exactly. Report progress after each step.",
+		SystemPrompt: `You are an execution agent. Follow the provided plan exactly. Report progress after each step.
+
+IMPORTANT: When you complete your work, you MUST commit all changes before finishing. Use conventional commit format (feat:, fix:, refactor:, etc.) with a clear subject line and a body explaining what was changed and why. Never leave uncommitted changes in the worktree.`,
 	}
 }
 
