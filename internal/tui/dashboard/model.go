@@ -694,6 +694,20 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.doKill()
 
+	case "A":
+		// Quick approve plan directly from agents tab
+		if m.tab != TabAgents {
+			return m, m.showStatus("Approve only available on agents tab")
+		}
+		return m, m.doQuickApprove()
+
+	case "X":
+		// Quick execute plan directly from agents tab
+		if m.tab != TabAgents {
+			return m, m.showStatus("Execute only available on agents tab")
+		}
+		return m, m.doQuickExecute()
+
 	case " ":
 		// Space also toggles note done (at any level)
 		if m.tab == TabNotes {
@@ -2397,12 +2411,19 @@ func (m Model) doRetry() tea.Cmd {
 	}
 
 	if m.tab != TabAgents || m.selected >= len(agents) {
-		return m.showStatus("Select a crashed agent to retry")
+		return m.showStatus("Select an agent to retry")
 	}
 
 	agent := agents[m.selected]
-	if agent.Status != "crashed" {
-		return m.showStatus("Only crashed agents can be retried")
+
+	// Allow retry for crashed agents OR completed planners
+	canRetry := agent.Status == "crashed"
+	if agent.Archetype == "planner" && agent.Status == "completed" {
+		canRetry = true
+	}
+
+	if !canRetry {
+		return m.showStatus("Only crashed agents or completed planners can be retried")
 	}
 
 	return m.respawnAgent(agent)
@@ -2410,8 +2431,8 @@ func (m Model) doRetry() tea.Cmd {
 
 func (m Model) respawnAgent(agent *control.AgentInfo) tea.Cmd {
 	return func() tea.Msg {
-		// First kill the crashed agent to clean up
-		_ = m.client.KillAgent(agent.ID)
+		// Use cascade delete to clean up agent and all dependent records (including plans)
+		_ = m.client.KillAgentWithDelete(agent.ID, true)
 
 		// Now spawn a new agent with the same config
 		_, err := m.client.SpawnAgent(control.SpawnAgentRequest{
@@ -2424,6 +2445,63 @@ func (m Model) respawnAgent(agent *control.AgentInfo) tea.Cmd {
 		}
 		return dataUpdateMsg{}
 	}
+}
+
+// doQuickApprove approves a draft plan directly from the agents tab.
+func (m Model) doQuickApprove() tea.Cmd {
+	var agents []*control.AgentInfo
+
+	if m.level == LevelDashboard {
+		agents = m.agents
+	} else {
+		agents = m.projectAgents()
+	}
+
+	if m.selected >= len(agents) {
+		return m.showStatus("No agent selected")
+	}
+
+	agent := agents[m.selected]
+
+	// Must be a planner with a draft plan
+	if agent.Archetype != "planner" {
+		return m.showStatus("Approve only works on planner agents")
+	}
+	if agent.PlanStatus != "draft" {
+		return m.showStatus("Plan must be in draft status to approve")
+	}
+
+	return m.approvePlan(agent.WorktreePath)
+}
+
+// doQuickExecute spawns an executor for an approved plan directly from agents tab.
+func (m Model) doQuickExecute() tea.Cmd {
+	var agents []*control.AgentInfo
+
+	if m.level == LevelDashboard {
+		agents = m.agents
+	} else {
+		agents = m.projectAgents()
+	}
+
+	if m.selected >= len(agents) {
+		return m.showStatus("No agent selected")
+	}
+
+	agent := agents[m.selected]
+
+	// Must be a planner with an approved plan
+	if agent.Archetype != "planner" {
+		return m.showStatus("Execute only works on planner agents")
+	}
+	if agent.PlanStatus != "approved" {
+		if agent.PlanStatus == "draft" {
+			return m.showStatus("Plan must be approved first - press [A] to approve")
+		}
+		return m.showStatus("No approved plan to execute")
+	}
+
+	return m.spawnExecutor(agent.WorktreePath)
 }
 
 func (m Model) doNormalize() tea.Cmd {

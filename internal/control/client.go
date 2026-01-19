@@ -185,6 +185,19 @@ func (c *Client) KillAgent(id string) error {
 	return nil
 }
 
+// KillAgentWithDelete terminates an agent and optionally deletes all associated data.
+// When delete is true, it performs a cascade delete removing all dependent records.
+func (c *Client) KillAgentWithDelete(id string, deleteData bool) error {
+	resp, err := c.Call("kill_agent", map[string]any{"id": id, "delete": deleteData})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
 // ListWorktrees retrieves all worktrees.
 func (c *Client) ListWorktrees() ([]*WorktreeInfo, error) {
 	resp, err := c.Call("list_worktrees", nil)
@@ -576,6 +589,8 @@ type AgentInfo struct {
 	LastActivity     string `json:"last_activity,omitempty"`      // Human-readable current action
 	LastActivityTime string `json:"last_activity_time,omitempty"` // When the activity happened
 	LastEventType    string `json:"last_event_type,omitempty"`    // Raw event type
+	// Plan status for planner agents (enriched by daemon)
+	PlanStatus string `json:"plan_status,omitempty"` // pending | draft | approved | executing | completed
 	// Usage metrics
 	Metrics *AgentMetrics `json:"metrics,omitempty"`
 }
