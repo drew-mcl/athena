@@ -527,6 +527,135 @@ func (c *Client) CleanupWorktree(worktreePath string, deleteBranch bool) error {
 	return nil
 }
 
+// GetBlackboard retrieves all blackboard entries for a worktree.
+func (c *Client) GetBlackboard(worktreePath string) ([]*BlackboardEntryInfo, error) {
+	resp, err := c.Call("get_blackboard", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var entries []*BlackboardEntryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &entries)
+	return entries, nil
+}
+
+// PostBlackboard posts a new entry to the blackboard.
+func (c *Client) PostBlackboard(req PostBlackboardRequest) (*BlackboardEntryInfo, error) {
+	resp, err := c.Call("post_blackboard", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var entry BlackboardEntryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &entry)
+	return &entry, nil
+}
+
+// ClearBlackboard removes all entries for a worktree.
+func (c *Client) ClearBlackboard(worktreePath string) error {
+	resp, err := c.Call("clear_blackboard", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// GetBlackboardSummary retrieves statistics for a worktree's blackboard.
+func (c *Client) GetBlackboardSummary(worktreePath string) (*BlackboardSummaryInfo, error) {
+	resp, err := c.Call("get_blackboard_summary", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var summary BlackboardSummaryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &summary)
+	return &summary, nil
+}
+
+// GetProjectState retrieves all state entries for a project.
+func (c *Client) GetProjectState(project string) ([]*StateEntryInfo, error) {
+	resp, err := c.Call("get_project_state", map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var entries []*StateEntryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &entries)
+	return entries, nil
+}
+
+// SetProjectState creates or updates a project state entry.
+func (c *Client) SetProjectState(req SetStateRequest) (*StateEntryInfo, error) {
+	resp, err := c.Call("set_project_state", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var entry StateEntryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &entry)
+	return &entry, nil
+}
+
+// GetStateSummary retrieves statistics for a project's state.
+func (c *Client) GetStateSummary(project string) (*StateSummaryInfo, error) {
+	resp, err := c.Call("get_state_summary", map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var summary StateSummaryInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &summary)
+	return &summary, nil
+}
+
+// GetContextPreview retrieves a formatted preview of context an agent would see.
+func (c *Client) GetContextPreview(worktreePath, projectName string) (string, error) {
+	resp, err := c.Call("get_context_preview", map[string]string{
+		"worktree_path": worktreePath,
+		"project_name":  projectName,
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.Error != "" {
+		return "", errors.New(resp.Error)
+	}
+
+	var result struct {
+		Context string `json:"context"`
+	}
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &result)
+	return result.Context, nil
+}
+
 func (c *Client) readLoop() {
 	for c.scanner.Scan() {
 		select {
@@ -796,4 +925,73 @@ type MergeLocalResult struct {
 type CleanupWorktreeRequest struct {
 	WorktreePath string `json:"worktree_path"`
 	DeleteBranch bool   `json:"delete_branch"` // Whether to also delete the branch
+}
+
+// BlackboardEntryInfo represents a blackboard entry for API responses.
+type BlackboardEntryInfo struct {
+	ID           string `json:"id"`
+	WorktreePath string `json:"worktree_path"`
+	EntryType    string `json:"entry_type"` // decision | finding | attempt | question | artifact
+	Content      string `json:"content"`
+	AgentID      string `json:"agent_id"`
+	Sequence     int    `json:"sequence"`
+	CreatedAt    string `json:"created_at"`
+	Resolved     bool   `json:"resolved"`
+	ResolvedBy   string `json:"resolved_by,omitempty"`
+}
+
+// StateEntryInfo represents a project state entry for API responses.
+type StateEntryInfo struct {
+	ID          string  `json:"id"`
+	Project     string  `json:"project"`
+	StateType   string  `json:"state_type"` // architecture | convention | constraint | decision | environment
+	Key         string  `json:"key"`
+	Value       string  `json:"value"`
+	Confidence  float64 `json:"confidence"`
+	SourceAgent string  `json:"source_agent,omitempty"`
+	SourceRef   string  `json:"source_ref,omitempty"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+// BlackboardSummaryInfo provides statistics about blackboard entries.
+type BlackboardSummaryInfo struct {
+	WorktreePath    string `json:"worktree_path"`
+	DecisionCount   int    `json:"decision_count"`
+	FindingCount    int    `json:"finding_count"`
+	AttemptCount    int    `json:"attempt_count"`
+	QuestionCount   int    `json:"question_count"`
+	UnresolvedCount int    `json:"unresolved_count"`
+	ArtifactCount   int    `json:"artifact_count"`
+	TotalCount      int    `json:"total_count"`
+}
+
+// StateSummaryInfo provides statistics about project state entries.
+type StateSummaryInfo struct {
+	Project           string  `json:"project"`
+	ArchitectureCount int     `json:"architecture_count"`
+	ConventionCount   int     `json:"convention_count"`
+	ConstraintCount   int     `json:"constraint_count"`
+	DecisionCount     int     `json:"decision_count"`
+	EnvironmentCount  int     `json:"environment_count"`
+	TotalCount        int     `json:"total_count"`
+	AvgConfidence     float64 `json:"avg_confidence"`
+}
+
+// PostBlackboardRequest is the request to post a blackboard entry.
+type PostBlackboardRequest struct {
+	WorktreePath string `json:"worktree_path"`
+	EntryType    string `json:"entry_type"` // decision | finding | attempt | question | artifact
+	Content      string `json:"content"`
+	AgentID      string `json:"agent_id,omitempty"` // Optional, defaults to "manual"
+}
+
+// SetStateRequest is the request to set a project state entry.
+type SetStateRequest struct {
+	Project    string  `json:"project"`
+	StateType  string  `json:"state_type"` // architecture | convention | constraint | decision | environment
+	Key        string  `json:"key"`
+	Value      string  `json:"value"`
+	Confidence float64 `json:"confidence,omitempty"` // Defaults to 1.0
+	AgentID    string  `json:"agent_id,omitempty"`   // Optional source agent
 }

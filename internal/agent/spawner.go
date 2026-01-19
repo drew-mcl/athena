@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/drewfead/athena/internal/config"
+	agentctx "github.com/drewfead/athena/internal/context"
 	"github.com/drewfead/athena/internal/data"
 	"github.com/drewfead/athena/internal/eventlog"
 	"github.com/drewfead/athena/internal/logging"
@@ -22,9 +23,10 @@ import (
 
 // Spawner manages the creation and tracking of Claude Code agent processes.
 type Spawner struct {
-	config   *config.Config
-	store    *store.Store
-	pipeline *eventlog.Pipeline
+	config     *config.Config
+	store      *store.Store
+	pipeline   *eventlog.Pipeline
+	contextMgr *agentctx.Manager
 
 	processes map[string]*ManagedProcess
 	mu        sync.RWMutex
@@ -46,16 +48,22 @@ func NewSpawner(cfg *config.Config, st *store.Store) *Spawner {
 // NewSpawnerWithPipeline creates a spawner with a custom pipeline.
 func NewSpawnerWithPipeline(cfg *config.Config, st *store.Store, pipeline *eventlog.Pipeline) *Spawner {
 	return &Spawner{
-		config:    cfg,
-		store:     st,
-		pipeline:  pipeline,
-		processes: make(map[string]*ManagedProcess),
+		config:     cfg,
+		store:      st,
+		pipeline:   pipeline,
+		contextMgr: agentctx.NewManager(st),
+		processes:  make(map[string]*ManagedProcess),
 	}
 }
 
 // Pipeline returns the event pipeline for external subscriptions.
 func (s *Spawner) Pipeline() *eventlog.Pipeline {
 	return s.pipeline
+}
+
+// ContextManager returns the context manager for external access.
+func (s *Spawner) ContextManager() *agentctx.Manager {
+	return s.contextMgr
 }
 
 // SpawnSpec defines how to spawn an agent.
@@ -192,14 +200,26 @@ func (s *Spawner) ListRunning() []string {
 func (s *Spawner) buildOptions(spec SpawnSpec, sessionID string) *claudecode.SpawnOptions {
 	archetype := s.config.Archetypes[spec.Archetype]
 
+	// Build prompt with context prepended
+	prompt := spec.Prompt
+	if s.contextMgr != nil {
+		promptWithContext, err := s.contextMgr.BuildPromptWithContext(spec.Prompt, spec.WorktreePath, spec.ProjectName)
+		if err != nil {
+			logging.Warn("failed to build context for prompt", "error", err, "worktree", spec.WorktreePath)
+		} else {
+			prompt = promptWithContext
+		}
+	}
+
 	opts := &claudecode.SpawnOptions{
 		SessionID:      sessionID,
 		WorkDir:        spec.WorktreePath,
-		Prompt:         spec.Prompt,
+		Prompt:         prompt,
 		Model:          archetype.Model,
 		PermissionMode: archetype.PermissionMode,
 		AllowedTools:   archetype.AllowedTools,
 		SystemPrompt:   archetype.Prompt,
+		GitIdentity:    s.resolveGitIdentity(spec.Archetype),
 	}
 
 	// Use defaults if archetype not found
@@ -208,6 +228,41 @@ func (s *Spawner) buildOptions(spec SpawnSpec, sessionID string) *claudecode.Spa
 	}
 
 	return opts
+}
+
+// resolveGitIdentity returns the git identity config for a given archetype.
+// It first checks for archetype-specific identity, then falls back to default.
+// Returns nil if no identity is configured (graceful fallback to local git config).
+func (s *Spawner) resolveGitIdentity(archetype string) *claudecode.GitIdentityConfig {
+	identities := s.config.Integrations.Identities
+
+	// Try archetype-specific identity first
+	var identity *config.AgentIdentity
+	if identities.Archetypes != nil {
+		identity = identities.Archetypes[archetype]
+	}
+
+	// Fall back to default identity
+	if identity == nil {
+		identity = identities.Default
+	}
+
+	// No identity configured - graceful fallback
+	if identity == nil || identity.Name == "" {
+		return nil
+	}
+
+	gitConfig := &claudecode.GitIdentityConfig{
+		AuthorName:  identity.Name,
+		AuthorEmail: identity.Email,
+	}
+
+	// Add co-author line if configured
+	if identities.CoAuthor != nil {
+		gitConfig.CoAuthorLine = identities.CoAuthor.CoAuthorLine()
+	}
+
+	return gitConfig
 }
 
 func (s *Spawner) handleEvents(mp *ManagedProcess) {
@@ -270,6 +325,11 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
 	}
 	s.store.LogAgentEvent(mp.AgentID, string(event.Type), payload)
 
+	// Extract structured markers from assistant messages
+	if s.contextMgr != nil && event.Type == claudecode.EventTypeAssistant && event.Content != "" {
+		s.extractMarkersFromContent(mp, event.Content)
+	}
+
 	// Update status based on event type
 	switch {
 	case event.IsThinking():
@@ -288,6 +348,30 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
 
 	// Update heartbeat
 	s.store.UpdateHeartbeat(mp.AgentID)
+}
+
+// extractMarkersFromContent parses structured markers from agent output and records them.
+func (s *Spawner) extractMarkersFromContent(mp *ManagedProcess, content string) {
+	// Get agent info for worktree/project context
+	agent, err := s.store.GetAgent(mp.AgentID)
+	if err != nil || agent == nil {
+		logging.Debug("could not get agent for marker extraction", "agent_id", mp.AgentID)
+		return
+	}
+
+	// Parse and record markers
+	markers, err := s.contextMgr.ParseAgentOutput(agent.WorktreePath, agent.ProjectName, mp.AgentID, content)
+	if err != nil {
+		logging.Warn("failed to parse agent output for markers", "agent_id", mp.AgentID, "error", err)
+		return
+	}
+
+	if len(markers) > 0 {
+		logging.Debug("extracted markers from agent output",
+			"agent_id", mp.AgentID,
+			"count", len(markers),
+			"worktree", agent.WorktreePath)
+	}
 }
 
 func (s *Spawner) handleExit(mp *ManagedProcess) {

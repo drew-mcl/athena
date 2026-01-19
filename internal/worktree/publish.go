@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/github"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 )
@@ -29,6 +30,7 @@ type PublishOptions struct {
 	WorktreePath string
 	Title        string // PR title (auto-generated if empty)
 	Body         string // PR body (auto-generated if empty)
+	Archetype    string // Agent archetype (used for identity resolution)
 }
 
 // PublishResult contains the result of publishing.
@@ -97,11 +99,29 @@ func (p *Publisher) PublishPR(opts PublishOptions) (*PublishResult, error) {
 		body = generatePRBody(wt)
 	}
 
-	// 6. Create PR via gh CLI
+	// 6. Create PR - try GitHub App first, fall back to gh CLI
 	logging.Info("creating PR", "title", title, "worktree", opts.WorktreePath)
-	prURL, err := createPR(opts.WorktreePath, title, body)
-	if err != nil {
-		return nil, fmt.Errorf("gh pr create failed: %w", err)
+
+	var prURL string
+	appClient := github.IdentityForArchetype(p.config, opts.Archetype)
+	if appClient != nil {
+		// Use GitHub App for PR creation (shows as bot)
+		prURL, err = p.createPRWithApp(appClient, opts.WorktreePath, branch, title, body)
+		if err != nil {
+			logging.Warn("GitHub App PR creation failed, falling back to gh CLI",
+				"error", err, "identity", appClient.String())
+			// Fall back to gh CLI
+			prURL, err = createPR(opts.WorktreePath, title, body)
+			if err != nil {
+				return nil, fmt.Errorf("PR creation failed: %w", err)
+			}
+		}
+	} else {
+		// No GitHub App configured, use gh CLI
+		prURL, err = createPR(opts.WorktreePath, title, body)
+		if err != nil {
+			return nil, fmt.Errorf("gh pr create failed: %w", err)
+		}
 	}
 
 	// 7. Update store
@@ -374,4 +394,59 @@ func createPR(worktreePath, title, body string) (string, error) {
 	// gh pr create outputs the URL
 	prURL := strings.TrimSpace(string(output))
 	return prURL, nil
+}
+
+// createPRWithApp creates a PR using a GitHub App client.
+// This makes the PR appear as created by the bot identity.
+func (p *Publisher) createPRWithApp(client *github.AppClient, worktreePath, branch, title, body string) (string, error) {
+	// Get the remote URL to extract owner/repo
+	remoteURL, err := getRemoteURL(worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get remote URL: %w", err)
+	}
+
+	owner, repo, err := github.ParseRepoFromRemote(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse remote URL: %w", err)
+	}
+
+	// Get the default branch for base
+	mainRepoPath, err := getMainRepoPath(worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get main repo path: %w", err)
+	}
+	baseBranch := getDefaultBranch(mainRepoPath)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	result, err := client.CreatePR(github.PROptions{
+		Owner: owner,
+		Repo:  repo,
+		Title: title,
+		Body:  body,
+		Head:  branch,
+		Base:  baseBranch,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	logging.Info("PR created via GitHub App",
+		"url", result.HTMLURL,
+		"number", result.Number,
+		"identity", client.String())
+
+	return result.HTMLURL, nil
+}
+
+// getRemoteURL returns the origin remote URL for a git repository.
+func getRemoteURL(path string) (string, error) {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = path
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
