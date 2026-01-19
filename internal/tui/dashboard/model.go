@@ -40,6 +40,7 @@ const (
 	TabTasks                // Short-lived tasks (drill-in only)
 	TabNotes                // Project-specific notes (drill-in only)
 	TabQuestions            // Quick Q&A - project-less (dashboard only)
+	TabAdmin                // System administration and monitoring
 )
 
 const (
@@ -48,7 +49,7 @@ const (
 )
 
 // Dashboard level tabs (global view)
-var dashboardTabs = []Tab{TabProjects, TabWorktrees, TabJobs, TabQuestions}
+var dashboardTabs = []Tab{TabProjects, TabWorktrees, TabJobs, TabQuestions, TabAdmin}
 
 // Project level tabs (drill-in view)
 var projectTabs = []Tab{TabWorktrees, TabAgents, TabTasks, TabNotes}
@@ -1773,6 +1774,7 @@ func (m Model) renderHeader() string {
 		TabAgents:    "agents",
 		TabTasks:     "tasks",
 		TabNotes:     "notes",
+		TabAdmin:     "admin",
 	}
 
 	// Tabs at dashboard level (worktrees, agents, questions, notes)
