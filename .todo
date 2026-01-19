@@ -1,10 +1,10 @@
-# : would be good on the agents pae so have some kind of counts - tool use, files read, lines changed - open to suggestions here so the ui still looks clean
+# : the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
 
 ## Description
-would be good on the agents pae so have some kind of counts - tool use, files read, lines changed - open to suggestions here so the ui still looks clean
+the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
 
 ## Tasks
 - [ ] TODO
 
 ---
-Ticket: 
+Ticket:
