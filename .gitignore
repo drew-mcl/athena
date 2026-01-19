@@ -32,3 +32,4 @@ go.work.sum
 # Athena runtime
 .athena/
 athena.sock
+worktrees/
