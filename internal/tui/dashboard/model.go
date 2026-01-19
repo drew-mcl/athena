@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/terminal"
 	"github.com/drewfead/athena/internal/tui"
 	"github.com/drewfead/athena/internal/tui/layout"
@@ -873,7 +874,11 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a":
 		if m.detailAgent != nil {
-			m.term.AttachToAgent(m.detailAgent.WorktreePath, m.detailAgent.ID)
+			if m.detailAgent.ClaudeSessionID == "" {
+				logging.Warn("agent has no claude session ID", "agent_id", m.detailAgent.ID)
+				return m, nil
+			}
+			m.term.AttachToAgent(m.detailAgent.WorktreePath, m.detailAgent.ClaudeSessionID)
 		}
 	case "e":
 		if m.detailAgent != nil {
@@ -2118,13 +2123,26 @@ func (m *Model) doAttach() {
 		if m.selected < len(wts) {
 			wt := wts[m.selected]
 			if wt.AgentID != "" {
-				m.term.AttachToAgent(wt.Path, wt.AgentID)
+				agent, err := m.client.GetAgent(wt.AgentID)
+				if err != nil {
+					logging.Error("failed to get agent for attach", "agent_id", wt.AgentID, "error", err)
+					return
+				}
+				if agent.ClaudeSessionID == "" {
+					logging.Warn("agent has no claude session ID", "agent_id", wt.AgentID)
+					return
+				}
+				m.term.AttachToAgent(wt.Path, agent.ClaudeSessionID)
 			}
 		}
 	case TabAgents:
 		if m.selected < len(agents) {
 			a := agents[m.selected]
-			m.term.AttachToAgent(a.WorktreePath, a.ID)
+			if a.ClaudeSessionID == "" {
+				logging.Warn("agent has no claude session ID", "agent_id", a.ID)
+				return
+			}
+			m.term.AttachToAgent(a.WorktreePath, a.ClaudeSessionID)
 		}
 	}
 }
