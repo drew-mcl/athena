@@ -45,6 +45,7 @@ Core infrastructure for orchestrating Claude Code agents with data sovereignty.
 - [ ] Message type filtering (show only tool calls, errors, etc.)
 - [ ] Conversation replay viewer (step through history)
 - [ ] Agent comparison view (side-by-side outputs)
+- [ ] All-in-one ops view (Jira/Linear auto creation, CI/CD views, task scheduling/planning, context insights via vector embeddings)
 
 ---
 

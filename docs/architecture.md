@@ -46,6 +46,21 @@ Why this matters:
 - **Lower overhead**: Fewer manual recaps and less prompt rework.
 - **Team leverage**: Share context safely across collaborators or environments.
 
+### 5. Bloomberg-Style Ops Terminal
+
+**Athena should be the command-and-control terminal for engineering.**
+
+The interface should converge project management, CI/CD, agent activity,
+scheduling, and context insights into one ops view, while integrations fan out
+to Jira/Linear and other systems. Context intelligence (summaries, embeddings,
+data signals) should surface inline with operational decisions.
+
+Why this matters:
+- **One console**: Fewer tool hops and less context switching.
+- **Faster ops**: CI/CD, task queues, and agent status in one view.
+- **Automated flow**: Create and update tickets directly from agent output.
+- **Better decisions**: Context and embeddings turn history into insight.
+
 ---
 
 ## System Overview
