@@ -2,8 +2,13 @@
 package agent
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/drewfead/athena/internal/config"
@@ -358,6 +363,26 @@ func (s *Spawner) maybeAutoSpawnExecutor(agent *store.Agent) {
 		return
 	}
 
+	// Get plan content - try DB cache first, then Claude's native storage
+	planContent := plan.Content
+	if planContent == "" && agent.ClaudeSessionID != "" {
+		// Fall back to reading Claude's native plan storage
+		content, err := readClaudePlan(agent.WorktreePath, agent.ClaudeSessionID)
+		if err != nil {
+			logging.Warn("could not read plan from Claude storage", "error", err, "worktree", agent.WorktreePath)
+		} else {
+			planContent = content
+			// Cache it for future use
+			s.store.UpdatePlanContent(agent.WorktreePath, content)
+		}
+	}
+
+	if planContent == "" {
+		logging.Error("cannot auto-spawn executor: no plan content found",
+			"worktree", agent.WorktreePath, "plan_id", plan.ID)
+		return
+	}
+
 	logging.Info("automatic mode: auto-approving plan and spawning executor",
 		"worktree", agent.WorktreePath,
 		"plan_id", plan.ID)
@@ -368,12 +393,21 @@ func (s *Spawner) maybeAutoSpawnExecutor(agent *store.Agent) {
 		return
 	}
 
+	// Build executor prompt with embedded plan content
+	prompt := fmt.Sprintf(`## Approved Implementation Plan
+
+%s
+
+---
+
+Execute this plan precisely. After each step, report what you did.`, planContent)
+
 	// Spawn executor agent
 	spec := SpawnSpec{
 		WorktreePath: agent.WorktreePath,
 		ProjectName:  agent.ProjectName,
 		Archetype:    "executor",
-		Prompt:       "Execute the approved implementation plan at .plan.md in this worktree.",
+		Prompt:       prompt,
 		ParentID:     agent.ID,
 	}
 
@@ -388,4 +422,73 @@ func (s *Spawner) maybeAutoSpawnExecutor(agent *store.Agent) {
 
 	// Update plan to executing status
 	s.store.UpdatePlanStatus(agent.WorktreePath, store.PlanStatusExecuting)
+}
+
+// readClaudePlan reads the plan content from Claude's native plan storage.
+// Claude stores plans at ~/.claude/plans/<slug>.md where the slug is found
+// in the session's jsonl file.
+func readClaudePlan(worktreePath, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("no session ID")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot get home dir: %w", err)
+	}
+
+	// Claude stores projects at ~/.claude/projects/<escaped-path>/
+	// where path separators are replaced with dashes
+	escapedPath := strings.ReplaceAll(worktreePath, "/", "-")
+	sessionFile := filepath.Join(homeDir, ".claude", "projects", escapedPath, sessionID+".jsonl")
+
+	// Read session file to extract slug
+	slug, err := extractSessionSlug(sessionFile)
+	if err != nil {
+		return "", fmt.Errorf("cannot extract slug: %w", err)
+	}
+
+	// Read plan from Claude's plans directory
+	planPath := filepath.Join(homeDir, ".claude", "plans", slug+".md")
+	content, err := os.ReadFile(planPath)
+	if err != nil {
+		return "", fmt.Errorf("plan not found at %s: %w", planPath, err)
+	}
+
+	return string(content), nil
+}
+
+// extractSessionSlug extracts the "slug" field from a Claude session jsonl file.
+// The slug determines the plan filename in ~/.claude/plans/
+func extractSessionSlug(sessionFile string) (string, error) {
+	f, err := os.Open(sessionFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Increase buffer size for large JSON lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Quick check before parsing
+		if !strings.Contains(line, `"slug"`) {
+			continue
+		}
+
+		var entry struct {
+			Slug string `json:"slug"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Slug != "" {
+			return entry.Slug, nil
+		}
+	}
+
+	return "", fmt.Errorf("no slug found in session file")
 }
