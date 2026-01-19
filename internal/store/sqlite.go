@@ -597,4 +597,8 @@ type AgentMetrics struct {
 	LinesChanged int
 	MessageCount int
 	Duration     time.Duration
+	InputTokens  int
+	OutputTokens int
+	CacheReads   int
+	TotalTokens  int
 }

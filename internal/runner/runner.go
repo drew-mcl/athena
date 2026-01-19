@@ -41,6 +41,14 @@ type RunSpec struct {
 	ForkSession     string
 	MaxBudgetUSD    float64
 	Plan            bool
+	GitIdentity     *GitIdentityConfig
+	Env             map[string]string
+}
+
+type GitIdentityConfig struct {
+	AuthorName   string
+	AuthorEmail  string
+	CoAuthorLine string
 }
 
 // ResumeSpec defines how to resume an existing session.
@@ -66,6 +74,14 @@ type Event struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	Timestamp time.Time       `json:"-"`
 	Raw       json.RawMessage `json:"raw,omitempty"`
+	Usage     *EventUsage     `json:"usage,omitempty"`
+}
+
+// EventUsage tracks token usage for an event.
+type EventUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	CacheReads   int `json:"cache_reads"`
 }
 
 // Session represents a running agent session.

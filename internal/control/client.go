@@ -732,6 +732,10 @@ type AgentMetrics struct {
 	LinesChanged int   `json:"lines_changed"`
 	MessageCount int   `json:"message_count"`
 	DurationMs   int64 `json:"duration_ms"` // Duration in milliseconds for JSON serialization
+	InputTokens  int   `json:"input_tokens,omitempty"`
+	OutputTokens int   `json:"output_tokens,omitempty"`
+	CacheReads   int   `json:"cache_reads,omitempty"`
+	TotalTokens  int   `json:"total_tokens,omitempty"`
 }
 
 // AgentEventInfo represents an agent event for API responses.

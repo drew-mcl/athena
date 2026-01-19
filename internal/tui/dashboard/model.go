@@ -1943,6 +1943,10 @@ func (m Model) renderAgentDetail() string {
 		content.WriteString(fmt.Sprintf("    Files:    %d read, %d written\n", agent.Metrics.FilesRead, agent.Metrics.FilesWritten))
 		content.WriteString(fmt.Sprintf("    Changes:  +%s lines\n", formatCompactNumber(agent.Metrics.LinesChanged)))
 		content.WriteString(fmt.Sprintf("    Messages: %d\n", agent.Metrics.MessageCount))
+		content.WriteString(fmt.Sprintf("    Tokens:   %s in, %s out\n", formatCompactNumber(agent.Metrics.InputTokens), formatCompactNumber(agent.Metrics.OutputTokens)))
+		if agent.Metrics.CacheReads > 0 {
+			content.WriteString(fmt.Sprintf("    Cache:    %s reads\n", formatCompactNumber(agent.Metrics.CacheReads)))
+		}
 		content.WriteString(fmt.Sprintf("    Duration: %s\n", formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond)))
 	}
 

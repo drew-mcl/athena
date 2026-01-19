@@ -67,6 +67,14 @@ type Message struct {
 	// Metadata
 	SessionID string          `json:"session_id,omitempty"`
 	Raw       json.RawMessage `json:"raw,omitempty"` // Original event for debugging
+	Usage     *Usage          `json:"usage,omitempty"`
+}
+
+// Usage tracks token consumption for a message.
+type Usage struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
+	CacheReads   int `json:"cache_reads,omitempty"`
 }
 
 // ToolContent holds tool call/result data.

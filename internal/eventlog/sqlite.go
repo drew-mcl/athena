@@ -71,7 +71,7 @@ func (l *SQLiteEventLog) LastSequence(ctx context.Context, agentID string) (int6
 	return int64(count - 1), nil
 }
 
-func (l *SQLiteEventLog) Snapshot(ctx context.Context, agentID string) (*Snapshot, error) {
+func (l *SQLiteEventLog) Snapshot(ctx context.Context, agentID string) (*store.Snapshot, error) {
 	conv, err := l.store.GetConversation(agentID)
 	if err != nil {
 		return nil, fmt.Errorf("get conversation: %w", err)
@@ -110,7 +110,7 @@ func (l *SQLiteEventLog) Snapshot(ctx context.Context, agentID string) (*Snapsho
 	return snap, nil
 }
 
-func (l *SQLiteEventLog) RestoreFromSnapshot(ctx context.Context, snap *Snapshot) error {
+func (l *SQLiteEventLog) RestoreFromSnapshot(ctx context.Context, snap *store.Snapshot) error {
 	// Verify checksum
 	hash := sha256.Sum256(snap.Data)
 	if hex.EncodeToString(hash[:]) != snap.Checksum {

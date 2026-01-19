@@ -59,6 +59,7 @@ type AgentsConfig struct {
 	RestartPolicy     string        `yaml:"restart_policy"`
 	MaxRestarts       int           `yaml:"max_restarts"`
 	RestartBackoff    BackoffConfig `yaml:"restart_backoff"`
+	Provider          string        `yaml:"provider"`
 	Model             string        `yaml:"model"`
 	Budget            BudgetConfig  `yaml:"budget"`
 	ContextRetention  time.Duration `yaml:"context_retention"`
@@ -86,6 +87,7 @@ type Archetype struct {
 	Prompt         string   `yaml:"prompt"`
 	PermissionMode string   `yaml:"permission_mode"`
 	AllowedTools   []string `yaml:"allowed_tools"`
+	Provider       string   `yaml:"provider"`
 	Model          string   `yaml:"model"`
 }
 
@@ -229,6 +231,7 @@ func DefaultConfig() *Config {
 			RestartPolicy:     "on-failure",
 			MaxRestarts:       3,
 			RestartBackoff:    BackoffConfig{Initial: 5 * time.Second, Max: 5 * time.Minute, Multiplier: 2.0},
+			Provider:          "claude",
 			Model:             "sonnet",
 			Budget:            BudgetConfig{MaxPerAgent: 5.0, MaxPerDay: 50.0, WarnThreshold: 0.8},
 			ContextRetention:  7 * 24 * time.Hour,
