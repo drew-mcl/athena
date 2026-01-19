@@ -4,12 +4,12 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/drewfead/athena/internal/agent"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/worktree"
@@ -443,17 +443,22 @@ func (e *JobExecutor) findMainRepo(project string) (string, error) {
 }
 
 func (e *JobExecutor) getDefaultBranch(repoPath string) string {
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
+	cmd, err := executil.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
 	if err == nil {
-		branch := strings.TrimSpace(string(output))
-		return strings.TrimPrefix(branch, "origin/")
+		cmd.Dir = repoPath
+		output, err := cmd.Output()
+		if err == nil {
+			branch := strings.TrimSpace(string(output))
+			return strings.TrimPrefix(branch, "origin/")
+		}
 	}
 
 	// Fallback
 	for _, branch := range []string{"main", "master"} {
-		cmd = exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		cmd, err = executil.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		if err != nil {
+			continue
+		}
 		cmd.Dir = repoPath
 		if cmd.Run() == nil {
 			return branch
@@ -464,7 +469,10 @@ func (e *JobExecutor) getDefaultBranch(repoPath string) string {
 
 func (e *JobExecutor) createTempWorktree(mainRepo, wtPath, branch, baseBranch string) error {
 	// Create worktree with new branch from base
-	cmd := exec.Command("git", "worktree", "add", "-b", branch, wtPath, baseBranch)
+	cmd, err := executil.Command("git", "worktree", "add", "-b", branch, wtPath, baseBranch)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = mainRepo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -475,14 +483,16 @@ func (e *JobExecutor) createTempWorktree(mainRepo, wtPath, branch, baseBranch st
 
 func (e *JobExecutor) cleanupTempWorktree(mainRepo, wtPath, branch string) {
 	// Remove worktree
-	cmd := exec.Command("git", "worktree", "remove", "--force", wtPath)
-	cmd.Dir = mainRepo
-	cmd.Run()
+	if cmd, err := executil.Command("git", "worktree", "remove", "--force", wtPath); err == nil {
+		cmd.Dir = mainRepo
+		cmd.Run()
+	}
 
 	// Delete branch
-	cmd = exec.Command("git", "branch", "-D", branch)
-	cmd.Dir = mainRepo
-	cmd.Run()
+	if cmd, err := executil.Command("git", "branch", "-D", branch); err == nil {
+		cmd.Dir = mainRepo
+		cmd.Run()
+	}
 }
 
 func (e *JobExecutor) runClaudeQuestion(ctx context.Context, workDir, question string) (string, error) {
@@ -495,7 +505,10 @@ func (e *JobExecutor) runClaudeQuestion(ctx context.Context, workDir, question s
 		question,
 	}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd, err := executil.CommandContext(ctx, "claude", args...)
+	if err != nil {
+		return "", err
+	}
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -523,7 +536,10 @@ Important:
 		prompt,
 	}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd, err := executil.CommandContext(ctx, "claude", args...)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = wtPath
 
 	output, err := cmd.CombinedOutput()
@@ -535,7 +551,10 @@ Important:
 }
 
 func (e *JobExecutor) hasUncommittedChanges(repoPath string) (bool, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	cmd, err := executil.Command("git", "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -546,7 +565,10 @@ func (e *JobExecutor) hasUncommittedChanges(repoPath string) (bool, error) {
 
 func (e *JobExecutor) commitChanges(repoPath, message string) (string, error) {
 	// Stage all changes
-	cmd := exec.Command("git", "add", "-A")
+	cmd, err := executil.Command("git", "add", "-A")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git add failed: %w", err)
@@ -554,14 +576,20 @@ func (e *JobExecutor) commitChanges(repoPath, message string) (string, error) {
 
 	// Commit
 	commitMsg := truncateStr(message, 72)
-	cmd = exec.Command("git", "commit", "-m", commitMsg)
+	cmd, err = executil.Command("git", "commit", "-m", commitMsg)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git commit failed: %w", err)
 	}
 
 	// Get commit hash
-	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd, err = executil.Command("git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -605,12 +633,16 @@ func (e *JobExecutor) mergeToDefault(mainRepo, sourceBranch, targetBranch string
 
 func (e *JobExecutor) tryAutoMerge(wtPath, defaultBranch string) error {
 	// Fetch latest
-	cmd := exec.Command("git", "fetch", "origin", defaultBranch)
-	cmd.Dir = wtPath
-	cmd.Run() // Ignore errors
+	if cmd, err := executil.Command("git", "fetch", "origin", defaultBranch); err == nil {
+		cmd.Dir = wtPath
+		cmd.Run() // Ignore errors
+	}
 
 	// Try to merge
-	cmd = exec.Command("git", "merge", "--no-edit", "origin/"+defaultBranch)
+	cmd, err := executil.Command("git", "merge", "--no-edit", "origin/"+defaultBranch)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = wtPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -620,9 +652,10 @@ func (e *JobExecutor) tryAutoMerge(wtPath, defaultBranch string) error {
 }
 
 func (e *JobExecutor) abortMerge(wtPath string) {
-	cmd := exec.Command("git", "merge", "--abort")
-	cmd.Dir = wtPath
-	cmd.Run()
+	if cmd, err := executil.Command("git", "merge", "--abort"); err == nil {
+		cmd.Dir = wtPath
+		cmd.Run()
+	}
 }
 
 func (e *JobExecutor) ensureCleanRepo(repoPath string) error {
@@ -637,7 +670,10 @@ func (e *JobExecutor) ensureCleanRepo(repoPath string) error {
 }
 
 func (e *JobExecutor) getCurrentBranch(repoPath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd, err := executil.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -651,7 +687,10 @@ func (e *JobExecutor) getCurrentBranch(repoPath string) (string, error) {
 }
 
 func (e *JobExecutor) checkoutBranch(repoPath, branch string) error {
-	cmd := exec.Command("git", "checkout", branch)
+	cmd, err := executil.Command("git", "checkout", branch)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = repoPath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("checkout %s failed: %w", branch, err)
@@ -660,7 +699,10 @@ func (e *JobExecutor) checkoutBranch(repoPath, branch string) error {
 }
 
 func (e *JobExecutor) mergeBranch(repoPath, branch string) error {
-	cmd := exec.Command("git", "merge", "--no-edit", branch)
+	cmd, err := executil.Command("git", "merge", "--no-edit", branch)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {

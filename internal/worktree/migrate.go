@@ -6,11 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 )
@@ -252,7 +252,10 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 	}
 
 	// Check if branch exists
-	cmd := exec.Command("git", "rev-parse", "--verify", branch)
+	cmd, err := executil.Command("git", "rev-parse", "--verify", branch)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = opts.MainRepoPath
 	branchExists := cmd.Run() == nil
 
@@ -263,7 +266,10 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 		gitArgs = []string{"worktree", "add", "-b", branch, targetPath}
 	}
 
-	cmd = exec.Command("git", gitArgs...)
+	cmd, err = executil.Command("git", gitArgs...)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = opts.MainRepoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {

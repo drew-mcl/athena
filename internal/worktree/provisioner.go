@@ -3,12 +3,12 @@ package worktree
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/store"
 )
 
@@ -42,7 +42,10 @@ func (p *Provisioner) CreateForJob(project string, job *store.Job) (*store.Workt
 	}
 
 	// Create the worktree with a new branch
-	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath)
+	cmd, err := executil.Command("git", "worktree", "add", "-b", branchName, worktreePath)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = mainRepo
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %s: %w", string(output), err)
@@ -83,11 +86,17 @@ func (p *Provisioner) Remove(worktreePath string, deleteBranch bool) error {
 	}
 
 	// Remove the worktree
-	cmd := exec.Command("git", "worktree", "remove", worktreePath)
+	cmd, err := executil.Command("git", "worktree", "remove", worktreePath)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = mainRepo
 	if _, err := cmd.CombinedOutput(); err != nil {
 		// Try force removal
-		cmd = exec.Command("git", "worktree", "remove", "--force", worktreePath)
+		cmd, err = executil.Command("git", "worktree", "remove", "--force", worktreePath)
+		if err != nil {
+			return err
+		}
 		cmd.Dir = mainRepo
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to remove worktree: %s: %w", string(output), err)
@@ -96,9 +105,10 @@ func (p *Provisioner) Remove(worktreePath string, deleteBranch bool) error {
 
 	// Optionally delete the branch
 	if deleteBranch && wt.Branch != "" {
-		cmd = exec.Command("git", "branch", "-d", wt.Branch)
-		cmd.Dir = mainRepo
-		cmd.Run() // Ignore errors - branch might not exist or might have unmerged changes
+		if cmd, err := executil.Command("git", "branch", "-d", wt.Branch); err == nil {
+			cmd.Dir = mainRepo
+			cmd.Run() // Ignore errors - branch might not exist or might have unmerged changes
+		}
 	}
 
 	// Remove from store
@@ -152,7 +162,10 @@ func (p *Provisioner) PruneStale(project string) error {
 		return err
 	}
 
-	cmd := exec.Command("git", "worktree", "prune")
+	cmd, err := executil.Command("git", "worktree", "prune")
+	if err != nil {
+		return err
+	}
 	cmd.Dir = mainRepo
 	return cmd.Run()
 }
@@ -162,14 +175,20 @@ func (p *Provisioner) GetStatus(worktreePath string) (*WorktreeStatus, error) {
 	status := &WorktreeStatus{Path: worktreePath}
 
 	// Get branch
-	cmd := exec.Command("git", "branch", "--show-current")
+	cmd, err := executil.Command("git", "branch", "--show-current")
+	if err != nil {
+		return status, err
+	}
 	cmd.Dir = worktreePath
 	if output, err := cmd.Output(); err == nil {
 		status.Branch = strings.TrimSpace(string(output))
 	}
 
 	// Get status
-	cmd = exec.Command("git", "status", "--porcelain")
+	cmd, err = executil.Command("git", "status", "--porcelain")
+	if err != nil {
+		return status, err
+	}
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
 	if err != nil {
@@ -260,7 +279,10 @@ func (p *Provisioner) generateBranchName(job *store.Job) string {
 func (p *Provisioner) isBranchMerged(mainRepo, branch string) bool {
 	defaultBranch := p.getDefaultBranch(mainRepo)
 
-	cmd := exec.Command("git", "branch", "--merged", defaultBranch)
+	cmd, err := executil.Command("git", "branch", "--merged", defaultBranch)
+	if err != nil {
+		return false
+	}
 	cmd.Dir = mainRepo
 	output, _ := cmd.Output()
 
@@ -276,17 +298,22 @@ func (p *Provisioner) isBranchMerged(mainRepo, branch string) bool {
 
 func (p *Provisioner) getDefaultBranch(repoPath string) string {
 	// Try to get from remote
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
+	cmd, err := executil.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
 	if err == nil {
-		branch := strings.TrimSpace(string(output))
-		return strings.TrimPrefix(branch, "origin/")
+		cmd.Dir = repoPath
+		output, err := cmd.Output()
+		if err == nil {
+			branch := strings.TrimSpace(string(output))
+			return strings.TrimPrefix(branch, "origin/")
+		}
 	}
 
 	// Fall back to checking if main or master exists
 	for _, branch := range []string{"main", "master"} {
-		cmd = exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		cmd, err = executil.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		if err != nil {
+			continue
+		}
 		cmd.Dir = repoPath
 		if cmd.Run() == nil {
 			return branch
@@ -317,7 +344,10 @@ func extractIssueID(text string) string {
 }
 
 func getGitUsername() string {
-	cmd := exec.Command("git", "config", "user.name")
+	cmd, err := executil.Command("git", "config", "user.name")
+	if err != nil {
+		return "user"
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "user"
@@ -528,14 +558,19 @@ func (p *Provisioner) Normalize(dryRun bool) ([]string, error) {
 				continue
 			}
 
-			cmd := exec.Command("git", "worktree", "move", wt.CurrentPath, wt.TargetPath)
+			cmd, err := executil.Command("git", "worktree", "move", wt.CurrentPath, wt.TargetPath)
+			if err != nil {
+				p.store.DeleteWorktree(wt.CurrentPath)
+				continue
+			}
 			cmd.Dir = move.TargetPath // Use the (possibly new) main repo path
 			if _, err := cmd.CombinedOutput(); err != nil {
 				// Failed to move - could be prunable or invalid
 				// Try to prune and remove from store
-				pruneCmd := exec.Command("git", "worktree", "prune")
-				pruneCmd.Dir = move.TargetPath
-				_ = pruneCmd.Run() // Best effort prune
+				if pruneCmd, err := executil.Command("git", "worktree", "prune"); err == nil {
+					pruneCmd.Dir = move.TargetPath
+					_ = pruneCmd.Run() // Best effort prune
+				}
 
 				p.store.DeleteWorktree(wt.CurrentPath)
 				continue
@@ -548,4 +583,3 @@ func (p *Provisioner) Normalize(dryRun bool) ([]string, error) {
 
 	return moved, nil
 }
-

@@ -22,6 +22,16 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const (
+	bearerTokenPrefix         = "Bearer "
+	githubAcceptHeaderValue   = "application/vnd.github+json"
+	headerGitHubAPIVersion    = "X-GitHub-Api-Version"
+	githubAPIVersionDate      = "2022-11-28"
+	errFmtFailedCreateRequest = "failed to create request: %w"
+	errFmtFailedSendRequest   = "failed to send request: %w"
+	errFmtFailedParseResponse = "failed to parse response: %w"
+)
+
 // AppClient handles GitHub App authentication and API operations.
 type AppClient struct {
 	identity *config.AgentIdentity
@@ -86,17 +96,17 @@ func (c *AppClient) CreatePR(opts PROptions) (*PRResult, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls", opts.Owner, opts.Repo)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf(errFmtFailedCreateRequest, err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", bearerTokenPrefix+token)
+	req.Header.Set("Accept", githubAcceptHeaderValue)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set(headerGitHubAPIVersion, githubAPIVersionDate)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf(errFmtFailedSendRequest, err)
 	}
 	defer resp.Body.Close()
 
@@ -108,7 +118,7 @@ func (c *AppClient) CreatePR(opts PROptions) (*PRResult, error) {
 
 	var result PRResult
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf(errFmtFailedParseResponse, err)
 	}
 
 	return &result, nil
@@ -193,16 +203,16 @@ func (c *AppClient) exchangeForInstallationToken(jwtToken string) (string, time.
 
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("failed to create request: %w", err)
+		return "", time.Time{}, fmt.Errorf(errFmtFailedCreateRequest, err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+jwtToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", bearerTokenPrefix+jwtToken)
+	req.Header.Set("Accept", githubAcceptHeaderValue)
+	req.Header.Set(headerGitHubAPIVersion, githubAPIVersionDate)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("failed to send request: %w", err)
+		return "", time.Time{}, fmt.Errorf(errFmtFailedSendRequest, err)
 	}
 	defer resp.Body.Close()
 
@@ -217,7 +227,7 @@ func (c *AppClient) exchangeForInstallationToken(jwtToken string) (string, time.
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", time.Time{}, fmt.Errorf("failed to parse response: %w", err)
+		return "", time.Time{}, fmt.Errorf(errFmtFailedParseResponse, err)
 	}
 
 	return result.Token, result.ExpiresAt, nil
@@ -288,16 +298,16 @@ func (c *AppClient) GetInstallationID(owner, repo string) (int64, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/installation", owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+		return 0, fmt.Errorf(errFmtFailedCreateRequest, err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+jwtToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", bearerTokenPrefix+jwtToken)
+	req.Header.Set("Accept", githubAcceptHeaderValue)
+	req.Header.Set(headerGitHubAPIVersion, githubAPIVersionDate)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("failed to send request: %w", err)
+		return 0, fmt.Errorf(errFmtFailedSendRequest, err)
 	}
 	defer resp.Body.Close()
 
@@ -310,7 +320,7 @@ func (c *AppClient) GetInstallationID(owner, repo string) (int64, error) {
 		ID int64 `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("failed to parse response: %w", err)
+		return 0, fmt.Errorf(errFmtFailedParseResponse, err)
 	}
 
 	return result.ID, nil

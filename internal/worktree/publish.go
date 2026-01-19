@@ -4,11 +4,11 @@ package worktree
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/github"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
@@ -81,7 +81,10 @@ func (p *Publisher) PublishPR(opts PublishOptions) (*PublishResult, error) {
 
 	// 4. Push to remote
 	logging.Info("pushing branch to remote", "branch", branch, "worktree", opts.WorktreePath)
-	cmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+	cmd, err := executil.Command("git", "push", "-u", "origin", "HEAD")
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = opts.WorktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -186,7 +189,10 @@ func (p *Publisher) MergeLocal(worktreePath string) (*MergeResult, error) {
 
 	// 5. Checkout default branch in main repo
 	logging.Info("checking out default branch", "branch", defaultBranch, "repo", mainRepoPath)
-	cmd := exec.Command("git", "checkout", defaultBranch)
+	cmd, err := executil.Command("git", "checkout", defaultBranch)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = mainRepoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -195,7 +201,10 @@ func (p *Publisher) MergeLocal(worktreePath string) (*MergeResult, error) {
 
 	// 6. Merge the branch
 	logging.Info("merging branch", "branch", branch, "into", defaultBranch)
-	cmd = exec.Command("git", "merge", "--no-ff", branch, "-m", fmt.Sprintf("Merge branch '%s'", branch))
+	cmd, err = executil.Command("git", "merge", "--no-ff", branch, "-m", fmt.Sprintf("Merge branch '%s'", branch))
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = mainRepoPath
 	output, err = cmd.CombinedOutput()
 	if err != nil {
@@ -203,9 +212,10 @@ func (p *Publisher) MergeLocal(worktreePath string) (*MergeResult, error) {
 		if isMergeConflict(string(output)) {
 			logging.Info("merge conflict detected, aborting merge in main", "branch", branch)
 			// Abort the merge in main repo to keep it clean
-			abortCmd := exec.Command("git", "merge", "--abort")
-			abortCmd.Dir = mainRepoPath
-			abortCmd.CombinedOutput() // Best effort
+			if abortCmd, err := executil.Command("git", "merge", "--abort"); err == nil {
+				abortCmd.Dir = mainRepoPath
+				abortCmd.CombinedOutput() // Best effort
+			}
 
 			return &MergeResult{
 				Success:      false,
@@ -273,29 +283,40 @@ func (p *Publisher) Cleanup(worktreePath string, deleteBranch bool) error {
 
 	// 3. Remove worktree via git
 	logging.Info("removing worktree", "path", worktreePath)
-	cmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
-	cmd.Dir = mainRepoPath
-	output, err := cmd.CombinedOutput()
+	cmd, err := executil.Command("git", "worktree", "remove", worktreePath, "--force")
 	if err != nil {
-		// Try to remove the directory directly if git worktree remove fails
 		if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
-			return fmt.Errorf("git worktree remove failed: %w\n%s", err, string(output))
+			return err
 		}
 		logging.Warn("forced directory removal after git worktree remove failed", "path", worktreePath)
+	} else {
+		cmd.Dir = mainRepoPath
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			// Try to remove the directory directly if git worktree remove fails
+			if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
+				return fmt.Errorf("git worktree remove failed: %w\n%s", err, string(output))
+			}
+			logging.Warn("forced directory removal after git worktree remove failed", "path", worktreePath)
+		}
 	}
 
 	// 4. Delete branch if requested
 	if deleteBranch && branch != "" {
 		logging.Info("deleting branch", "branch", branch)
-		cmd = exec.Command("git", "branch", "-d", branch)
-		cmd.Dir = mainRepoPath
-		output, err = cmd.CombinedOutput()
+		cmd, err = executil.Command("git", "branch", "-d", branch)
+		if err == nil {
+			cmd.Dir = mainRepoPath
+			output, err = cmd.CombinedOutput()
+		}
 		if err != nil {
 			// Try force delete
-			cmd = exec.Command("git", "branch", "-D", branch)
-			cmd.Dir = mainRepoPath
-			if forceOutput, forceErr := cmd.CombinedOutput(); forceErr != nil {
-				logging.Warn("failed to delete branch", "branch", branch, "error", string(forceOutput))
+			cmd, err = executil.Command("git", "branch", "-D", branch)
+			if err == nil {
+				cmd.Dir = mainRepoPath
+				if forceOutput, forceErr := cmd.CombinedOutput(); forceErr != nil {
+					logging.Warn("failed to delete branch", "branch", branch, "error", string(forceOutput))
+				}
 			}
 		}
 	}
@@ -313,7 +334,10 @@ func (p *Publisher) Cleanup(worktreePath string, deleteBranch bool) error {
 // Helper functions
 
 func isCleanWorkingTree(path string) (bool, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	cmd, err := executil.Command("git", "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
 	cmd.Dir = path
 	output, err := cmd.Output()
 	if err != nil {
@@ -323,7 +347,10 @@ func isCleanWorkingTree(path string) (bool, error) {
 }
 
 func getMainRepoPath(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd, err := executil.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
 	if err != nil {
@@ -384,7 +411,10 @@ func generatePRBody(wt *store.Worktree) string {
 }
 
 func createPR(worktreePath, title, body string) (string, error) {
-	cmd := exec.Command("gh", "pr", "create", "--title", title, "--body", body)
+	cmd, err := executil.Command("gh", "pr", "create", "--title", title, "--body", body)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -442,7 +472,10 @@ func (p *Publisher) createPRWithApp(client *github.AppClient, worktreePath, bran
 
 // getRemoteURL returns the origin remote URL for a git repository.
 func getRemoteURL(path string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd, err := executil.Command("git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = path
 	output, err := cmd.Output()
 	if err != nil {
