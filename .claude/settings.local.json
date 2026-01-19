@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(ALLOW_MAIN_COMMIT=1 git add:*)",
+      "Bash(ALLOW_MAIN_COMMIT=1 git commit:*)",
+      "Bash(git worktree:*)",
+      "Bash(sqlite3:*)",
+      "Bash(for wt in /Users/drew/repos/worktrees/WT-*)",
+      "Bash(do if [ -d \"$wt\" ])",
+      "Bash(then echo \"=== $wt ===\" cd \"$wt\")",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(__NEW_LINE_600f9fd93018bf85__ echo \"\")",
+      "Bash(nc:*)",
+      "Bash(# Check results from all 4 executors for agent_id in f30aa857-7734-43ee-9039-106735481006 86c30166-c00e-4f4c-ba83-c903a7d1c384 dc50cdc2-d926-4011-add0-9de98895e6d5 9d86b7f7-c39a-4b20-999b-b4d72af8a9dd; do echo \"\"=== Agent $agent_id ===\"\" sqlite3 ~/.local/share/athena/athena.db \"\"SELECT substr\\(payload, 1, 300\\) FROM agent_events WHERE agent_id = ''$agent_id'' AND event_type = ''result'';\"\")"
+    ]
+  }
+}
