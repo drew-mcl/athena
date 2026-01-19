@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/drew-mcl/athena/compare/athena-v0.2.2...athena-v0.3.0) (2026-01-19)
+
+
+### Features
+
+* gemini integration and agent runner abstraction ([7da6003](https://github.com/drew-mcl/athena/commit/7da60034aefbeb8dfada4e10cecd9c432377c913))
+* implement comprehensive bug fixes ([ef235a1](https://github.com/drew-mcl/athena/commit/ef235a1f0e509a1eea5dae62b5d19f2f84c1d012))
+* initial gemini config and runner stub ([1608ee2](https://github.com/drew-mcl/athena/commit/1608ee23c64b1dc5fca423441d0eec2b2492402d))
+* **tui:** polish dashboard and add provider selection ([e231c1a](https://github.com/drew-mcl/athena/commit/e231c1a5157719d9ee682f92cc3474b797d40ca1))
+
+
+### Bug Fixes
+
+* **executil:** allow group-writable dirs on macOS for Homebrew ([68366f9](https://github.com/drew-mcl/athena/commit/68366f91541c9c5d64d1b909fcc8fcfdb294a753))
+* **identity:** inject git identity env vars correctly ([e74617a](https://github.com/drew-mcl/athena/commit/e74617a72b31426632eabfd7eb1b15f5c5395501))
+* **sonar:** various sonar fixes ([c66fdac](https://github.com/drew-mcl/athena/commit/c66fdac0a5681055c1d2b01ba2c7eb16cd745346))
+* **test:** update spawner test for buildRunSpec rename ([3bb5cb4](https://github.com/drew-mcl/athena/commit/3bb5cb4b5e8aad89d3a7906e9e9b972eb94dd2d1))
+
 ## [0.2.2](https://github.com/drew-mcl/athena/compare/athena-v0.2.1...athena-v0.2.2) (2026-01-19)
 
 
