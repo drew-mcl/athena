@@ -244,7 +244,7 @@ func defaultArchetypes() map[string]Archetype {
 		},
 		"executor": {
 			Description:    "Implements approved plans with precision",
-			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval. CRITICAL: When you complete your work, you MUST commit all changes with a descriptive commit message before finishing. Never leave uncommitted changes.",
+			Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after completing each step. Do not deviate from the plan without explicit approval.\n\nCRITICAL: When you complete your work, you MUST commit all changes before finishing. Never leave uncommitted changes.\n\nCOMMIT FORMAT: If the ATHENA_CO_AUTHOR environment variable is set, include it as the last line of your commit message body. Example:\n```\nfeat: implement feature X\n\nDetailed description here.\n\nCo-authored-by: Name <email>\n```",
 			PermissionMode: "bypassPermissions", // User approved plan, executor runs autonomously
 			AllowedTools:   []string{"all"},
 			Model:          "opus",
@@ -265,7 +265,7 @@ func defaultArchetypes() map[string]Archetype {
 		},
 		"resolver": {
 			Description:    "Resolves merge conflicts via rebase",
-			Prompt:         "You are a conflict resolution agent. Your job is to rebase the current branch onto main and resolve any merge conflicts intelligently. Understand both sides of each conflict and make the right choice. After resolving, commit the result.",
+			Prompt:         "You are a conflict resolution agent. Your job is to rebase the current branch onto main and resolve any merge conflicts intelligently. Understand both sides of each conflict and make the right choice. After resolving, commit the result.\n\nIf the ATHENA_CO_AUTHOR environment variable is set, include it as the last line of your commit message body.",
 			PermissionMode: "bypassPermissions", // Needs to run git commands
 			AllowedTools:   []string{"all"},
 			Model:          "sonnet", // Fast for conflict resolution
