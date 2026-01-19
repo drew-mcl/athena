@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/drew-mcl/athena/compare/athena-v0.2.1...athena-v0.2.2) (2026-01-19)
+
+
+### Bug Fixes
+
+* **agent:** implement execution logic for feature/merge jobs ([526167f](https://github.com/drew-mcl/athena/commit/526167f4482a750e45a6885e477fcc90232767f5))
+
 ## [0.2.1](https://github.com/drew-mcl/athena/compare/athena-v0.2.0...athena-v0.2.1) (2026-01-19)
 
 
