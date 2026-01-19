@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -36,6 +37,65 @@ type SpawnOptions struct {
 
 	// MaxBudgetUSD limits spending (only works with --print).
 	MaxBudgetUSD float64
+
+	// GitIdentity configures the git author/committer identity for this agent.
+	// When set, the agent's commits will show as this identity.
+	GitIdentity *GitIdentityConfig
+}
+
+// GitIdentityConfig configures git identity for agent commits.
+// This allows agents to commit under bot identities (e.g., ata-codex[bot])
+// while preserving the human user as co-author.
+type GitIdentityConfig struct {
+	// AuthorName is the git author name (GIT_AUTHOR_NAME).
+	AuthorName string
+
+	// AuthorEmail is the git author email (GIT_AUTHOR_EMAIL).
+	AuthorEmail string
+
+	// CommitterName is the git committer name (GIT_COMMITTER_NAME).
+	// If empty, AuthorName is used.
+	CommitterName string
+
+	// CommitterEmail is the git committer email (GIT_COMMITTER_EMAIL).
+	// If empty, AuthorEmail is used.
+	CommitterEmail string
+
+	// CoAuthorLine is the "Co-authored-by:" trailer for commit messages.
+	// Example: "Co-authored-by: Drew Fead <drew@example.com>"
+	CoAuthorLine string
+}
+
+// Env returns environment variables for git identity configuration.
+// These override the system git config for the spawned process.
+func (g *GitIdentityConfig) Env() []string {
+	if g == nil || g.AuthorName == "" {
+		return nil
+	}
+
+	committerName := g.CommitterName
+	if committerName == "" {
+		committerName = g.AuthorName
+	}
+
+	committerEmail := g.CommitterEmail
+	if committerEmail == "" {
+		committerEmail = g.AuthorEmail
+	}
+
+	env := []string{
+		fmt.Sprintf("GIT_AUTHOR_NAME=%s", g.AuthorName),
+		fmt.Sprintf("GIT_AUTHOR_EMAIL=%s", g.AuthorEmail),
+		fmt.Sprintf("GIT_COMMITTER_NAME=%s", committerName),
+		fmt.Sprintf("GIT_COMMITTER_EMAIL=%s", committerEmail),
+	}
+
+	// Pass co-author line for commit hooks or agent instructions
+	if g.CoAuthorLine != "" {
+		env = append(env, fmt.Sprintf("ATHENA_CO_AUTHOR=%s", g.CoAuthorLine))
+	}
+
+	return env
 }
 
 // CommandString returns the full command that would be executed (for logging).
