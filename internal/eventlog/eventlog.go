@@ -119,7 +119,7 @@ type ReplicatorTarget interface {
 	Write(ctx context.Context, msgs []*data.Message) error
 
 	// WriteSnapshot persists a snapshot to external storage.
-	WriteSnapshot(ctx context.Context, snap *Snapshot) error
+	WriteSnapshot(ctx context.Context, snap *store.Snapshot) error
 
 	// LastReplicated returns the last sequence replicated for an agent.
 	LastReplicated(ctx context.Context, agentID string) (int64, error)
@@ -236,12 +236,12 @@ func (p *Pipeline) GetContext(ctx context.Context, agentID string) (*data.Conver
 }
 
 // CreateSnapshot creates a snapshot for an agent.
-func (p *Pipeline) CreateSnapshot(ctx context.Context, agentID string) (*Snapshot, error) {
+func (p *Pipeline) CreateSnapshot(ctx context.Context, agentID string) (*store.Snapshot, error) {
 	return p.Log.Snapshot(ctx, agentID)
 }
 
 // RestoreAgent restores an agent's context from snapshot or events.
-func (p *Pipeline) RestoreAgent(ctx context.Context, agentID string, snap *Snapshot) (*data.Conversation, error) {
+func (p *Pipeline) RestoreAgent(ctx context.Context, agentID string, snap *store.Snapshot) (*data.Conversation, error) {
 	if snap != nil {
 		if err := p.Log.RestoreFromSnapshot(ctx, snap); err != nil {
 			return nil, err

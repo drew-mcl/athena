@@ -3,6 +3,7 @@ package data
 import (
 	"encoding/json"
 
+	"github.com/drewfead/athena/internal/runner"
 	"github.com/drewfead/athena/pkg/claudecode"
 	"github.com/google/uuid"
 )
@@ -129,4 +130,93 @@ func (ep *EventProcessor) Process(evt *claudecode.Event) *Message {
 // Sequence returns the current sequence number.
 func (ep *EventProcessor) Sequence() int64 {
 	return ep.seq
+}
+
+// FromRunnerEvent converts a runner.Event to a Message.
+func FromRunnerEvent(agentID string, seq int64, evt runner.Event) *Message {
+	raw, _ := json.Marshal(evt)
+
+	return &Message{
+		ID:        uuid.NewString(),
+		AgentID:   agentID,
+		Direction: Outbound,
+		Type:      mapRunnerEventType(evt),
+		Sequence:  seq,
+		Timestamp: evt.Timestamp,
+		Text:      evt.Content,
+		Tool:      mapRunnerToolContent(evt),
+		Error:     mapRunnerErrorContent(evt),
+		SessionID: evt.SessionID,
+		Raw:       raw,
+		Usage:     mapRunnerUsage(evt.Usage),
+	}
+}
+
+func mapRunnerUsage(u *runner.EventUsage) *Usage {
+	if u == nil {
+		return nil
+	}
+	return &Usage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		CacheReads:   u.CacheReads,
+	}
+}
+
+func mapRunnerEventType(evt runner.Event) MessageType {
+	switch evt.Type {
+	case "system":
+		return TypeSystem
+
+	case "assistant":
+		if evt.Subtype == "thinking" {
+			return TypeThinking
+		}
+		return TypeText
+
+	case "tool_use":
+		return TypeToolCall
+
+	case "tool_result":
+		return TypeToolResult
+
+	case "result":
+		if evt.Subtype == "error" {
+			return TypeError
+		}
+		return TypeComplete
+
+	case "error":
+		return TypeError
+
+	default:
+		return TypeText
+	}
+}
+
+func mapRunnerToolContent(evt runner.Event) *ToolContent {
+	if evt.Type != "tool_use" && evt.Type != "tool_result" {
+		return nil
+	}
+
+	tc := &ToolContent{
+		Name:  evt.Name,
+		Input: evt.Input,
+	}
+
+	if evt.Type == "tool_result" {
+		tc.Output = evt.Content
+	}
+
+	return tc
+}
+
+func mapRunnerErrorContent(evt runner.Event) *ErrorContent {
+	if evt.Type != "error" && (evt.Type != "result" || evt.Subtype != "error") {
+		return nil
+	}
+
+	return &ErrorContent{
+		Message: evt.Content,
+	}
 }

@@ -907,6 +907,10 @@ func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 				LinesChanged: metrics.LinesChanged,
 				MessageCount: metrics.MessageCount,
 				DurationMs:   metrics.Duration.Milliseconds(),
+				InputTokens:  metrics.InputTokens,
+				OutputTokens: metrics.OutputTokens,
+				CacheReads:   metrics.CacheReads,
+				TotalTokens:  metrics.TotalTokens,
 			}
 		}
 	}

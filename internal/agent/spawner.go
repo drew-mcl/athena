@@ -16,8 +16,8 @@ import (
 	"github.com/drewfead/athena/internal/data"
 	"github.com/drewfead/athena/internal/eventlog"
 	"github.com/drewfead/athena/internal/logging"
+	"github.com/drewfead/athena/internal/runner"
 	"github.com/drewfead/athena/internal/store"
-	"github.com/drewfead/athena/pkg/claudecode"
 	"github.com/google/uuid"
 )
 
@@ -36,7 +36,7 @@ type Spawner struct {
 type ManagedProcess struct {
 	AgentID   string
 	SessionID string
-	Process   *claudecode.Process
+	Process   runner.Session
 	Cancel    context.CancelFunc
 }
 
@@ -99,37 +99,44 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 		return nil, fmt.Errorf("failed to create agent record: %w", err)
 	}
 
-	// Build spawn options based on archetype
-	opts := s.buildOptions(spec, sessionID)
+	// Build run spec based on archetype
+	runSpec, provider := s.buildRunSpec(spec, sessionID)
 
-	// Log the command being executed for debugging
-	cmdStr := opts.CommandString()
-	cmdPayload := fmt.Sprintf(`{"type":"spawn_command","command":%q,"workdir":%q}`, cmdStr, spec.WorktreePath)
-	s.store.LogAgentEvent(agentID, "spawn_command", cmdPayload)
-	logging.Debug("spawning claude", "agent_id", agentID, "command", cmdStr)
+	// Log the spec being executed for debugging
+	specBytes, _ := json.Marshal(runSpec)
+	cmdPayload := fmt.Sprintf(`{"type":"spawn_spec","spec":%s,"provider":"%s"}`, string(specBytes), provider)
+	s.store.LogAgentEvent(agentID, "spawn_spec", cmdPayload)
+	logging.Debug("spawning agent", "agent_id", agentID, "provider", provider, "workdir", runSpec.WorkDir)
 
 	// Create cancellable context
 	procCtx, cancel := context.WithCancel(ctx)
 
-	// Spawn the process
-	proc, err := claudecode.Spawn(procCtx, opts)
+	// Initialize runner
+	r, err := runner.New(provider)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create runner for provider %s: %w", provider, err)
+	}
+
+	// Spawn the session
+	session, err := r.Start(procCtx, runSpec)
 	if err != nil {
 		cancel()
 		s.store.UpdateAgentStatus(agentID, store.AgentStatusCrashed)
 		// Log the spawn failure for visibility in the TUI
-		errPayload := fmt.Sprintf(`{"type":"spawn_failed","message":%q,"command":%q,"workdir":%q}`, err.Error(), cmdStr, spec.WorktreePath)
+		errPayload := fmt.Sprintf(`{"type":"spawn_failed","message":%q,"provider":"%s"}`, err.Error(), provider)
 		s.store.LogAgentEvent(agentID, "spawn_failed", errPayload)
-		logging.Error("failed to spawn claude",
+		logging.Error("failed to spawn agent",
 			"agent_id", agentID,
-			"command", cmdStr,
-			"workdir", spec.WorktreePath,
+			"provider", provider,
+			"workdir", runSpec.WorkDir,
 			"archetype", spec.Archetype,
 			"error", err)
-		return nil, fmt.Errorf("failed to spawn claude: %w", err)
+		return nil, fmt.Errorf("failed to spawn agent: %w", err)
 	}
 
 	// Update agent with PID
-	pid := proc.PID()
+	pid := session.PID()
 	s.store.UpdateAgentPID(agentID, pid)
 	s.store.UpdateAgentStatus(agentID, store.AgentStatusRunning)
 
@@ -137,7 +144,7 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	mp := &ManagedProcess{
 		AgentID:   agentID,
 		SessionID: sessionID,
-		Process:   proc,
+		Process:   session,
 		Cancel:    cancel,
 	}
 
@@ -171,7 +178,7 @@ func (s *Spawner) Kill(agentID string) error {
 	}
 
 	mp.Cancel()
-	mp.Process.Kill()
+	mp.Process.Stop()
 	s.store.UpdateAgentStatus(agentID, store.AgentStatusTerminated)
 
 	return nil
@@ -197,7 +204,7 @@ func (s *Spawner) ListRunning() []string {
 	return ids
 }
 
-func (s *Spawner) buildOptions(spec SpawnSpec, sessionID string) *claudecode.SpawnOptions {
+func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec, string) {
 	archetype := s.config.Archetypes[spec.Archetype]
 
 	// Build prompt with context prepended
@@ -211,29 +218,43 @@ func (s *Spawner) buildOptions(spec SpawnSpec, sessionID string) *claudecode.Spa
 		}
 	}
 
-	opts := &claudecode.SpawnOptions{
-		SessionID:      sessionID,
-		WorkDir:        spec.WorktreePath,
-		Prompt:         prompt,
-		Model:          archetype.Model,
-		PermissionMode: archetype.PermissionMode,
-		AllowedTools:   archetype.AllowedTools,
-		SystemPrompt:   archetype.Prompt,
-		GitIdentity:    s.resolveGitIdentity(spec.Archetype),
+	runSpec := runner.RunSpec{
+		SessionID:       sessionID,
+		WorkDir:         spec.WorktreePath,
+		Prompt:          prompt,
+		Model:           archetype.Model,
+		PermissionMode:  archetype.PermissionMode,
+		AllowedTools:    archetype.AllowedTools,
+		SystemPrompt:    archetype.Prompt,
+		GitIdentity:     s.resolveGitIdentity(spec.Archetype),
+		Env:             make(map[string]string),
+	}
+
+	// Populate environment from config
+	if s.config.Gemini.APIKey != "" {
+		runSpec.Env["GEMINI_API_KEY"] = s.config.Gemini.APIKey
 	}
 
 	// Use defaults if archetype not found
 	if archetype.Model == "" {
-		opts.Model = s.config.Agents.Model
+		runSpec.Model = s.config.Agents.Model
 	}
 
-	return opts
+	provider := archetype.Provider
+	if provider == "" {
+		provider = s.config.Agents.Provider
+	}
+	if provider == "" {
+		provider = "claude" // Default fallback
+	}
+
+	return runSpec, provider
 }
 
 // resolveGitIdentity returns the git identity config for a given archetype.
 // It first checks for archetype-specific identity, then falls back to default.
 // Returns nil if no identity is configured (graceful fallback to local git config).
-func (s *Spawner) resolveGitIdentity(archetype string) *claudecode.GitIdentityConfig {
+func (s *Spawner) resolveGitIdentity(archetype string) *runner.GitIdentityConfig {
 	identities := s.config.Integrations.Identities
 
 	// Try archetype-specific identity first
@@ -252,7 +273,7 @@ func (s *Spawner) resolveGitIdentity(archetype string) *claudecode.GitIdentityCo
 		return nil
 	}
 
-	gitConfig := &claudecode.GitIdentityConfig{
+	gitConfig := &runner.GitIdentityConfig{
 		AuthorName:  identity.Name,
 		AuthorEmail: identity.Email,
 	}
@@ -283,15 +304,6 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 			errPayload := fmt.Sprintf(`{"type":"error","message":%q}`, err.Error())
 			s.store.LogAgentEvent(mp.AgentID, "error", errPayload)
 
-		case line, ok := <-mp.Process.Stderr():
-			if !ok {
-				continue
-			}
-			logging.Warn("agent stderr", "agent_id", mp.AgentID, "line", line)
-			// Store stderr in agent_events for debugging
-			stderrPayload := fmt.Sprintf(`{"type":"stderr","line":%q}`, line)
-			s.store.LogAgentEvent(mp.AgentID, "stderr", stderrPayload)
-
 		case <-mp.Process.Done():
 			s.handleExit(mp)
 			return
@@ -299,9 +311,9 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 	}
 }
 
-func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
+func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 	// Convert to unified message and ingest through pipeline
-	msg := data.FromClaudeEvent(mp.AgentID, 0, event) // Sequence assigned by pipeline
+	msg := data.FromRunnerEvent(mp.AgentID, 0, event) // Sequence assigned by pipeline
 	msg.SessionID = mp.SessionID
 
 	ctx := context.Background()
@@ -310,36 +322,30 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event *claudecode.Event) {
 	}
 
 	// Log to agent_events with full content for TUI visibility
-	var payload string
-	switch event.Type {
-	case claudecode.EventTypeAssistant:
+	// Re-serialize the event raw input if needed, or construct payload
+	payload := string(event.Raw)
+	if payload == "" || payload == "null" {
+		// Construct payload if raw is missing
 		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s","content":%q}`, event.Type, event.Subtype, event.Content)
-	case claudecode.EventTypeToolUse:
-		payload = fmt.Sprintf(`{"type":"tool_use","name":"%s","input":%s}`, event.Name, string(event.Input))
-	case claudecode.EventTypeToolResult:
-		payload = fmt.Sprintf(`{"type":"tool_result","content":%q}`, event.Content)
-	case claudecode.EventTypeResult:
-		payload = fmt.Sprintf(`{"type":"result","subtype":"%s","content":%q}`, event.Subtype, event.Content)
-	default:
-		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s"}`, event.Type, event.Subtype)
 	}
-	s.store.LogAgentEvent(mp.AgentID, string(event.Type), payload)
+	s.store.LogAgentEvent(mp.AgentID, event.Type, payload)
 
 	// Extract structured markers from assistant messages
-	if s.contextMgr != nil && event.Type == claudecode.EventTypeAssistant && event.Content != "" {
+	if s.contextMgr != nil && event.Type == "assistant" && event.Content != "" {
 		s.extractMarkersFromContent(mp, event.Content)
 	}
 
 	// Update status based on event type
+	// runner.Event doesn't have IsThinking helper, check types
 	switch {
-	case event.IsThinking():
+	case event.Subtype == "thinking":
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusPlanning)
 
-	case event.IsToolUse():
+	case event.Type == "tool_use":
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusExecuting)
 
-	case event.IsComplete():
-		if event.IsSuccess() {
+	case event.Type == "result":
+		if event.Subtype != "error" {
 			s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCompleted)
 		} else {
 			s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)

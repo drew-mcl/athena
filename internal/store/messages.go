@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/drewfead/athena/internal/data"
+	"github.com/drewfead/athena/internal/runner"
 )
 
 // CreateMessage inserts a new message into the database.
@@ -100,7 +101,7 @@ func (s *Store) GetMessages(agentID string, opts GetMessagesOptions) ([]*data.Me
 		ORDER BY sequence ASC
 		LIMIT ? OFFSET ?
 	`
-	rows, err := s.db.Query(query, agentID, opts.Limit, opts.Offset)
+	rows, err := s.db.Query(query, agentID, opts.Limit, opts.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -129,11 +130,12 @@ func (s *Store) GetMessagesBySequence(agentID string, fromSeq int64, limit int) 
 		FROM messages
 		WHERE agent_id = ? AND sequence >= ?
 		ORDER BY sequence ASC
-		LIMIT ?
-	`
-	rows, err := s.db.Query(query, agentID, fromSeq, limit)
-	if err != nil {
-		return nil, err
+				LIMIT ?
+			`
+			rows, err := s.db.Query(query, agentID, fromSeq, limit)
+			if err != nil {
+				return nil, err
+		
 	}
 	defer rows.Close()
 
@@ -149,11 +151,12 @@ func (s *Store) GetMessagesByType(agentID string, msgType data.MessageType, limi
 		FROM messages
 		WHERE agent_id = ? AND type = ?
 		ORDER BY sequence ASC
-		LIMIT ?
-	`
-	rows, err := s.db.Query(query, agentID, msgType, limit)
-	if err != nil {
-		return nil, err
+				LIMIT ?
+			`
+			rows, err := s.db.Query(query, agentID, msgType, limit)
+			if err != nil {
+				return nil, err
+		
 	}
 	defer rows.Close()
 
@@ -169,11 +172,12 @@ func (s *Store) GetRecentMessages(agentID string, n int) ([]*data.Message, error
 		FROM messages
 		WHERE agent_id = ?
 		ORDER BY sequence DESC
-		LIMIT ?
-	`
-	rows, err := s.db.Query(query, agentID, n)
-	if err != nil {
-		return nil, err
+				LIMIT ?
+			`
+			rows, err := s.db.Query(query, agentID, n)
+			if err != nil {
+				return nil, err
+		
 	}
 	defer rows.Close()
 
@@ -278,6 +282,7 @@ func scanMessage(row *sql.Row) (*data.Message, error) {
 
 	if raw.Valid {
 		msg.Raw = []byte(raw.String)
+		populateUsageFromRaw(&msg)
 	}
 
 	return &msg, nil
@@ -335,6 +340,7 @@ func scanMessages(rows *sql.Rows) ([]*data.Message, error) {
 
 		if raw.Valid {
 			msg.Raw = []byte(raw.String)
+			populateUsageFromRaw(&msg)
 		}
 
 		messages = append(messages, &msg)
@@ -366,6 +372,16 @@ func (s *Store) GetAgentMetrics(agentID string) (*AgentMetrics, error) {
 	// Track unique files
 	filesRead := make(map[string]bool)
 	filesWritten := make(map[string]bool)
+
+	// Analyze messages
+	for _, msg := range conv.Messages {
+		if msg.Usage != nil {
+			metrics.InputTokens += msg.Usage.InputTokens
+			metrics.OutputTokens += msg.Usage.OutputTokens
+			metrics.CacheReads += msg.Usage.CacheReads
+		}
+	}
+	metrics.TotalTokens = metrics.InputTokens + metrics.OutputTokens
 
 	// Analyze tool calls
 	for _, msg := range conv.ToolCalls() {
@@ -452,4 +468,18 @@ func countLines(s string) int {
 		}
 	}
 	return count
+}
+
+func populateUsageFromRaw(msg *data.Message) {
+	if len(msg.Raw) == 0 {
+		return
+	}
+	var evt runner.Event
+	if err := json.Unmarshal(msg.Raw, &evt); err == nil && evt.Usage != nil {
+		msg.Usage = &data.Usage{
+			InputTokens:  evt.Usage.InputTokens,
+			OutputTokens: evt.Usage.OutputTokens,
+			CacheReads:   evt.Usage.CacheReads,
+		}
+	}
 }

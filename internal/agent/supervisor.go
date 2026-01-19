@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"syscall"
@@ -9,8 +10,8 @@ import (
 
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/logging"
+	"github.com/drewfead/athena/internal/runner"
 	"github.com/drewfead/athena/internal/store"
-	"github.com/drewfead/athena/pkg/claudecode"
 )
 
 // Supervisor monitors agent health and handles crash recovery.
@@ -172,12 +173,13 @@ func (s *Supervisor) restartAgent(agent *store.Agent) {
 	time.Sleep(backoff)
 
 	// Resume using the existing session
-	opts := &ResumeSpec{
-		AgentID:   agent.ID,
+	opts := runner.ResumeSpec{
 		SessionID: agent.ClaudeSessionID,
+		WorkDir:   agent.WorktreePath,
+		Model:     s.config.Agents.Model,
 	}
 
-	if err := s.spawner.Resume(s.ctx, opts); err != nil {
+	if err := s.spawner.Resume(s.ctx, agent.ID, opts); err != nil {
 		logging.Error("failed to restart agent", "agent_id", agent.ID, "error", err)
 		s.store.UpdateAgentStatus(agent.ID, store.AgentStatusCrashed)
 	}
@@ -207,47 +209,49 @@ func processExists(pid int) bool {
 	return process.Signal(syscall.Signal(0)) == nil
 }
 
-// ResumeSpec defines how to resume an agent.
-type ResumeSpec struct {
-	AgentID   string
-	SessionID string
-}
-
-// Resume restarts an agent using Claude's --resume flag.
-func (s *Spawner) Resume(ctx context.Context, spec *ResumeSpec) error {
-	agent, err := s.store.GetAgent(spec.AgentID)
+// Resume restarts an agent using the runner abstraction.
+func (s *Spawner) Resume(ctx context.Context, agentID string, spec runner.ResumeSpec) error {
+	agent, err := s.store.GetAgent(agentID)
 	if err != nil || agent == nil {
 		return err
 	}
 
-	opts := &claudecode.SpawnOptions{
-		SessionID: spec.SessionID,
-		WorkDir:   agent.WorktreePath,
-		Resume:    true,
-		Model:     s.config.Agents.Model,
+	// Initialize runner
+	// We need to know the provider. In restart case, we assume same provider as config or infer?
+	// The agent record doesn't store provider explicitly unless we added it.
+	// We added Provider to config. But if agent was spawned with a specific provider (e.g. from archetype), we might lose it if we don't store it.
+	// For now, use config default.
+	provider := s.config.Agents.Provider
+	if provider == "" {
+		provider = "claude"
+	}
+
+	r, err := runner.New(provider)
+	if err != nil {
+		return fmt.Errorf("failed to create runner: %w", err)
 	}
 
 	procCtx, cancel := context.WithCancel(ctx)
 
-	proc, err := claudecode.Spawn(procCtx, opts)
+	session, err := r.Resume(procCtx, spec)
 	if err != nil {
 		cancel()
 		return err
 	}
 
-	pid := proc.PID()
-	s.store.UpdateAgentPID(spec.AgentID, pid)
-	s.store.UpdateAgentStatus(spec.AgentID, store.AgentStatusRunning)
+	pid := session.PID()
+	s.store.UpdateAgentPID(agentID, pid)
+	s.store.UpdateAgentStatus(agentID, store.AgentStatusRunning)
 
 	mp := &ManagedProcess{
-		AgentID:   spec.AgentID,
+		AgentID:   agentID,
 		SessionID: spec.SessionID,
-		Process:   proc,
+		Process:   session,
 		Cancel:    cancel,
 	}
 
 	s.mu.Lock()
-	s.processes[spec.AgentID] = mp
+	s.processes[agentID] = mp
 	s.mu.Unlock()
 
 	go s.handleEvents(mp)

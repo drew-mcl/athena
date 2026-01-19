@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drewfead/athena/internal/data"
+	"github.com/drewfead/athena/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -21,14 +22,14 @@ import (
 type MemoryEventLog struct {
 	mu        sync.RWMutex
 	events    map[string][]*data.Message // agentID -> events
-	snapshots map[string]*Snapshot       // agentID -> latest snapshot
+	snapshots map[string]*store.Snapshot // agentID -> latest snapshot
 }
 
 // NewMemoryEventLog creates a new in-memory event log.
 func NewMemoryEventLog() *MemoryEventLog {
 	return &MemoryEventLog{
 		events:    make(map[string][]*data.Message),
-		snapshots: make(map[string]*Snapshot),
+		snapshots: make(map[string]*store.Snapshot),
 	}
 }
 
@@ -72,7 +73,7 @@ func (l *MemoryEventLog) LastSequence(ctx context.Context, agentID string) (int6
 	return int64(len(l.events[agentID]) - 1), nil
 }
 
-func (l *MemoryEventLog) Snapshot(ctx context.Context, agentID string) (*Snapshot, error) {
+func (l *MemoryEventLog) Snapshot(ctx context.Context, agentID string) (*store.Snapshot, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -97,14 +98,14 @@ func (l *MemoryEventLog) Snapshot(ctx context.Context, agentID string) (*Snapsho
 	hash := sha256.Sum256(convData)
 	checksum := hex.EncodeToString(hash[:])
 
-	snap := &Snapshot{
+	snap := &store.Snapshot{
 		ID:        uuid.NewString(),
 		AgentID:   agentID,
 		Sequence:  int64(len(events) - 1),
 		Timestamp: time.Now(),
 		Checksum:  checksum,
 		Data:      convData,
-		Metadata: SnapshotMeta{
+		Metadata: store.SnapshotMeta{
 			MessageCount:  len(conv.Messages),
 			ToolCallCount: len(conv.ToolCalls()),
 			Duration:      conv.Duration(),
@@ -116,7 +117,7 @@ func (l *MemoryEventLog) Snapshot(ctx context.Context, agentID string) (*Snapsho
 	return snap, nil
 }
 
-func (l *MemoryEventLog) RestoreFromSnapshot(ctx context.Context, snap *Snapshot) error {
+func (l *MemoryEventLog) RestoreFromSnapshot(ctx context.Context, snap *store.Snapshot) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
