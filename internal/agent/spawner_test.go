@@ -57,7 +57,7 @@ func TestSpawnerBuildRunSpec(t *testing.T) {
 	st, cfg, cleanup := setupTestEnv(t)
 	defer cleanup()
 
-	spawner := NewSpawner(cfg, st)
+	spawner := NewSpawner(cfg, st, nil) // nil publisher for tests
 
 	t.Run("PlannerArchetype", func(t *testing.T) {
 		spec := SpawnSpec{
@@ -132,7 +132,7 @@ func TestSpawnerListRunning(t *testing.T) {
 	st, cfg, cleanup := setupTestEnv(t)
 	defer cleanup()
 
-	spawner := NewSpawner(cfg, st)
+	spawner := NewSpawner(cfg, st, nil) // nil publisher for tests
 
 	// Initially no running processes
 	running := spawner.ListRunning()
@@ -206,7 +206,7 @@ func TestPipelineIntegration(t *testing.T) {
 	st, cfg, cleanup := setupTestEnv(t)
 	defer cleanup()
 
-	spawner := NewSpawner(cfg, st)
+	spawner := NewSpawner(cfg, st, nil) // nil publisher for tests
 
 	// Pipeline should be created
 	pipeline := spawner.Pipeline()

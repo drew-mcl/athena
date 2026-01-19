@@ -76,6 +76,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	publisher := worktree.NewPublisher(cfg, st)
+
 	d := &Daemon{
 		config:      cfg,
 		store:       st,
@@ -83,8 +85,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 		scanner:     worktree.NewScanner(cfg, st),
 		provisioner: worktree.NewProvisioner(cfg, st),
 		migrator:    worktree.NewMigrator(cfg, st),
-		publisher:   worktree.NewPublisher(cfg, st),
-		spawner:     agent.NewSpawner(cfg, st),
+		publisher:   publisher,
+		spawner:     agent.NewSpawner(cfg, st, publisher),
 		agents:      make(map[string]*AgentProcess),
 		jobQueue:    make(chan string, 100),
 		ctx:         ctx,

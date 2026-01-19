@@ -18,6 +18,7 @@ import (
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/runner"
 	"github.com/drewfead/athena/internal/store"
+	"github.com/drewfead/athena/internal/worktree"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +28,7 @@ type Spawner struct {
 	store      *store.Store
 	pipeline   *eventlog.Pipeline
 	contextMgr *agentctx.Manager
+	publisher  *worktree.Publisher // For auto-PR publishing
 
 	processes map[string]*ManagedProcess
 	mu        sync.RWMutex
@@ -41,17 +43,18 @@ type ManagedProcess struct {
 }
 
 // NewSpawner creates a new agent spawner with default pipeline.
-func NewSpawner(cfg *config.Config, st *store.Store) *Spawner {
-	return NewSpawnerWithPipeline(cfg, st, eventlog.NewSQLitePipeline(st, 100))
+func NewSpawner(cfg *config.Config, st *store.Store, pub *worktree.Publisher) *Spawner {
+	return NewSpawnerWithPipeline(cfg, st, pub, eventlog.NewSQLitePipeline(st, 100))
 }
 
 // NewSpawnerWithPipeline creates a spawner with a custom pipeline.
-func NewSpawnerWithPipeline(cfg *config.Config, st *store.Store, pipeline *eventlog.Pipeline) *Spawner {
+func NewSpawnerWithPipeline(cfg *config.Config, st *store.Store, pub *worktree.Publisher, pipeline *eventlog.Pipeline) *Spawner {
 	return &Spawner{
 		config:     cfg,
 		store:      st,
 		pipeline:   pipeline,
 		contextMgr: agentctx.NewManager(st),
+		publisher:  pub,
 		processes:  make(map[string]*ManagedProcess),
 	}
 }
@@ -415,6 +418,9 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 
 		// Check for automatic workflow: auto-approve plan and spawn executor
 		s.maybeAutoSpawnExecutor(agent)
+
+		// Check for automatic workflow: auto-publish PR on executor completion
+		s.maybeAutoPublishPR(agent)
 	} else {
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)
 		logging.Warn("agent crashed", "agent_id", mp.AgentID, "exit_code", exitCode)
@@ -516,6 +522,63 @@ Execute this plan precisely. After each step, report what you did.`, planContent
 
 	// Update plan to executing status
 	s.store.UpdatePlanStatus(agent.WorktreePath, store.PlanStatusExecuting)
+}
+
+// maybeAutoPublishPR checks if automatic workflow mode should publish a PR on executor completion.
+func (s *Spawner) maybeAutoPublishPR(agent *store.Agent) {
+	// Only auto-publish for executor agents
+	if agent.Archetype != "executor" {
+		return
+	}
+
+	// Check GitHub auto-PR is enabled
+	gh := s.config.Integrations.GitHub
+	if !gh.Enabled || !gh.AutoPR {
+		logging.Debug("GitHub auto-PR not enabled, skipping auto-publish")
+		return
+	}
+
+	// Get the worktree
+	wt, err := s.store.GetWorktree(agent.WorktreePath)
+	if err != nil || wt == nil {
+		logging.Debug("no worktree found for auto-publish", "path", agent.WorktreePath)
+		return
+	}
+
+	// Check workflow mode is automatic
+	if wt.WorkflowMode == nil || *wt.WorkflowMode != string(config.WorkflowModeAutomatic) {
+		return
+	}
+
+	// Skip if already published
+	if wt.PRURL != nil && *wt.PRURL != "" {
+		logging.Debug("worktree already has PR, skipping auto-publish", "path", agent.WorktreePath)
+		return
+	}
+
+	// Skip if publisher not available
+	if s.publisher == nil {
+		logging.Debug("publisher not available for auto-publish")
+		return
+	}
+
+	logging.Info("automatic mode: auto-publishing PR",
+		"worktree", agent.WorktreePath)
+
+	// Publish the PR
+	result, err := s.publisher.PublishPR(worktree.PublishOptions{
+		WorktreePath: agent.WorktreePath,
+		Archetype:    agent.Archetype,
+	})
+	if err != nil {
+		logging.Error("failed to auto-publish PR", "error", err, "worktree", agent.WorktreePath)
+		return
+	}
+
+	logging.Info("PR auto-published successfully",
+		"url", result.PRURL,
+		"branch", result.Branch,
+		"worktree", agent.WorktreePath)
 }
 
 // readClaudePlan reads the plan content from Claude's native plan storage.
