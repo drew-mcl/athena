@@ -476,3 +476,20 @@ func CalculateScrollWindow(totalItems, selected, visibleRows int) ScrollWindow {
 		HasLess:     offset > 0,
 	}
 }
+
+// RenderAppFrame wraps the application content in a sleek box
+func RenderAppFrame(content string, width, height int) string {
+	// Adjust width/height for border
+	// StyleAppBox has padding(0, 1) -> 2 columns padding + 2 columns border = 4 columns lost
+	// Height is reduced by 2 (border).
+
+	// If width or height is too small, just return content
+	if width < 5 || height < 3 {
+		return content
+	}
+
+	return tui.StyleAppBox.
+		Width(width - 4).
+		Height(height - 2).
+		Render(content)
+}

@@ -484,6 +484,7 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 		ProjectName:  wt.Project,
 		Archetype:    req.Archetype,
 		Prompt:       req.Prompt,
+		Provider:     req.Provider,
 	}
 
 	// Actually spawn the agent process
@@ -1237,6 +1238,7 @@ Do NOT make any code changes. Only explore and create the plan.`, description)
 		ProjectName:  wt.Project,
 		Archetype:    "planner",
 		Prompt:       planPrompt,
+		Provider:     req.Provider,
 	}
 
 	spawnedAgent, err := d.spawner.Spawn(d.ctx, spec)
