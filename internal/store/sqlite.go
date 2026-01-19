@@ -306,6 +306,43 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_worktrees_project_name ON worktrees(project_name);
 	CREATE INDEX IF NOT EXISTS idx_plans_worktree ON plans(worktree_path);
 	CREATE INDEX IF NOT EXISTS idx_plans_agent ON plans(agent_id);
+
+	-- Blackboard: ephemeral, worktree-scoped entries for current workflow
+	CREATE TABLE IF NOT EXISTS blackboard (
+		id            TEXT PRIMARY KEY,
+		worktree_path TEXT NOT NULL,
+		entry_type    TEXT NOT NULL,              -- decision | finding | attempt | question | artifact
+		content       TEXT NOT NULL,
+		agent_id      TEXT NOT NULL,
+		sequence      INTEGER NOT NULL,
+		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+		resolved      INTEGER DEFAULT 0,
+		resolved_by   TEXT,
+
+		FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_blackboard_worktree ON blackboard(worktree_path, sequence);
+	CREATE INDEX IF NOT EXISTS idx_blackboard_type ON blackboard(worktree_path, entry_type);
+
+	-- Project state: durable, project-scoped facts that survive across workflows
+	CREATE TABLE IF NOT EXISTS project_state (
+		id            TEXT PRIMARY KEY,
+		project       TEXT NOT NULL,
+		state_type    TEXT NOT NULL,              -- architecture | convention | constraint | decision | environment
+		key           TEXT NOT NULL,
+		value         TEXT NOT NULL,
+		confidence    REAL DEFAULT 1.0,
+		source_agent  TEXT,
+		source_ref    TEXT,
+		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+		superseded_by TEXT,
+
+		UNIQUE(project, state_type, key),
+		FOREIGN KEY (source_agent) REFERENCES agents(id) ON DELETE SET NULL,
+		FOREIGN KEY (superseded_by) REFERENCES project_state(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_state_project ON project_state(project, state_type);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -458,6 +495,56 @@ type ChangelogEntry struct {
 	JobID       *string
 	AgentID     *string
 	CreatedAt   time.Time
+}
+
+// BlackboardEntryType represents the kind of blackboard entry.
+type BlackboardEntryType string
+
+const (
+	BlackboardTypeDecision BlackboardEntryType = "decision" // Choice made
+	BlackboardTypeFinding  BlackboardEntryType = "finding"  // Discovery
+	BlackboardTypeAttempt  BlackboardEntryType = "attempt"  // What was tried
+	BlackboardTypeQuestion BlackboardEntryType = "question" // Open question
+	BlackboardTypeArtifact BlackboardEntryType = "artifact" // Created thing
+)
+
+// BlackboardEntry represents an ephemeral, worktree-scoped entry for the current workflow.
+type BlackboardEntry struct {
+	ID           string
+	WorktreePath string
+	EntryType    BlackboardEntryType
+	Content      string
+	AgentID      string
+	Sequence     int
+	CreatedAt    time.Time
+	Resolved     bool
+	ResolvedBy   *string
+}
+
+// StateEntryType represents the kind of project state entry.
+type StateEntryType string
+
+const (
+	StateTypeArchitecture StateEntryType = "architecture" // Design patterns
+	StateTypeConvention   StateEntryType = "convention"   // Code style
+	StateTypeConstraint   StateEntryType = "constraint"   // Hard limits
+	StateTypeDecision     StateEntryType = "decision"     // Architectural choice
+	StateTypeEnvironment  StateEntryType = "environment"  // Runtime facts
+)
+
+// StateEntry represents a durable, project-scoped fact that survives across workflows.
+type StateEntry struct {
+	ID           string
+	Project      string
+	StateType    StateEntryType
+	Key          string
+	Value        string
+	Confidence   float64
+	SourceAgent  *string
+	SourceRef    *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	SupersededBy *string
 }
 
 // PlanStatus represents the lifecycle state of a plan.

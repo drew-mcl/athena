@@ -114,6 +114,15 @@ type Model struct {
 	planAgentID       string // planner agent ID for parent link
 	planWorktreePath  string // worktree path for the plan
 
+	// Context viewer mode (blackboard + state)
+	contextMode         bool                            // true = viewing context
+	contextWorktreePath string                          // worktree path for context
+	contextProjectName  string                          // project name for state lookup
+	contextBlackboard   []*control.BlackboardEntryInfo  // blackboard entries
+	contextSummary      *control.BlackboardSummaryInfo  // blackboard summary
+	contextPreview      string                          // formatted context preview
+	contextScroll       int                             // scroll offset
+
 	// Status message feedback
 	statusMsg     string
 	statusMsgTime time.Time
@@ -171,6 +180,13 @@ type (
 	}
 	cleanupResultMsg struct {
 		path string
+	}
+	contextResultMsg struct {
+		worktreePath string
+		projectName  string
+		blackboard   []*control.BlackboardEntryInfo
+		summary      *control.BlackboardSummaryInfo
+		preview      string
 	}
 	clearStatusMsg struct{}
 	clearErrMsg    struct{} // Auto-clears error after timeout
@@ -265,6 +281,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.planMode {
 			return m.handlePlanMode(msg)
+		}
+		if m.contextMode {
+			return m.handleContextMode(msg)
 		}
 		if m.logsMode {
 			return m.handleLogsMode(msg)
@@ -370,6 +389,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.planRendered = m.renderMarkdown(msg.content)
 		}
+
+	case contextResultMsg:
+		if m.contextWorktreePath == "" || msg.worktreePath != m.contextWorktreePath {
+			return m, nil
+		}
+		m.contextWorktreePath = msg.worktreePath
+		m.contextProjectName = msg.projectName
+		m.contextBlackboard = msg.blackboard
+		m.contextSummary = msg.summary
+		m.contextPreview = msg.preview
+		m.contextMode = true
+		m.contextScroll = 0
 
 	case publishResultMsg:
 		m.statusMsg = fmt.Sprintf("PR created: %s", msg.prURL)
@@ -668,6 +699,13 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.showStatus(GetActionTooltip("p", m.tab, m.level))
 		}
 		return m, m.doPlanView()
+
+	case "C":
+		// View agent context (blackboard + state)
+		if !IsActionAvailable("C", m.tab, m.level) {
+			return m, m.showStatus(GetActionTooltip("C", m.tab, m.level))
+		}
+		return m, m.doContextView()
 
 	case "L":
 		// View logs for selected agent
@@ -1014,6 +1052,188 @@ func (m Model) planViewportHeight() int {
 // planViewportLines returns total lines in rendered plan
 func (m Model) planViewportLines() int {
 	return strings.Count(m.planRendered, "\n") + 1
+}
+
+func (m Model) handleContextMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxScroll := max(0, m.contextViewportLines()-m.contextViewportHeight())
+	halfPage := max(1, m.contextViewportHeight()/2)
+
+	switch msg.String() {
+	case "esc", "q":
+		m.contextMode = false
+		m.contextBlackboard = nil
+		m.contextSummary = nil
+		m.contextPreview = ""
+		m.contextWorktreePath = ""
+		m.contextScroll = 0
+		return m, nil
+
+	case "r":
+		// Refresh context
+		return m, m.fetchContext(m.contextWorktreePath, m.contextProjectName)
+
+	// Vi-style scrolling
+	case "j", "down":
+		m.contextScroll = min(m.contextScroll+1, maxScroll)
+	case "k", "up":
+		m.contextScroll = max(m.contextScroll-1, 0)
+	case "g":
+		m.contextScroll = 0
+	case "G":
+		m.contextScroll = maxScroll
+	case "ctrl+d":
+		m.contextScroll = min(m.contextScroll+halfPage, maxScroll)
+	case "ctrl+u":
+		m.contextScroll = max(m.contextScroll-halfPage, 0)
+	}
+	return m, nil
+}
+
+// contextViewportHeight returns available lines for context content
+func (m Model) contextViewportHeight() int {
+	// height - header(3) - footer(2) - padding(2)
+	return max(5, m.height-7)
+}
+
+// contextViewportLines returns total lines in context preview
+func (m Model) contextViewportLines() int {
+	if m.contextPreview == "" {
+		return 1
+	}
+	return strings.Count(m.contextPreview, "\n") + 1
+}
+
+func (m Model) renderContextView() string {
+	var content strings.Builder
+
+	// Header
+	icon := tui.Logo()
+	content.WriteString(icon + " " + tui.StyleLogo.Render("Agent Context"))
+	content.WriteString("\n")
+	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n")
+
+	viewportHeight := m.contextViewportHeight()
+
+	// Summary section
+	if m.contextSummary != nil {
+		content.WriteString(tui.StyleAccent.Render("Summary"))
+		content.WriteString(fmt.Sprintf("  Decisions: %d  Findings: %d  Attempts: %d  Questions: %d (unresolved: %d)\n\n",
+			m.contextSummary.DecisionCount,
+			m.contextSummary.FindingCount,
+			m.contextSummary.AttemptCount,
+			m.contextSummary.QuestionCount,
+			m.contextSummary.UnresolvedCount))
+	}
+
+	// Preview content or empty state
+	if m.contextPreview == "" && len(m.contextBlackboard) == 0 {
+		content.WriteString(tui.StyleEmptyState.Render("  No context entries for this worktree yet."))
+		content.WriteString("\n\n")
+		content.WriteString(tui.StyleMuted.Render("  Context is populated when agents run and emit markers like:"))
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("  ## DECISION: Use JWT for auth"))
+		content.WriteString("\n")
+		content.WriteString(tui.StyleMuted.Render("  ## FINDING: Auth code is at internal/auth/"))
+		content.WriteString("\n")
+	} else if m.contextPreview != "" {
+		// Display the assembled context preview
+		lines := strings.Split(m.contextPreview, "\n")
+		totalLines := len(lines)
+
+		// Apply scroll offset
+		endIdx := min(m.contextScroll+viewportHeight, totalLines)
+		startIdx := m.contextScroll
+
+		for i := startIdx; i < endIdx; i++ {
+			content.WriteString(lines[i])
+			content.WriteString("\n")
+		}
+
+		// Scroll indicator
+		if totalLines > viewportHeight {
+			position := fmt.Sprintf(" [%d-%d of %d lines]", startIdx+1, endIdx, totalLines)
+			content.WriteString(tui.StyleMuted.Render(position))
+			content.WriteString("\n")
+		}
+	} else {
+		// No preview but we have blackboard entries - render manually
+		content.WriteString(tui.StyleAccent.Render("Blackboard Entries"))
+		content.WriteString("\n\n")
+
+		// Group by type
+		decisions := []*control.BlackboardEntryInfo{}
+		findings := []*control.BlackboardEntryInfo{}
+		attempts := []*control.BlackboardEntryInfo{}
+		questions := []*control.BlackboardEntryInfo{}
+
+		for _, e := range m.contextBlackboard {
+			switch e.EntryType {
+			case "decision":
+				decisions = append(decisions, e)
+			case "finding":
+				findings = append(findings, e)
+			case "attempt":
+				attempts = append(attempts, e)
+			case "question":
+				questions = append(questions, e)
+			}
+		}
+
+		if len(decisions) > 0 {
+			content.WriteString(tui.StyleAccent.Render("Decisions"))
+			content.WriteString("\n")
+			for _, d := range decisions {
+				content.WriteString(fmt.Sprintf("  • %s\n", truncateContent(d.Content, 80)))
+			}
+			content.WriteString("\n")
+		}
+
+		if len(findings) > 0 {
+			content.WriteString(tui.StyleAccent.Render("Findings"))
+			content.WriteString("\n")
+			for _, f := range findings {
+				content.WriteString(fmt.Sprintf("  • %s\n", truncateContent(f.Content, 80)))
+			}
+			content.WriteString("\n")
+		}
+
+		if len(attempts) > 0 {
+			content.WriteString(tui.StyleAccent.Render("Attempts"))
+			content.WriteString("\n")
+			for _, a := range attempts {
+				content.WriteString(fmt.Sprintf("  • %s\n", truncateContent(a.Content, 80)))
+			}
+			content.WriteString("\n")
+		}
+
+		if len(questions) > 0 {
+			content.WriteString(tui.StyleAccent.Render("Questions"))
+			content.WriteString("\n")
+			for _, q := range questions {
+				resolved := ""
+				if q.Resolved {
+					resolved = " [resolved]"
+				}
+				content.WriteString(fmt.Sprintf("  • %s%s\n", truncateContent(q.Content, 70), resolved))
+			}
+			content.WriteString("\n")
+		}
+	}
+
+	// Footer
+	footer := "  " + tui.StyleHelp.Render("j/k:scroll  g/G:top/bottom  r:refresh  q:close")
+	return layout.PinFooterToBottom(content.String(), footer, m.height)
+}
+
+// truncateContent truncates content to maxLen with ellipsis
+func truncateContent(s string, maxLen int) string {
+	// Remove newlines for display
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // renderMarkdown renders markdown content using glamour
@@ -1365,6 +1585,11 @@ func (m Model) View() string {
 	// Plan viewer overlay
 	if m.planMode {
 		return m.renderPlanView()
+	}
+
+	// Context viewer overlay
+	if m.contextMode {
+		return m.renderContextView()
 	}
 
 	// Worktree creation wizard
@@ -2336,6 +2561,72 @@ func (m *Model) fetchPlan(worktreePath string, forceRefresh bool) tea.Cmd {
 			status:        plan.Status,
 			agentID:       plan.AgentID,
 			plannerStatus: plan.PlannerStatus,
+		}
+	}
+}
+
+func (m *Model) doContextView() tea.Cmd {
+	var wts []*control.WorktreeInfo
+	var agents []*control.AgentInfo
+
+	if m.level == LevelDashboard {
+		wts = m.worktrees
+		agents = m.agents
+	} else {
+		wts = m.projectWorktrees()
+		agents = m.projectAgents()
+	}
+
+	var worktreePath, projectName string
+	switch m.tab {
+	case TabWorktrees:
+		if m.selected < len(wts) {
+			worktreePath = wts[m.selected].Path
+			projectName = wts[m.selected].Project
+		}
+	case TabAgents:
+		if m.selected < len(agents) {
+			worktreePath = agents[m.selected].WorktreePath
+			projectName = agents[m.selected].ProjectName
+		}
+	}
+
+	if worktreePath != "" {
+		return m.fetchContext(worktreePath, projectName)
+	}
+	return nil
+}
+
+func (m *Model) fetchContext(worktreePath, projectName string) tea.Cmd {
+	m.contextWorktreePath = worktreePath
+	m.contextProjectName = projectName
+	return func() tea.Msg {
+		// Fetch blackboard entries
+		blackboard, err := m.client.GetBlackboard(worktreePath)
+		if err != nil {
+			return errMsg(fmt.Errorf("failed to get blackboard: %w", err))
+		}
+
+		// Fetch blackboard summary
+		summary, err := m.client.GetBlackboardSummary(worktreePath)
+		if err != nil {
+			// Non-fatal, continue without summary
+			summary = nil
+		}
+
+		// Fetch context preview
+		preview, err := m.client.GetContextPreview(worktreePath, projectName)
+		if err != nil {
+			// Non-fatal, generate from blackboard
+			preview = ""
+		}
+
+		return contextResultMsg{
+			worktreePath: worktreePath,
+			projectName:  projectName,
+			blackboard:   blackboard,
+			summary:      summary,
+			preview:      preview,
 		}
 	}
 }

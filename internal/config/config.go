@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -89,8 +90,68 @@ type MetricsConfig struct {
 
 // IntegrationsConfig defines external service connections.
 type IntegrationsConfig struct {
-	Linear LinearConfig `yaml:"linear"`
-	GitHub GitHubConfig `yaml:"github"`
+	Linear     LinearConfig          `yaml:"linear"`
+	GitHub     GitHubConfig          `yaml:"github"`
+	Identities AgentIdentitiesConfig `yaml:"identities"`
+}
+
+// AgentIdentitiesConfig defines git identities for agent commits.
+// This enables agents to commit as bot users (ata-codex, ata-clc) with
+// the human user as co-author.
+type AgentIdentitiesConfig struct {
+	// Default identity used when no archetype-specific identity is configured.
+	Default *AgentIdentity `yaml:"default"`
+
+	// Archetypes maps archetype names to specific identities.
+	// Example: executor -> ata-clc (Claude Code does hands-on work)
+	Archetypes map[string]*AgentIdentity `yaml:"archetypes"`
+
+	// CoAuthor configures the human co-author for agent commits.
+	CoAuthor *CoAuthorConfig `yaml:"co_author"`
+}
+
+// AgentIdentity represents a git identity for an agent.
+// Can optionally include GitHub App credentials for PR creation.
+type AgentIdentity struct {
+	// Name is the git author/committer name (e.g., "ata-codex").
+	Name string `yaml:"name"`
+
+	// Email is the git author/committer email (e.g., "ata-codex[bot]@users.noreply.github.com").
+	Email string `yaml:"email"`
+
+	// GitHubAppID is the GitHub App ID for API authentication.
+	GitHubAppID string `yaml:"github_app_id"`
+
+	// PrivateKeyPath is the path to the GitHub App private key (.pem file).
+	PrivateKeyPath string `yaml:"private_key_path"`
+
+	// InstallationID is the GitHub App installation ID for the target org/repos.
+	InstallationID string `yaml:"installation_id"`
+}
+
+// CoAuthorConfig defines the human co-author for agent commits.
+type CoAuthorConfig struct {
+	// Enabled controls whether co-author trailer is added to commits.
+	Enabled bool `yaml:"enabled"`
+
+	// Name is the co-author's name.
+	Name string `yaml:"name"`
+
+	// Email is the co-author's email.
+	Email string `yaml:"email"`
+}
+
+// HasGitHubApp returns true if this identity has GitHub App credentials configured.
+func (i *AgentIdentity) HasGitHubApp() bool {
+	return i != nil && i.GitHubAppID != "" && i.PrivateKeyPath != "" && i.InstallationID != ""
+}
+
+// CoAuthorLine returns the Git trailer for co-authorship.
+func (c *CoAuthorConfig) CoAuthorLine() string {
+	if c == nil || !c.Enabled || c.Name == "" || c.Email == "" {
+		return ""
+	}
+	return "Co-authored-by: " + c.Name + " <" + c.Email + ">"
 }
 
 // LinearConfig defines Linear integration settings.
@@ -247,6 +308,29 @@ func (c *Config) expandEnvVars() {
 	c.Integrations.Linear.WebhookSecret = os.ExpandEnv(c.Integrations.Linear.WebhookSecret)
 	c.Integrations.Linear.APIKey = os.ExpandEnv(c.Integrations.Linear.APIKey)
 	c.Daemon.SentryDSN = os.ExpandEnv(c.Daemon.SentryDSN)
+
+	// Expand env vars in identity config
+	if c.Integrations.Identities.Default != nil {
+		c.Integrations.Identities.Default.expandEnvVars()
+	}
+	for _, identity := range c.Integrations.Identities.Archetypes {
+		if identity != nil {
+			identity.expandEnvVars()
+		}
+	}
+}
+
+func (i *AgentIdentity) expandEnvVars() {
+	i.GitHubAppID = os.ExpandEnv(i.GitHubAppID)
+	i.PrivateKeyPath = os.ExpandEnv(i.PrivateKeyPath)
+	i.InstallationID = os.ExpandEnv(i.InstallationID)
+
+	// Expand ~ in private key path
+	if strings.HasPrefix(i.PrivateKeyPath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			i.PrivateKeyPath = filepath.Join(home, i.PrivateKeyPath[2:])
+		}
+	}
 }
 
 // CycleWorkflowMode cycles through workflow modes: automatic → approve → manual → automatic

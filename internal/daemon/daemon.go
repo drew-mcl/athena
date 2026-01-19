@@ -16,6 +16,7 @@ import (
 
 	"github.com/drewfead/athena/internal/agent"
 	"github.com/drewfead/athena/internal/config"
+	actx "github.com/drewfead/athena/internal/context"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
@@ -387,6 +388,15 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("publish_pr", d.handlePublishPR)
 	d.server.Handle("merge_local", d.handleMergeLocal)
 	d.server.Handle("cleanup_worktree", d.handleCleanupWorktree)
+	// Context (blackboard + state)
+	d.server.Handle("get_blackboard", d.handleGetBlackboard)
+	d.server.Handle("post_blackboard", d.handlePostBlackboard)
+	d.server.Handle("clear_blackboard", d.handleClearBlackboard)
+	d.server.Handle("get_blackboard_summary", d.handleGetBlackboardSummary)
+	d.server.Handle("get_project_state", d.handleGetProjectState)
+	d.server.Handle("set_project_state", d.handleSetProjectState)
+	d.server.Handle("get_state_summary", d.handleGetStateSummary)
+	d.server.Handle("get_context_preview", d.handleGetContextPreview)
 }
 
 func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {
@@ -1732,4 +1742,303 @@ func parsePlanFrontmatter(content string) (summary string, body string) {
 	body = strings.TrimPrefix(body, "\n") // Remove leading newline
 
 	return summary, body
+}
+
+// Context handlers (blackboard + state)
+
+func (d *Daemon) handleGetBlackboard(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	entries, err := d.store.ListBlackboardEntries(req.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*control.BlackboardEntryInfo
+	for _, e := range entries {
+		result = append(result, blackboardEntryToInfo(e))
+	}
+	return result, nil
+}
+
+func (d *Daemon) handlePostBlackboard(params json.RawMessage) (any, error) {
+	var req control.PostBlackboardRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Default agent ID for manual entries
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = "manual"
+	}
+
+	// Map entry type string to store type
+	entryType := store.BlackboardEntryType(req.EntryType)
+	if !isValidBlackboardEntryType(entryType) {
+		return nil, fmt.Errorf("invalid entry type: %s", req.EntryType)
+	}
+
+	entry := &store.BlackboardEntry{
+		ID:           actx.GenerateEntryID(),
+		WorktreePath: req.WorktreePath,
+		EntryType:    entryType,
+		Content:      req.Content,
+		AgentID:      agentID,
+	}
+
+	if err := d.store.CreateBlackboardEntry(entry); err != nil {
+		return nil, err
+	}
+
+	return blackboardEntryToInfo(entry), nil
+}
+
+func (d *Daemon) handleClearBlackboard(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.store.ClearBlackboard(req.WorktreePath); err != nil {
+		return nil, err
+	}
+
+	return map[string]bool{"success": true}, nil
+}
+
+func (d *Daemon) handleGetBlackboardSummary(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	counts, err := d.store.CountBlackboardEntries(req.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate totals
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+
+	// Get unresolved question count
+	unresolvedCount, _ := d.store.CountUnresolvedQuestions(req.WorktreePath)
+
+	return &control.BlackboardSummaryInfo{
+		WorktreePath:    req.WorktreePath,
+		DecisionCount:   counts[store.BlackboardTypeDecision],
+		FindingCount:    counts[store.BlackboardTypeFinding],
+		AttemptCount:    counts[store.BlackboardTypeAttempt],
+		QuestionCount:   counts[store.BlackboardTypeQuestion],
+		ArtifactCount:   counts[store.BlackboardTypeArtifact],
+		UnresolvedCount: unresolvedCount,
+		TotalCount:      total,
+	}, nil
+}
+
+func (d *Daemon) handleGetProjectState(params json.RawMessage) (any, error) {
+	var req struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	entries, err := d.store.ListStateEntries(req.Project)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*control.StateEntryInfo
+	for _, e := range entries {
+		result = append(result, stateEntryToInfo(e))
+	}
+	return result, nil
+}
+
+func (d *Daemon) handleSetProjectState(params json.RawMessage) (any, error) {
+	var req control.SetStateRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Map state type string to store type
+	stateType := store.StateEntryType(req.StateType)
+	if !isValidStateEntryType(stateType) {
+		return nil, fmt.Errorf("invalid state type: %s", req.StateType)
+	}
+
+	// Default confidence
+	confidence := req.Confidence
+	if confidence <= 0 {
+		confidence = 1.0
+	}
+
+	// Optional source agent
+	var agentID *string
+	if req.AgentID != "" {
+		agentID = &req.AgentID
+	}
+
+	entry := &store.StateEntry{
+		ID:          actx.GenerateEntryID(),
+		Project:     req.Project,
+		StateType:   stateType,
+		Key:         req.Key,
+		Value:       req.Value,
+		Confidence:  confidence,
+		SourceAgent: agentID,
+	}
+
+	if err := d.store.UpsertStateEntry(entry); err != nil {
+		return nil, err
+	}
+
+	// Re-fetch to get timestamps
+	entry, err := d.store.GetStateEntryByKey(req.Project, stateType, req.Key)
+	if err != nil {
+		return nil, err
+	}
+
+	return stateEntryToInfo(entry), nil
+}
+
+func (d *Daemon) handleGetStateSummary(params json.RawMessage) (any, error) {
+	var req struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	entries, err := d.store.ListStateEntries(req.Project)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate summary stats
+	summary := &control.StateSummaryInfo{
+		Project: req.Project,
+	}
+	var totalConfidence float64
+	for _, e := range entries {
+		summary.TotalCount++
+		totalConfidence += e.Confidence
+
+		switch e.StateType {
+		case store.StateTypeArchitecture:
+			summary.ArchitectureCount++
+		case store.StateTypeConvention:
+			summary.ConventionCount++
+		case store.StateTypeConstraint:
+			summary.ConstraintCount++
+		case store.StateTypeDecision:
+			summary.DecisionCount++
+		case store.StateTypeEnvironment:
+			summary.EnvironmentCount++
+		}
+	}
+	if summary.TotalCount > 0 {
+		summary.AvgConfidence = totalConfidence / float64(summary.TotalCount)
+	}
+
+	return summary, nil
+}
+
+func (d *Daemon) handleGetContextPreview(params json.RawMessage) (any, error) {
+	var req struct {
+		WorktreePath string `json:"worktree_path"`
+		ProjectName  string `json:"project_name"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Get context manager from spawner
+	ctxMgr := d.spawner.ContextManager()
+	if ctxMgr == nil {
+		return nil, fmt.Errorf("context manager not initialized")
+	}
+
+	preview, err := ctxMgr.GetContextPreview(req.WorktreePath, req.ProjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"context": preview}, nil
+}
+
+// Helper functions for context handlers
+
+func blackboardEntryToInfo(e *store.BlackboardEntry) *control.BlackboardEntryInfo {
+	info := &control.BlackboardEntryInfo{
+		ID:           e.ID,
+		WorktreePath: e.WorktreePath,
+		EntryType:    string(e.EntryType),
+		Content:      e.Content,
+		AgentID:      e.AgentID,
+		Sequence:     e.Sequence,
+		CreatedAt:    e.CreatedAt.Format(time.RFC3339),
+		Resolved:     e.Resolved,
+	}
+	if e.ResolvedBy != nil {
+		info.ResolvedBy = *e.ResolvedBy
+	}
+	return info
+}
+
+func stateEntryToInfo(e *store.StateEntry) *control.StateEntryInfo {
+	info := &control.StateEntryInfo{
+		ID:         e.ID,
+		Project:    e.Project,
+		StateType:  string(e.StateType),
+		Key:        e.Key,
+		Value:      e.Value,
+		Confidence: e.Confidence,
+		CreatedAt:  e.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:  e.UpdatedAt.Format(time.RFC3339),
+	}
+	if e.SourceAgent != nil {
+		info.SourceAgent = *e.SourceAgent
+	}
+	if e.SourceRef != nil {
+		info.SourceRef = *e.SourceRef
+	}
+	return info
+}
+
+func isValidBlackboardEntryType(t store.BlackboardEntryType) bool {
+	switch t {
+	case store.BlackboardTypeDecision,
+		store.BlackboardTypeFinding,
+		store.BlackboardTypeAttempt,
+		store.BlackboardTypeQuestion,
+		store.BlackboardTypeArtifact:
+		return true
+	}
+	return false
+}
+
+func isValidStateEntryType(t store.StateEntryType) bool {
+	switch t {
+	case store.StateTypeArchitecture,
+		store.StateTypeConvention,
+		store.StateTypeConstraint,
+		store.StateTypeDecision,
+		store.StateTypeEnvironment:
+		return true
+	}
+	return false
 }

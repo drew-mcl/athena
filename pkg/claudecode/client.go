@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -32,6 +33,15 @@ func Spawn(ctx context.Context, opts *SpawnOptions) (*Process, error) {
 	args := opts.Args()
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = opts.WorkDir
+
+	// Inject git identity environment variables if configured
+	if opts.GitIdentity != nil {
+		gitEnv := opts.GitIdentity.Env()
+		if len(gitEnv) > 0 {
+			// Start with current environment, then add git identity vars
+			cmd.Env = append(os.Environ(), gitEnv...)
+		}
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
