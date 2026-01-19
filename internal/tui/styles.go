@@ -38,6 +38,8 @@ var StatusIcons = map[string]string{
 	"completed":  "✓", // Done (widely supported)
 	"terminated": "#", // Stopped
 	"idle":       "-", // Inactive
+	"spawning":   "↑", // Starting up
+	"attached":   "@", // Interactive console
 }
 
 // AgentIcons provides backwards-compatible agent icons (maps to StatusIcons)
@@ -48,11 +50,11 @@ func StatusColor(status string) lipgloss.Color {
 	switch status {
 	case "running", "executing":
 		return ColorSuccess
-	case "planning":
+	case "planning", "attached":
 		return ColorInfo
 	case "crashed":
 		return ColorDanger
-	case "pending", "awaiting":
+	case "pending", "awaiting", "spawning":
 		return ColorWarning
 	case "completed", "terminated":
 		return ColorNeutral

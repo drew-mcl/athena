@@ -37,6 +37,14 @@ type PublishResult struct {
 	Branch string `json:"branch"`
 }
 
+// MergeResult contains the result of a local merge attempt.
+type MergeResult struct {
+	Success      bool   `json:"success"`
+	HasConflicts bool   `json:"has_conflicts"`
+	Branch       string `json:"branch"`
+	Message      string `json:"message,omitempty"`
+}
+
 // PublishPR pushes the branch and creates a PR via gh CLI.
 func (p *Publisher) PublishPR(opts PublishOptions) (*PublishResult, error) {
 	// 1. Verify worktree exists in store
@@ -113,26 +121,27 @@ func (p *Publisher) PublishPR(opts PublishOptions) (*PublishResult, error) {
 }
 
 // MergeLocal merges the branch into main locally.
-func (p *Publisher) MergeLocal(worktreePath string) error {
+// Returns a result indicating success or conflict (for auto-resolution).
+func (p *Publisher) MergeLocal(worktreePath string) (*MergeResult, error) {
 	// 1. Verify worktree exists
 	wt, err := p.store.GetWorktree(worktreePath)
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return nil, fmt.Errorf("failed to get worktree: %w", err)
 	}
 	if wt == nil {
-		return fmt.Errorf("worktree not found: %s", worktreePath)
+		return nil, fmt.Errorf("worktree not found: %s", worktreePath)
 	}
 	if wt.IsMain {
-		return fmt.Errorf("cannot merge main worktree")
+		return nil, fmt.Errorf("cannot merge main worktree")
 	}
 
 	// 2. Verify clean working tree
 	clean, err := isCleanWorkingTree(worktreePath)
 	if err != nil {
-		return fmt.Errorf("failed to check git status: %w", err)
+		return nil, fmt.Errorf("failed to check git status: %w", err)
 	}
 	if !clean {
-		return fmt.Errorf("working tree has uncommitted changes")
+		return nil, fmt.Errorf("working tree has uncommitted changes")
 	}
 
 	// 3. Get branch name and main repo path
@@ -140,13 +149,13 @@ func (p *Publisher) MergeLocal(worktreePath string) error {
 	if branch == "" {
 		branch = getCurrentBranch(worktreePath)
 		if branch == "" {
-			return fmt.Errorf("failed to get branch")
+			return nil, fmt.Errorf("failed to get branch")
 		}
 	}
 
 	mainRepoPath, err := getMainRepoPath(worktreePath)
 	if err != nil {
-		return fmt.Errorf("failed to get main repo path: %w", err)
+		return nil, fmt.Errorf("failed to get main repo path: %w", err)
 	}
 
 	// 4. Get default branch name
@@ -161,7 +170,7 @@ func (p *Publisher) MergeLocal(worktreePath string) error {
 	cmd.Dir = mainRepoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git checkout %s failed: %w\n%s", defaultBranch, err, string(output))
+		return nil, fmt.Errorf("git checkout %s failed: %w\n%s", defaultBranch, err, string(output))
 	}
 
 	// 6. Merge the branch
@@ -170,7 +179,22 @@ func (p *Publisher) MergeLocal(worktreePath string) error {
 	cmd.Dir = mainRepoPath
 	output, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git merge failed: %w\n%s", err, string(output))
+		// Check if this is a merge conflict
+		if isMergeConflict(string(output)) {
+			logging.Info("merge conflict detected, aborting merge in main", "branch", branch)
+			// Abort the merge in main repo to keep it clean
+			abortCmd := exec.Command("git", "merge", "--abort")
+			abortCmd.Dir = mainRepoPath
+			abortCmd.CombinedOutput() // Best effort
+
+			return &MergeResult{
+				Success:      false,
+				HasConflicts: true,
+				Branch:       branch,
+				Message:      fmt.Sprintf("Merge conflict detected between %s and %s", branch, defaultBranch),
+			}, nil
+		}
+		return nil, fmt.Errorf("git merge failed: %w\n%s", err, string(output))
 	}
 
 	// 7. Update status
@@ -180,7 +204,26 @@ func (p *Publisher) MergeLocal(worktreePath string) error {
 
 	logging.Info("branch merged successfully", "branch", branch)
 
-	return nil
+	return &MergeResult{
+		Success: true,
+		Branch:  branch,
+		Message: fmt.Sprintf("Successfully merged %s into %s", branch, defaultBranch),
+	}, nil
+}
+
+// isMergeConflict checks if git output indicates a merge conflict.
+func isMergeConflict(output string) bool {
+	conflictIndicators := []string{
+		"CONFLICT",
+		"Automatic merge failed",
+		"fix conflicts and then commit",
+	}
+	for _, indicator := range conflictIndicators {
+		if strings.Contains(output, indicator) {
+			return true
+		}
+	}
+	return false
 }
 
 // Cleanup removes a worktree and optionally deletes the branch.

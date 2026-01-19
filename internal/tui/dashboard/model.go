@@ -153,7 +153,10 @@ type (
 		branch string
 	}
 	mergeResultMsg struct {
-		path string
+		path         string
+		hasConflicts bool
+		agentSpawned bool
+		message      string
 	}
 	cleanupResultMsg struct {
 		path string
@@ -287,6 +290,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg
+		// Also set as status message for more visibility
+		m.statusMsg = "✗ " + msg.Error()
+		m.statusMsgTime = time.Now()
 		// Auto-clear error after 5 seconds
 		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 			return clearErrMsg{}
@@ -333,9 +339,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}))
 
 	case mergeResultMsg:
-		m.statusMsg = "Branch merged to main"
+		if msg.hasConflicts {
+			if msg.agentSpawned {
+				m.statusMsg = "⚡ Merge conflict detected - resolver agent spawned"
+			} else {
+				m.statusMsg = "⚠ Merge conflict detected"
+			}
+		} else {
+			m.statusMsg = "✓ Branch merged to main"
+		}
 		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
 			return clearStatusMsg{}
 		}))
 
@@ -2871,11 +2885,16 @@ func (m Model) doPublishPR(wt *control.WorktreeInfo) tea.Cmd {
 
 func (m Model) doMergeLocal(wt *control.WorktreeInfo) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.MergeLocal(wt.Path)
+		result, err := m.client.MergeLocal(wt.Path)
 		if err != nil {
 			return errMsg(err)
 		}
-		return mergeResultMsg{path: wt.Path}
+		return mergeResultMsg{
+			path:         wt.Path,
+			hasConflicts: result.HasConflicts,
+			agentSpawned: result.AgentSpawned,
+			message:      result.Message,
+		}
 	}
 }
 

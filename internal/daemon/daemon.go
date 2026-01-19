@@ -1501,11 +1501,68 @@ func (d *Daemon) handleMergeLocal(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	if err := d.publisher.MergeLocal(req.WorktreePath); err != nil {
+	result, err := d.publisher.MergeLocal(req.WorktreePath)
+	if err != nil {
 		return nil, err
 	}
 
-	// Broadcast event
+	// If merge had conflicts, spawn a resolver agent
+	if result.HasConflicts {
+		logging.Info("spawning conflict resolver agent", "worktree", req.WorktreePath, "branch", result.Branch)
+
+		// Get worktree for project info
+		wt, _ := d.store.GetWorktree(req.WorktreePath)
+		projectName := ""
+		if wt != nil {
+			projectName = wt.Project
+		}
+
+		// Spawn a Sonnet agent to resolve the conflicts via rebase
+		spec := agent.SpawnSpec{
+			WorktreePath: req.WorktreePath,
+			ProjectName:  projectName,
+			Archetype:    "resolver", // Uses sonnet model
+			Prompt: fmt.Sprintf(`Your worktree branch '%s' has conflicts with main.
+
+Your task:
+1. Rebase your branch onto the latest main: git fetch origin && git rebase origin/main
+2. For each conflict, resolve it intelligently by understanding both changes
+3. After resolving all conflicts, continue the rebase: git rebase --continue
+4. Once complete, commit any final changes
+5. Report what conflicts were resolved and how
+
+If the conflicts are too complex to resolve automatically, explain what manual intervention is needed.`, result.Branch),
+		}
+
+		spawnedAgent, spawnErr := d.spawner.Spawn(d.ctx, spec)
+		if spawnErr != nil {
+			logging.Error("failed to spawn conflict resolver", "error", spawnErr)
+			return &control.MergeLocalResult{
+				Success:      false,
+				HasConflicts: true,
+				Message:      result.Message + " (failed to spawn resolver agent)",
+			}, nil
+		}
+
+		// Associate agent with worktree
+		d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)
+
+		// Broadcast agent creation
+		d.server.Broadcast(control.Event{
+			Type:    "agent_created",
+			Payload: agentToInfo(spawnedAgent),
+		})
+
+		return &control.MergeLocalResult{
+			Success:       false,
+			HasConflicts:  true,
+			AgentSpawned:  true,
+			AgentID:       spawnedAgent.ID,
+			Message:       result.Message + " - resolver agent spawned",
+		}, nil
+	}
+
+	// Broadcast success event
 	d.server.Broadcast(control.Event{
 		Type: "worktree_merged",
 		Payload: map[string]string{
@@ -1513,7 +1570,10 @@ func (d *Daemon) handleMergeLocal(params json.RawMessage) (any, error) {
 		},
 	})
 
-	return map[string]bool{"success": true}, nil
+	return &control.MergeLocalResult{
+		Success: true,
+		Message: result.Message,
+	}, nil
 }
 
 func (d *Daemon) handleCleanupWorktree(params json.RawMessage) (any, error) {

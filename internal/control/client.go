@@ -484,15 +484,19 @@ func (c *Client) PublishPR(worktreePath string) (*PublishResult, error) {
 }
 
 // MergeLocal merges a worktree branch into main locally.
-func (c *Client) MergeLocal(worktreePath string) error {
+func (c *Client) MergeLocal(worktreePath string) (*MergeLocalResult, error) {
 	resp, err := c.Call("merge_local", map[string]string{"worktree_path": worktreePath})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.Error != "" {
-		return errors.New(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
-	return nil
+
+	data, _ := json.Marshal(resp.Data)
+	var result MergeLocalResult
+	json.Unmarshal(data, &result)
+	return &result, nil
 }
 
 // CleanupWorktree removes a worktree and optionally deletes the branch.
@@ -747,6 +751,15 @@ type PublishPRRequest struct {
 type PublishResult struct {
 	PRURL  string `json:"pr_url"`
 	Branch string `json:"branch"`
+}
+
+// MergeLocalResult contains the result of a local merge attempt.
+type MergeLocalResult struct {
+	Success      bool   `json:"success"`
+	HasConflicts bool   `json:"has_conflicts,omitempty"`
+	AgentSpawned bool   `json:"agent_spawned,omitempty"` // True if resolver agent was spawned
+	AgentID      string `json:"agent_id,omitempty"`      // ID of spawned resolver agent
+	Message      string `json:"message,omitempty"`
 }
 
 // CleanupWorktreeRequest is the request to cleanup a worktree.

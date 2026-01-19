@@ -191,6 +191,13 @@ func defaultArchetypes() map[string]Archetype {
 			AllowedTools:   []string{"Glob", "Grep", "Read", "Task"},
 			Model:          "opus",
 		},
+		"resolver": {
+			Description:    "Resolves merge conflicts via rebase",
+			Prompt:         "You are a conflict resolution agent. Your job is to rebase the current branch onto main and resolve any merge conflicts intelligently. Understand both sides of each conflict and make the right choice. After resolving, commit the result.",
+			PermissionMode: "bypassPermissions", // Needs to run git commands
+			AllowedTools:   []string{"all"},
+			Model:          "sonnet", // Fast for conflict resolution
+		},
 	}
 }
 
