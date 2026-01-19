@@ -31,6 +31,21 @@ All agent I/O is an append-only event log. Never mutate, only append. This gives
 - Snapshots for efficiency (checkpoint + replay from there)
 - Eventual consistency for replication (just replay missing events)
 
+### 4. Context Efficiency and Sharing
+
+**Context should be managed, pruned, and shared to reduce cost and overhead.**
+
+Athena should curate context across agents and sessions: summaries, deduped facts,
+and reusable artifacts (plans, decisions, code pointers). Share context between
+related tasks or projects with explicit export/import so agents do not pay
+repeatedly for the same ground truth.
+
+Why this matters:
+- **Lower spend**: Less repeated token spend for the same background.
+- **Faster ramps**: Agents start with distilled context instead of re-learning.
+- **Lower overhead**: Fewer manual recaps and less prompt rework.
+- **Team leverage**: Share context safely across collaborators or environments.
+
 ---
 
 ## System Overview
