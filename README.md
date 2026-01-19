@@ -6,7 +6,9 @@ The future is not Hephaestus—the IDE fork of building. It’s Athena: the Bloo
 
 Athena at its core orchestrates AI coding agents (Claude Code, Codex, and whatever comes next) for maximum developer productivity. It's not another harness - it's the control plane that coordinates the racing products in this space while keeping *your* data yours.
 
-![Athena TUI Dashboard](docs/screenshot.png)
+![Athena Home](docs/assets/home.png)
+
+More UI views live in [docs/screenshots.md](docs/screenshots.md).
 
 ## Philosophy
 
