@@ -94,6 +94,11 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 	d.executor = NewJobExecutor(d)
 
+	// Wire up stream event emission from spawner to control server
+	d.spawner.SetStreamEmitter(func(eventType, agentID, worktreePath string, payload any) {
+		d.emitAgentStreamEvent(eventType, agentID, worktreePath, payload)
+	})
+
 	d.registerHandlers()
 	return d, nil
 }
@@ -2142,4 +2147,34 @@ func (d *Daemon) countActiveAgents() int {
 // This is the main entry point for emitting events from the daemon.
 func (d *Daemon) EmitStreamEvent(event *control.StreamEvent) {
 	d.server.BroadcastStreamEvent(event)
+}
+
+// emitAgentStreamEvent converts agent event data to a StreamEvent and broadcasts it.
+// This is called by the spawner callback when agent activity events occur.
+func (d *Daemon) emitAgentStreamEvent(eventType, agentID, worktreePath string, payload any) {
+	// Map string event type to StreamEventType
+	var streamType control.StreamEventType
+	switch eventType {
+	case "tool_call":
+		streamType = control.StreamEventToolCall
+	case "tool_result":
+		streamType = control.StreamEventToolResult
+	case "thinking":
+		streamType = control.StreamEventThinking
+	case "message":
+		streamType = control.StreamEventMessage
+	case "agent_crashed":
+		streamType = control.StreamEventAgentCrashed
+	case "agent_terminated":
+		streamType = control.StreamEventAgentTerminated
+	default:
+		streamType = control.StreamEventMessage
+	}
+
+	event := control.NewStreamEvent(streamType, control.StreamSourceAgent).
+		WithAgent(agentID).
+		WithWorktree(worktreePath).
+		WithPayload(payload)
+
+	d.EmitStreamEvent(event)
 }
