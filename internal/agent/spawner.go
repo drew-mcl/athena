@@ -380,7 +380,13 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 			streamPayload["tool_name"] = event.Name
 		}
 
+		logging.Debug("spawner emitting stream event",
+			"event_type", streamEventType,
+			"runner_type", event.Type,
+			"agent_id", mp.AgentID)
 		s.streamEmitter(streamEventType, mp.AgentID, worktreePath, streamPayload)
+	} else {
+		logging.Debug("spawner stream emitter not set", "agent_id", mp.AgentID)
 	}
 
 	// Extract structured markers from assistant messages

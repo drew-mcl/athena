@@ -2146,6 +2146,10 @@ func (d *Daemon) countActiveAgents() int {
 // EmitStreamEvent broadcasts a StreamEvent to all stream subscribers.
 // This is the main entry point for emitting events from the daemon.
 func (d *Daemon) EmitStreamEvent(event *control.StreamEvent) {
+	logging.Debug("emitting stream event",
+		"type", event.Type,
+		"agent_id", event.AgentID,
+		"subscribers", d.server.StreamSubscriberCount())
 	d.server.BroadcastStreamEvent(event)
 }
 
