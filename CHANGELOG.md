@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/drew-mcl/athena/compare/athena-v0.3.0...athena-v0.4.0) (2026-01-20)
+
+
+### Features
+
+* **agent:** auto-publish PRs when executor completes in automatic mode ([17ee1dc](https://github.com/drew-mcl/athena/commit/17ee1dc621643e629f01912c6dca4162229425b7))
+* **tui:** add admin monitoring tab and fix context truncation ([a78067b](https://github.com/drew-mcl/athena/commit/a78067b60c01bd27bfc8032bbb292430d1589a6a))
+* **tui:** polish admin view and add debug logging ([8f713f4](https://github.com/drew-mcl/athena/commit/8f713f491adcab812d445f7ffceb295628d4a611))
+* **viz:** add real-time data flow visualization tool ([ffcdd8a](https://github.com/drew-mcl/athena/commit/ffcdd8affa65b357b722cb97c40503988fe71685))
+* **viz:** connect agent activity events to stream ([f68bc1f](https://github.com/drew-mcl/athena/commit/f68bc1ff43e16472a2b623e91272d63e593a4771))
+
+
+### Bug Fixes
+
+* **config:** add default archetypes and require executor commits ([e8de8e4](https://github.com/drew-mcl/athena/commit/e8de8e4eaf7213a0d76f57786a4df77a7f1bfb50))
+* **tui:** formatting fixes and validation improvements ([dbc260b](https://github.com/drew-mcl/athena/commit/dbc260b265db72f9bf9e6d55077ac897fd28811f))
+
 ## [0.3.0](https://github.com/drew-mcl/athena/compare/athena-v0.2.2...athena-v0.3.0) (2026-01-19)
 
 
