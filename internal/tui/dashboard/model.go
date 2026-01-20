@@ -3154,14 +3154,14 @@ func (m Model) doRetry() tea.Cmd {
 
 	agent := agents[m.selected]
 
-	// Allow retry for crashed agents OR completed planners
-	canRetry := agent.Status == "crashed"
+	// Allow retry for crashed/terminated agents OR completed planners
+	canRetry := agent.Status == "crashed" || agent.Status == "terminated"
 	if agent.Archetype == "planner" && agent.Status == "completed" {
 		canRetry = true
 	}
 
 	if !canRetry {
-		return m.showStatus("Only crashed agents or completed planners can be retried")
+		return m.showStatus("Only crashed/terminated agents or completed planners can be retried")
 	}
 
 	return m.respawnAgent(agent)

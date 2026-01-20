@@ -36,7 +36,7 @@ func (m Model) renderAdmin() string {
 
 	b.WriteString(tui.StyleAccent.Render("System Status"))
 	b.WriteString("\n")
-	
+
 	stats := []string{
 		fmt.Sprintf("Agents: %d (%d active)", totalAgents, activeAgents),
 		fmt.Sprintf("Total Tokens: %s", formatCompactNumber(totalTokens)),
@@ -72,10 +72,7 @@ func (m Model) renderAdmin() string {
 
 	// Calculate scroll
 	// Subtract header(3) + summary(3) + footer(1)
-	availableRows := contentHeight - 7
-	if availableRows < 1 {
-		availableRows = 1
-	}
+	availableRows := max(contentHeight-7, 1)
 
 	scroll := layout.CalculateScrollWindow(len(agents), m.selected, availableRows)
 
@@ -84,10 +81,7 @@ func (m Model) renderAdmin() string {
 		b.WriteString("\n")
 	}
 
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(agents) {
-		end = len(agents)
-	}
+	end := min(scroll.Offset+scroll.VisibleRows, len(agents))
 
 	for i := scroll.Offset; i < end; i++ {
 		agent := agents[i]
@@ -146,7 +140,6 @@ func truncatePath(path string, maxLen int) string {
 	if len(path) <= maxLen {
 		return path
 	}
-		// Preserve the end of the path
-		return "..." + path[len(path)-maxLen+3:]
-	}
-	
+	// Preserve the end of the path
+	return "..." + path[len(path)-maxLen+3:]
+}
