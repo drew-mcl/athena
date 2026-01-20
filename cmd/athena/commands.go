@@ -2,25 +2,68 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/spf13/cobra"
+	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/tui/dashboard"
 	"github.com/drewfead/athena/internal/tui/viewer"
+	"github.com/spf13/cobra"
 )
 
+var (
+	debugLogPath string
+	debugKeys    bool
+)
+
+func setupDebugLogging() (func(), error) {
+	if !debugKeys && debugLogPath == "" {
+		return func() {}, nil
+	}
+
+	path := debugLogPath
+	if path == "" {
+		path = defaultDebugLogPath()
+	}
+
+	if err := logging.Init(logging.Config{
+		Level:   slog.LevelDebug,
+		LogFile: path,
+	}); err != nil {
+		return nil, err
+	}
+
+	logging.Info("tui debug logging enabled", "path", path)
+
+	return func() { logging.Flush(2 * time.Second) }, nil
+}
+
+func defaultDebugLogPath() string {
+	configPath := config.DefaultConfigPath()
+	return filepath.Join(filepath.Dir(configPath), "logs", "tui-debug.log")
+}
+
 func runDashboard(cmd *cobra.Command, args []string) error {
+	cleanup, err := setupDebugLogging()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	client, err := control.NewClient(cfg.Daemon.Socket)
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w\n\nIs athenad running? Start it with: athenad", err)
 	}
 	defer client.Close()
 
-	model := dashboard.New(client, cfg)
+	model := dashboard.New(client, cfg).WithDebugKeys(debugKeys)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -53,13 +96,19 @@ func runDaemonStatus() error {
 }
 
 func runAgentView(agentID string) error {
+	cleanup, err := setupDebugLogging()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	client, err := control.NewClient(cfg.Daemon.Socket)
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w\n\nIs athenad running?", err)
 	}
 	defer client.Close()
 
-	model := viewer.New(client, agentID)
+	model := viewer.New(client, agentID).WithDebugKeys(debugKeys)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

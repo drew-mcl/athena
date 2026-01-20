@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/drewfead/athena/internal/config"
+	"github.com/spf13/cobra"
 )
 
 var cfg *config.Config
@@ -117,6 +117,10 @@ Examples:
 }
 
 func init() {
+	// TUI debug flags
+	rootCmd.PersistentFlags().BoolVar(&debugKeys, "debug-keys", false, "Log keystrokes for TUI debugging")
+	rootCmd.PersistentFlags().StringVar(&debugLogPath, "debug-log", "", "Write TUI debug logs to this file")
+
 	// Migration flags
 	migrateCmd.Flags().BoolP("execute", "e", false, "Execute the migration (default: show plan only)")
 

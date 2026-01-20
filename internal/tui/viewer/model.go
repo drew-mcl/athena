@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/tui"
 )
 
@@ -25,6 +26,7 @@ type Model struct {
 	client     *control.Client
 	ready      bool
 	autoScroll bool
+	debugKeys  bool
 }
 
 // EventLine represents a formatted event for display.
@@ -51,6 +53,12 @@ func New(client *control.Client, agentID string) Model {
 	}
 }
 
+// WithDebugKeys enables or disables key logging for the viewer.
+func (m Model) WithDebugKeys(enabled bool) Model {
+	m.debugKeys = enabled
+	return m
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -66,6 +74,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.debugKeys {
+			logging.Debug("viewer key", "key", msg.String(), "follow", m.autoScroll)
+		}
 		switch msg.String() {
 		case "q", "esc":
 			return m, tea.Quit
@@ -78,16 +89,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.width = max(1, msg.Width)
+		m.height = max(1, msg.Height)
+
+		viewportWidth := max(1, msg.Width)
+		viewportHeight := max(1, msg.Height-6)
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-6)
+			m.viewport = viewport.New(viewportWidth, viewportHeight)
 			m.viewport.YPosition = 4
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 6
+			m.viewport.Width = viewportWidth
+			m.viewport.Height = viewportHeight
 		}
 
 	case tickMsg:
