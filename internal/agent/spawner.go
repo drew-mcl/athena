@@ -22,6 +22,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// StreamEventEmitter is a callback for emitting stream events to visualizers.
+// The callback receives event type, agent ID, worktree path, and payload.
+type StreamEventEmitter func(eventType, agentID, worktreePath string, payload any)
+
 // Spawner manages the creation and tracking of Claude Code agent processes.
 type Spawner struct {
 	config     *config.Config
@@ -30,8 +34,9 @@ type Spawner struct {
 	contextMgr *agentctx.Manager
 	publisher  *worktree.Publisher // For auto-PR publishing
 
-	processes map[string]*ManagedProcess
-	mu        sync.RWMutex
+	processes    map[string]*ManagedProcess
+	mu           sync.RWMutex
+	streamEmitter StreamEventEmitter
 }
 
 // ManagedProcess wraps a Claude process with management metadata.
@@ -67,6 +72,11 @@ func (s *Spawner) Pipeline() *eventlog.Pipeline {
 // ContextManager returns the context manager for external access.
 func (s *Spawner) ContextManager() *agentctx.Manager {
 	return s.contextMgr
+}
+
+// SetStreamEmitter sets the callback for emitting stream events.
+func (s *Spawner) SetStreamEmitter(emitter StreamEventEmitter) {
+	s.streamEmitter = emitter
 }
 
 // SpawnSpec defines how to spawn an agent.
@@ -311,6 +321,18 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 			errPayload := fmt.Sprintf(`{"type":"error","message":%q}`, err.Error())
 			s.store.LogAgentEvent(mp.AgentID, "error", errPayload)
 
+			// Emit stream event for errors
+			if s.streamEmitter != nil {
+				worktreePath := ""
+				if agent, _ := s.store.GetAgent(mp.AgentID); agent != nil {
+					worktreePath = agent.WorktreePath
+				}
+				s.streamEmitter("agent_crashed", mp.AgentID, worktreePath, map[string]any{
+					"type":    "error",
+					"message": err.Error(),
+				})
+			}
+
 		case <-mp.Process.Done():
 			s.handleExit(mp)
 			return
@@ -336,6 +358,30 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 		payload = fmt.Sprintf(`{"type":"%s","subtype":"%s","content":%q}`, event.Type, event.Subtype, event.Content)
 	}
 	s.store.LogAgentEvent(mp.AgentID, event.Type, payload)
+
+	// Emit stream event for visualization
+	if s.streamEmitter != nil {
+		// Get worktree path for event context
+		worktreePath := ""
+		if agent, err := s.store.GetAgent(mp.AgentID); err == nil && agent != nil {
+			worktreePath = agent.WorktreePath
+		}
+
+		// Map runner event types to stream event types
+		streamEventType := s.mapEventType(event.Type, event.Subtype)
+		streamPayload := map[string]any{
+			"type":    event.Type,
+			"subtype": event.Subtype,
+			"content": truncateContent(event.Content, 500),
+		}
+
+		// Add tool-specific fields if present
+		if event.Name != "" {
+			streamPayload["tool_name"] = event.Name
+		}
+
+		s.streamEmitter(streamEventType, mp.AgentID, worktreePath, streamPayload)
+	}
 
 	// Extract structured markers from assistant messages
 	if s.contextMgr != nil && event.Type == "assistant" && event.Content != "" {
@@ -648,4 +694,37 @@ func extractSessionSlug(sessionFile string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no slug found in session file")
+}
+
+// mapEventType converts runner event types to stream event type strings.
+func (s *Spawner) mapEventType(eventType, subtype string) string {
+	switch eventType {
+	case "tool_use":
+		return "tool_call"
+	case "tool_result":
+		return "tool_result"
+	case "assistant":
+		if subtype == "thinking" {
+			return "thinking"
+		}
+		return "message"
+	case "result":
+		if subtype == "error" {
+			return "agent_crashed"
+		}
+		return "agent_terminated"
+	default:
+		return "message"
+	}
+}
+
+// truncateContent limits content length for stream payloads.
+func truncateContent(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max < 4 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
