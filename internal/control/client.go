@@ -14,13 +14,14 @@ import (
 
 // Client connects to the athena daemon.
 type Client struct {
-	conn      net.Conn
-	scanner   *bufio.Scanner
-	mu        sync.Mutex
-	pending   map[string]chan *Response
-	events    chan Event
-	done      chan struct{}
-	connected atomic.Bool
+	conn         net.Conn
+	scanner      *bufio.Scanner
+	mu           sync.Mutex
+	pending      map[string]chan *Response
+	events       chan Event
+	streamEvents chan *StreamEvent // Stream events for visualization
+	done         chan struct{}
+	connected    atomic.Bool
 }
 
 // NewClient creates a new daemon client.
@@ -31,11 +32,12 @@ func NewClient(socketPath string) (*Client, error) {
 	}
 
 	c := &Client{
-		conn:    conn,
-		scanner: bufio.NewScanner(conn),
-		pending: make(map[string]chan *Response),
-		events:  make(chan Event, 100),
-		done:    make(chan struct{}),
+		conn:         conn,
+		scanner:      bufio.NewScanner(conn),
+		pending:      make(map[string]chan *Response),
+		events:       make(chan Event, 100),
+		streamEvents: make(chan *StreamEvent, 1000), // Larger buffer for stream events
+		done:         make(chan struct{}),
 	}
 	c.scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	c.connected.Store(true)
@@ -54,6 +56,37 @@ func (c *Client) Close() error {
 // Events returns a channel of events from the daemon.
 func (c *Client) Events() <-chan Event {
 	return c.events
+}
+
+// StreamEvents returns a channel of stream events for visualization.
+// Call SubscribeStream first to enable stream mode.
+func (c *Client) StreamEvents() <-chan *StreamEvent {
+	return c.streamEvents
+}
+
+// SubscribeStream enables stream mode to receive real-time events.
+// Filter options allow narrowing which events are received.
+func (c *Client) SubscribeStream(req SubscribeStreamRequest) (*SubscribeStreamResponse, error) {
+	resp, err := c.Call("subscribe_stream", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var result SubscribeStreamResponse
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &result)
+	return &result, nil
+}
+
+// SubscribeStreamResponse contains the subscription confirmation.
+type SubscribeStreamResponse struct {
+	Subscribed        bool                   `json:"subscribed"`
+	Filter            SubscribeStreamRequest `json:"filter"`
+	ActiveAgents      int                    `json:"active_agents"`
+	StreamSubscribers int                    `json:"stream_subscribers"`
 }
 
 // Connected reports whether the client is still connected to the daemon.
@@ -666,6 +699,22 @@ func (c *Client) readLoop() {
 
 		line := c.scanner.Bytes()
 
+		// Check for stream event envelope first
+		var streamEnvelope struct {
+			Stream bool         `json:"stream"`
+			Event  *StreamEvent `json:"event"`
+		}
+		if err := json.Unmarshal(line, &streamEnvelope); err == nil && streamEnvelope.Stream {
+			if streamEnvelope.Event != nil {
+				select {
+				case c.streamEvents <- streamEnvelope.Event:
+				default: // Drop if channel full
+				}
+			}
+			continue
+		}
+
+		// Check for regular broadcast event
 		var envelope struct {
 			Type string `json:"type"`
 		}
@@ -684,6 +733,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 
+		// Handle RPC response
 		var resp Response
 		if err := json.Unmarshal(line, &resp); err != nil {
 			continue
