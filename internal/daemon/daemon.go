@@ -400,6 +400,8 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("set_project_state", d.handleSetProjectState)
 	d.server.Handle("get_state_summary", d.handleGetStateSummary)
 	d.server.Handle("get_context_preview", d.handleGetContextPreview)
+	// Streaming (for athena-viz)
+	d.server.HandleStream("subscribe_stream", d.handleSubscribeStream)
 }
 
 func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {
@@ -509,6 +511,15 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 		Payload: d.agentToInfo(spawnedAgent),
 	})
 
+	// Emit stream event for visualization
+	d.EmitStreamEvent(control.NewStreamEvent(control.StreamEventAgentCreated, control.StreamSourceDaemon).
+		WithAgent(spawnedAgent.ID).
+		WithWorktree(req.WorktreePath).
+		WithPayload(map[string]any{
+			"archetype": req.Archetype,
+			"project":   wt.Project,
+		}))
+
 	return d.agentToInfo(spawnedAgent), nil
 }
 
@@ -560,6 +571,11 @@ func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 		Type:    "agent_terminated",
 		Payload: map[string]string{"id": req.ID},
 	})
+
+	// Emit stream event for visualization
+	d.EmitStreamEvent(control.NewStreamEvent(control.StreamEventAgentTerminated, control.StreamSourceDaemon).
+		WithAgent(req.ID).
+		WithWorktree(agentRecord.WorktreePath))
 
 	return map[string]bool{"success": true}, nil
 }
@@ -725,6 +741,14 @@ func (d *Daemon) handleCreateJob(params json.RawMessage) (any, error) {
 		Type:    "job_created",
 		Payload: jobToInfo(job),
 	})
+
+	// Emit stream event for visualization
+	d.EmitStreamEvent(control.NewStreamEvent(control.StreamEventJobCreated, control.StreamSourceDaemon).
+		WithPayload(map[string]any{
+			"job_id":  job.ID,
+			"type":    string(job.Type),
+			"project": job.Project,
+		}))
 
 	return jobToInfo(job), nil
 }
@@ -2072,4 +2096,50 @@ func isValidStateEntryType(t store.StateEntryType) bool {
 		return true
 	}
 	return false
+}
+
+// handleSubscribeStream enables stream mode for a client.
+// The client will receive StreamEvents matching their filter criteria.
+func (d *Daemon) handleSubscribeStream(
+	params json.RawMessage,
+	enableStream func(filter *control.SubscribeStreamRequest),
+) (any, error) {
+	var req control.SubscribeStreamRequest
+	if params != nil {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+	}
+
+	// Enable stream mode with the filter
+	enableStream(&req)
+
+	// Log subscription
+	logging.Info("stream subscriber connected",
+		"agent_filter", req.AgentID,
+		"worktree_filter", req.WorktreePath,
+		"event_types", req.EventTypes)
+
+	// Return subscription confirmation
+	return map[string]any{
+		"subscribed":        true,
+		"filter":            req,
+		"active_agents":     d.countActiveAgents(),
+		"stream_subscribers": d.server.StreamSubscriberCount(),
+	}, nil
+}
+
+// countActiveAgents returns the number of running agents.
+func (d *Daemon) countActiveAgents() int {
+	agents, err := d.store.ListRunningAgents()
+	if err != nil {
+		return 0
+	}
+	return len(agents)
+}
+
+// EmitStreamEvent broadcasts a StreamEvent to all stream subscribers.
+// This is the main entry point for emitting events from the daemon.
+func (d *Daemon) EmitStreamEvent(event *control.StreamEvent) {
+	d.server.BroadcastStreamEvent(event)
 }
