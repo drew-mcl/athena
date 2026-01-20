@@ -471,13 +471,18 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	// Validate worktree exists
+	// Validate worktree exists in database
 	wt, err := d.store.GetWorktree(req.WorktreePath)
 	if err != nil {
 		return nil, err
 	}
 	if wt == nil {
 		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
+	}
+
+	// Validate worktree exists on disk
+	if _, err := os.Stat(req.WorktreePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("worktree path does not exist on disk: %s", req.WorktreePath)
 	}
 
 	// Build spawn spec
