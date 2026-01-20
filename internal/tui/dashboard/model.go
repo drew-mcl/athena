@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/terminal"
 	"github.com/drewfead/athena/internal/tui"
 	"github.com/drewfead/athena/internal/tui/layout"
@@ -74,33 +75,33 @@ type Model struct {
 	scrollOffset map[Tab]int
 
 	// UI state
-	width        int // Inner content width
-	height       int // Inner content height
-	termWidth    int // Full terminal width
-	termHeight   int // Full terminal height
-	inputMode    bool
-	questionMode bool // true = question, false = job
-	noteMode     bool // true = adding note
-	detailMode   bool // showing detail view
-	detailJob    *control.JobInfo
-	detailAgent  *control.AgentInfo
+	width          int // Inner content width
+	height         int // Inner content height
+	termWidth      int // Full terminal width
+	termHeight     int // Full terminal height
+	inputMode      bool
+	questionMode   bool // true = question, false = job
+	noteMode       bool // true = adding note
+	detailMode     bool // showing detail view
+	detailJob      *control.JobInfo
+	detailAgent    *control.AgentInfo
 	detailWorktree *control.WorktreeInfo // showing worktree detail
-	logsMode     bool // showing agent logs
-	logsAgentID  string
-	logs         []*control.AgentEventInfo
-	logsScroll   int  // scroll offset for logs viewport
-	logsFollow   bool // auto-scroll to bottom
-	textInput    textarea.Model
-	spinner      spinner.Model
-	lastUpdate   time.Time
-	err          error
+	logsMode       bool                  // showing agent logs
+	logsAgentID    string
+	logs           []*control.AgentEventInfo
+	logsScroll     int  // scroll offset for logs viewport
+	logsFollow     bool // auto-scroll to bottom
+	textInput      textarea.Model
+	spinner        spinner.Model
+	lastUpdate     time.Time
+	err            error
 
 	// Worktree creation wizard
-	worktreeMode       bool   // true = creating worktree
-	worktreeStep       int    // 0=ticket, 1=description, 2=project
-	worktreeTicketID   string // ticket ID from step 0
-	worktreeDesc       string // description from step 1
-	worktreeProjectIdx int    // selected project index in step 2
+	worktreeMode       bool                // true = creating worktree
+	worktreeStep       int                 // 0=ticket, 1=description, 2=project
+	worktreeTicketID   string              // ticket ID from step 0
+	worktreeDesc       string              // description from step 1
+	worktreeProjectIdx int                 // selected project index in step 2
 	worktreeWorkflow   config.WorkflowMode // selected workflow for this worktree (step 3)
 
 	// Note promotion wizard
@@ -122,13 +123,13 @@ type Model struct {
 	planWorktreePath  string // worktree path for the plan
 
 	// Context viewer mode (blackboard + state)
-	contextMode         bool                            // true = viewing context
-	contextWorktreePath string                          // worktree path for context
-	contextProjectName  string                          // project name for state lookup
-	contextBlackboard   []*control.BlackboardEntryInfo  // blackboard entries
-	contextSummary      *control.BlackboardSummaryInfo  // blackboard summary
-	contextPreview      string                          // formatted context preview
-	contextScroll       int                             // scroll offset
+	contextMode         bool                           // true = viewing context
+	contextWorktreePath string                         // worktree path for context
+	contextProjectName  string                         // project name for state lookup
+	contextBlackboard   []*control.BlackboardEntryInfo // blackboard entries
+	contextSummary      *control.BlackboardSummaryInfo // blackboard summary
+	contextPreview      string                         // formatted context preview
+	contextScroll       int                            // scroll offset
 
 	// Status message feedback
 	statusMsg     string
@@ -147,6 +148,9 @@ type Model struct {
 
 	// Configuration
 	workflowMode config.WorkflowMode
+
+	// Debugging
+	debugKeys bool
 }
 
 // Messages
@@ -205,7 +209,7 @@ func New(client *control.Client, cfg *config.Config) Model {
 	ti.Placeholder = "Type here..."
 	ti.Prompt = "" // No prompt in the textarea itself (we render it outside)
 	ti.CharLimit = 2000
-	ti.SetWidth(80) // Will be updated on resize
+	ti.SetWidth(80)              // Will be updated on resize
 	ti.SetHeight(inputHeightMin) // Start with a single line
 	ti.ShowLineNumbers = false
 	ti.FocusedStyle.CursorLine = lipgloss.NewStyle() // No highlight on current line
@@ -264,6 +268,12 @@ func New(client *control.Client, cfg *config.Config) Model {
 	}
 }
 
+// WithDebugKeys enables or disables key logging for the TUI.
+func (m Model) WithDebugKeys(enabled bool) Model {
+	m.debugKeys = enabled
+	return m
+}
+
 // Init implements tea.Model
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -280,6 +290,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.debugKeys {
+			logging.Debug("tui key",
+				"key", msg.String(),
+				"tab", m.tab,
+				"level", m.level,
+				"input_mode", m.inputMode,
+				"detail_mode", m.detailMode,
+				"logs_mode", m.logsMode,
+				"plan_mode", m.planMode,
+				"context_mode", m.contextMode,
+				"worktree_mode", m.worktreeMode,
+				"promote_mode", m.promoteMode,
+			)
+		}
 		// Global keybindings
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -311,11 +335,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
-		
+
 		// Inner dimensions match terminal initially (reduced when input is active)
 		m.width = msg.Width
 		m.height = msg.Height
-		
+
 		// Update text input width dynamically
 		inputWidth := m.width - 10
 		if inputWidth < 30 {
@@ -802,12 +826,12 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if len(m.projects) == 0 {
 					return m, m.showStatus("No projects available")
 				}
-				
+
 				m.promoteMode = true
 				m.promoteNoteID = note.ID
 				m.promoteNoteText = note.Content
 				m.promoteAgentIdx = 0 // Default to first agent
-				
+
 				// Smart step selection
 				if m.level == LevelProject && m.selectedProject != "" {
 					// Already in a project, skip step 0
@@ -824,7 +848,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.promoteStep = 0
 					m.promoteProjectIdx = 0
 				}
-				
+
 				return m, nil
 			}
 		}
@@ -1283,6 +1307,13 @@ func truncateContent(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+func clampWidth(width int) int {
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
 // renderMarkdown renders markdown content using glamour
 func (m Model) renderMarkdown(content string) string {
 	width := m.width - 4
@@ -1349,7 +1380,7 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Move to workflow selection
 			m.worktreeStep = 3
 			return m, nil
-			
+
 		case 3: // Workflow selection step
 			// Create the worktree with the selected workflow
 			project := m.projects[m.worktreeProjectIdx]
@@ -1468,7 +1499,7 @@ func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			project := m.projects[m.promoteProjectIdx]
 			noteID := m.promoteNoteID
 			noteText := m.promoteNoteText
-			
+
 			// Map index to provider ID
 			var provider string
 			switch m.promoteAgentIdx {
@@ -1481,7 +1512,7 @@ func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				provider = "claude"
 			}
-			
+
 			m.promoteMode = false
 			return m, m.promoteNoteCmd(project, noteID, noteText, provider)
 		}
@@ -1510,7 +1541,7 @@ func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-		
+
 	case "backspace", "delete", "h", "left":
 		// Go back a step
 		if m.promoteStep > 0 {
@@ -1588,6 +1619,8 @@ func (m Model) getMaxSelection() int {
 			return max(0, len(m.jobs)-1)
 		case TabQuestions:
 			return max(0, len(m.questions())-1)
+		case TabAdmin:
+			return max(0, len(m.agents)-1)
 		}
 		return 0
 	}
@@ -1916,7 +1949,7 @@ func (m Model) renderDetailHeader() string {
 			activeCount++
 		}
 	}
-	
+
 	// Format: daemon │ workflow: mode │ stats
 	stats := m.renderDaemonStatus() +
 		tui.StyleMuted.Render(" │ ") +
@@ -1958,13 +1991,13 @@ func (m Model) renderJobDetail() (string, string) {
 	// Task/Question
 	content.WriteString(tui.StyleMuted.Render("  Task: "))
 	content.WriteString("\n")
-	
+
 	// Wrap task in a box for better readability
 	taskBox := tui.StyleInputBox.
-		Width(m.width - 6).
+		Width(clampWidth(m.width-6)).
 		Padding(0, 1).
 		Render(job.NormalizedInput)
-	
+
 	content.WriteString("  " + taskBox)
 	content.WriteString("\n\n")
 
@@ -2085,14 +2118,14 @@ func (m Model) renderAgentDetail() (string, string) {
 
 		// Create a grid-like layout using fixed widths
 		// Row 1: Duration | Cache | Tokens
-		row1 := fmt.Sprintf("  DUR: %-18s  MEM: %-18s  TOK: %-18s", 
+		row1 := fmt.Sprintf("  DUR: %-18s  MEM: %-18s  TOK: %-18s",
 			formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond),
 			formatCompactNumber(agent.Metrics.CacheReads)+" reads",
 			formatCompactNumber(agent.Metrics.TotalTokens)+" total",
 		)
-		
+
 		// Row 2: Tools | Files | Changes
-		row2 := fmt.Sprintf("  CMD: %-18s  FIL: %-18s  DIF: %-18s", 
+		row2 := fmt.Sprintf("  CMD: %-18s  FIL: %-18s  DIF: %-18s",
 			fmt.Sprintf("%d calls", agent.Metrics.ToolUseCount),
 			fmt.Sprintf("%d R / %d W", agent.Metrics.FilesRead, agent.Metrics.FilesWritten),
 			fmt.Sprintf("+%s lines", formatCompactNumber(agent.Metrics.LinesChanged)),
@@ -2102,7 +2135,7 @@ func (m Model) renderAgentDetail() (string, string) {
 		content.WriteString("\n")
 		content.WriteString(tui.StyleMuted.Render("       Duration              Cache Hits            Total Tokens"))
 		content.WriteString("\n\n")
-		
+
 		content.WriteString(row2)
 		content.WriteString("\n")
 		content.WriteString(tui.StyleMuted.Render("       Tool Calls            File Ops              Changes"))
@@ -2113,16 +2146,16 @@ func (m Model) renderAgentDetail() (string, string) {
 	if agent.Prompt != "" {
 		content.WriteString("\n")
 		content.WriteString(tui.StyleMuted.Render("  Task:\n"))
-		
+
 		// Render markdown for better formatting
 		renderedTask := m.renderMarkdown(agent.Prompt)
-		
+
 		// Wrap in a box
 		taskBox := tui.StyleInputBox.
-			Width(m.width - 6).
+			Width(clampWidth(m.width-6)).
 			Padding(0, 1).
 			Render(renderedTask)
-			
+
 		content.WriteString("  " + taskBox)
 		content.WriteString("\n")
 	}
@@ -2137,11 +2170,11 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	// Header
 	icon := tui.Logo()
 	content.WriteString(icon + " " + tui.StyleLogo.Render("Worktree"))
-	
+
 	// Status Pill
 	var statusPill string
 	agentActive := false
-	
+
 	// Check for active agent first
 	if wt.AgentID != "" {
 		for _, a := range m.agents {
@@ -2159,7 +2192,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 			}
 		}
 	}
-	
+
 	if !agentActive {
 		if wt.WTStatus == "active" {
 			statusPill = tui.StyleMuted.Render("[") + tui.StylePillActive.Render("ACTIVE") + tui.StyleMuted.Render("]")
@@ -2171,13 +2204,13 @@ func (m Model) renderWorktreeDetail() (string, string) {
 			statusPill = tui.StyleMuted.Render("[") + tui.StyleMuted.Render(strings.ToUpper(wt.WTStatus)) + tui.StyleMuted.Render("]")
 		}
 	}
-	
+
 	content.WriteString(" " + statusPill)
-	
+
 	if wt.TicketID != "" {
 		content.WriteString(tui.StyleMuted.Render(" │ " + wt.TicketID))
 	}
-	
+
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
@@ -2192,10 +2225,10 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	if desc == "" {
 		desc = "No description provided."
 	}
-	
+
 	// Wrap description in a box
 	descBox := tui.StyleInputBox.
-		Width(m.width - 6).
+		Width(clampWidth(m.width-6)).
 		Padding(0, 1).
 		Render(m.renderMarkdown(desc))
 	content.WriteString("  " + descBox)
@@ -2204,23 +2237,23 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	// Agents that worked on this
 	content.WriteString(tui.StyleAccent.Render("  Agents:"))
 	content.WriteString("\n")
-	
+
 	foundAgents := false
 	for _, a := range m.agents {
 		if a.WorktreePath == wt.Path {
 			foundAgents = true
 			statusIcon := tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
 			age := formatDuration(time.Since(parseCreatedAt(a.CreatedAt)))
-			
-			line := fmt.Sprintf("  %s %s (%s) - %s", 
-				statusIcon, 
-				a.ID[:8], 
+
+			line := fmt.Sprintf("  %s %s (%s) - %s",
+				statusIcon,
+				shortID(a.ID, 8),
 				a.Archetype,
 				age)
 			content.WriteString(line + "\n")
 		}
 	}
-	
+
 	if !foundAgents {
 		content.WriteString(tui.StyleMuted.Render("    No agents associated with this worktree."))
 		content.WriteString("\n")
@@ -2231,7 +2264,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	content.WriteString(tui.StyleAccent.Render("  Git Status:"))
 	content.WriteString(" " + wt.Status)
 	content.WriteString("\n")
-	
+
 	// Path
 	content.WriteString(tui.StyleMuted.Render("  Path: "))
 	content.WriteString(tui.StyleMuted.Render(wt.Path))
@@ -2243,8 +2276,6 @@ func (m Model) renderWorktreeDetail() (string, string) {
 func (m Model) renderLogs() (string, string) {
 
 	var content strings.Builder
-
-
 
 	// Header with follow indicator
 
@@ -2266,11 +2297,7 @@ func (m Model) renderLogs() (string, string) {
 
 	content.WriteString("\n")
 
-
-
 	viewportHeight := m.logsViewportHeight()
-
-
 
 	if len(m.logs) == 0 {
 
@@ -2286,8 +2313,6 @@ func (m Model) renderLogs() (string, string) {
 
 		totalLogs := len(m.logs)
 
-
-
 		// Calculate visible range based on scroll
 
 		// logsScroll=0 means show oldest logs, logsScroll=max means show newest
@@ -2295,8 +2320,6 @@ func (m Model) renderLogs() (string, string) {
 		endIdx := totalLogs - m.logsScroll
 
 		startIdx := max(0, endIdx-viewportHeight)
-
-
 
 		// Render in chronological order (oldest to newest within the window)
 
@@ -2342,8 +2365,6 @@ func (m Model) renderLogs() (string, string) {
 
 			}
 
-
-
 			content.WriteString("  ")
 
 			content.WriteString(tui.StyleMuted.Render(ts.Format("15:04:05")))
@@ -2354,8 +2375,6 @@ func (m Model) renderLogs() (string, string) {
 
 			content.WriteString(" ")
 
-
-
 			// Parse and format payload (full content, with indentation)
 
 			display := formatLogPayload(e.EventType, e.Payload, 25)
@@ -2365,8 +2384,6 @@ func (m Model) renderLogs() (string, string) {
 			content.WriteString("\n")
 
 		}
-
-
 
 		// Scroll indicator
 
@@ -2381,8 +2398,6 @@ func (m Model) renderLogs() (string, string) {
 		}
 
 	}
-
-
 
 	// Fixed footer with vi-style help, left-aligned
 
@@ -2540,7 +2555,7 @@ func (m Model) renderWorktreeWizard() (string, string) {
 			}
 			content.WriteString("\n")
 		}
-		
+
 	case 3: // Workflow selection
 		if m.worktreeTicketID != "" {
 			content.WriteString(tui.StyleMuted.Render("  Ticket: "))
@@ -2550,15 +2565,15 @@ func (m Model) renderWorktreeWizard() (string, string) {
 		content.WriteString(tui.StyleMuted.Render("  Project: "))
 		content.WriteString(tui.StyleAccent.Render(m.projects[m.worktreeProjectIdx]))
 		content.WriteString("\n\n")
-		
+
 		content.WriteString(tui.StyleMuted.Render("  Select workflow mode (j/k to cycle, Enter to confirm):"))
 		content.WriteString("\n\n")
-		
+
 		// Display current selection with explanation
 		mode := m.worktreeWorkflow
 		var desc string
 		var style lipgloss.Style
-		
+
 		switch mode {
 		case config.WorkflowModeAutomatic:
 			desc = "Agent works autonomously until complete."
@@ -2570,7 +2585,7 @@ func (m Model) renderWorktreeWizard() (string, string) {
 			desc = "User drives the agent manually."
 			style = tui.StyleMuted
 		}
-		
+
 		content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
 		content.WriteString(style.Bold(true).Render(string(mode)))
 		content.WriteString("\n")
@@ -2635,9 +2650,9 @@ func (m Model) renderPromoteWizard() (string, string) {
 		// Step 2: Agent selection
 		content.WriteString(tui.StyleMuted.Render("  Select Agent Harness (j/k to move, Enter to confirm):"))
 		content.WriteString("\n\n")
-		
+
 		providers := []string{"Claude Code (Opus)", "Gemini Auto", "Codex 5.2"}
-		
+
 		for i, provider := range providers {
 			if i == m.promoteAgentIdx {
 				content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
@@ -2688,7 +2703,7 @@ func (m Model) applyInputOverlay(content string) string {
 	// However, PinFooterToBottom was used before to ensure alignment.
 	// If we trust m.height is correct for content, we can just append.
 	// But let's use PinFooterToBottom with full termHeight to be safe and handle any off-by-one errors.
-	
+
 	inputPanel := m.renderInputPanel()
 	return layout.PinFooterToBottom(content, inputPanel, m.termHeight)
 }
@@ -2713,7 +2728,7 @@ func (m Model) renderInputPanel() string {
 	// Wrap in sleek box
 	// Use m.termWidth for the full width box
 	return tui.StyleInputBox.
-		Width(m.termWidth - 2). // -2 for borders (left/right padding handled by style)
+		Width(clampWidth(m.termWidth - 2)). // -2 for borders (left/right padding handled by style)
 		Render(b.String())
 }
 
@@ -2723,7 +2738,7 @@ func (m *Model) syncInputHeight() {
 	if maxHeight < inputHeightMax {
 		maxHeight = inputHeightMax
 	}
-	
+
 	inputContentHeight := min(maxHeight, max(inputHeightMin, m.textInput.LineCount()))
 	if inputContentHeight != m.textInput.Height() {
 		m.textInput.SetHeight(inputContentHeight)
@@ -2733,14 +2748,14 @@ func (m *Model) syncInputHeight() {
 	// Content = input lines + footer line (1)
 	// Box = +2 (border top/bottom)
 	totalInputHeight := inputContentHeight + 1 + 2
-	
+
 	// Update available content height
 	if m.inputMode {
 		m.height = m.termHeight - totalInputHeight
 	} else {
 		m.height = m.termHeight
 	}
-	
+
 	// Ensure positive height
 	if m.height < 1 {
 		m.height = 1
