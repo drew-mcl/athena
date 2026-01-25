@@ -21,6 +21,8 @@ import (
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
+	"github.com/drewfead/athena/internal/task"
+	"github.com/drewfead/athena/internal/task/claude"
 	"github.com/drewfead/athena/internal/worktree"
 	"gopkg.in/yaml.v3"
 )
@@ -42,6 +44,9 @@ type Daemon struct {
 	publisher   *worktree.Publisher
 	spawner     *agent.Spawner
 	executor    *JobExecutor
+
+	// Task management (Claude Code tasks integration)
+	taskRegistry *task.Registry
 
 	agents   map[string]*AgentProcess
 	agentsMu sync.RWMutex
@@ -78,19 +83,31 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	publisher := worktree.NewPublisher(cfg, st)
 
+	// Initialize task registry with Claude Code provider
+	taskRegistry := task.NewRegistry()
+	claudeProvider, err := claude.NewProvider()
+	if err != nil {
+		logging.Warn("failed to initialize Claude task provider", "error", err)
+	} else {
+		if err := taskRegistry.Register(claudeProvider); err != nil {
+			logging.Warn("failed to register Claude task provider", "error", err)
+		}
+	}
+
 	d := &Daemon{
-		config:      cfg,
-		store:       st,
-		server:      control.NewServer(cfg.Daemon.Socket),
-		scanner:     worktree.NewScanner(cfg, st),
-		provisioner: worktree.NewProvisioner(cfg, st),
-		migrator:    worktree.NewMigrator(cfg, st),
-		publisher:   publisher,
-		spawner:     agent.NewSpawner(cfg, st, publisher),
-		agents:      make(map[string]*AgentProcess),
-		jobQueue:    make(chan string, 100),
-		ctx:         ctx,
-		cancel:      cancel,
+		config:       cfg,
+		store:        st,
+		server:       control.NewServer(cfg.Daemon.Socket),
+		scanner:      worktree.NewScanner(cfg, st),
+		provisioner:  worktree.NewProvisioner(cfg, st),
+		migrator:     worktree.NewMigrator(cfg, st),
+		publisher:    publisher,
+		spawner:      agent.NewSpawner(cfg, st, publisher),
+		taskRegistry: taskRegistry,
+		agents:       make(map[string]*AgentProcess),
+		jobQueue:     make(chan string, 100),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	d.executor = NewJobExecutor(d)
 
@@ -409,6 +426,16 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_metrics_trend", d.handleGetMetricsTrend)
 	// Streaming (for athena-viz)
 	d.server.HandleStream("subscribe_stream", d.handleSubscribeStream)
+	// Tasks (Claude Code integration)
+	d.server.Handle("list_task_providers", d.handleListTaskProviders)
+	d.server.Handle("list_task_lists", d.handleListTaskLists)
+	d.server.Handle("list_tasks", d.handleListTasks)
+	d.server.Handle("get_task", d.handleGetTask)
+	d.server.Handle("create_task", d.handleCreateTask)
+	d.server.Handle("update_task", d.handleUpdateTask)
+	d.server.Handle("delete_task", d.handleDeleteTask)
+	d.server.Handle("execute_task", d.handleExecuteTask)
+	d.server.Handle("broadcast_task", d.handleBroadcastTask)
 }
 
 func (d *Daemon) handleListAgents(_ json.RawMessage) (any, error) {

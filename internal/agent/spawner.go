@@ -88,6 +88,7 @@ type SpawnSpec struct {
 	Prompt       string
 	ParentID     string
 	Provider     string
+	TaskListID   string // Claude Code task list ID to set CLAUDE_CODE_TASK_LIST_ID
 }
 
 // Spawn creates and starts a new Claude Code agent.
@@ -265,6 +266,11 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 	// Populate environment from config
 	if s.config.Gemini.APIKey != "" {
 		runSpec.Env["GEMINI_API_KEY"] = s.config.Gemini.APIKey
+	}
+
+	// Set Claude Code task list ID if specified
+	if spec.TaskListID != "" {
+		runSpec.Env["CLAUDE_CODE_TASK_LIST_ID"] = spec.TaskListID
 	}
 
 	// Use defaults if archetype not found

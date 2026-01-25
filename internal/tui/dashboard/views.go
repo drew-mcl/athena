@@ -17,6 +17,7 @@ var dashboardTabViews = map[Tab]TabView{
 	TabProjects:  TabViewFunc(func(m *Model) string { return m.renderProjects() }),
 	TabWorktrees: TabViewFunc(func(m *Model) string { return m.renderAllWorktrees() }),
 	TabJobs:      TabViewFunc(func(m *Model) string { return m.renderAllJobs() }),
+	TabTasks:     TabViewFunc(func(m *Model) string { return m.renderClaudeTasks() }),
 	TabQuestions: TabViewFunc(func(m *Model) string { return m.renderQuestions() }),
 	TabAdmin:     TabViewFunc(func(m *Model) string { return m.renderAdmin() }),
 }
