@@ -7,6 +7,7 @@ import (
 
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/tui"
+	"github.com/drewfead/athena/internal/tui/components"
 	"github.com/drewfead/athena/internal/tui/layout"
 )
 
@@ -28,35 +29,117 @@ func (m Model) renderClaudeTasks() string {
 
 	// If no task lists, show empty state
 	if len(m.taskLists) == 0 {
-		b.WriteString(m.taskTable.RenderHeader())
-		b.WriteString("\n\n")
 		b.WriteString(tui.StyleEmptyState.Render("   No Claude Code task lists found"))
 		b.WriteString("\n")
 		b.WriteString(tui.StyleMuted.Render("   Tasks appear in ~/.claude/tasks/ when agents use TaskCreate"))
 		b.WriteString("\n")
-		for i := 3; i < contentHeight-1; i++ {
-			b.WriteString("\n")
-		}
 		return b.String()
 	}
 
-	// Render task table
-	return b.String() + layout.RenderTableList(layout.TableListOptions{
-		Table:         m.taskTable,
-		TotalItems:    len(m.claudeTasks),
-		Selected:      m.selected,
-		ContentHeight: contentHeight,
-		EmptyMessage:  "   No tasks in this list",
-		RowRenderer: func(index int, selected bool) string {
-			return m.renderClaudeTaskRow(m.claudeTasks[index], selected)
-		},
-		ScrollUpRenderer: func(offset int) string {
-			return fmt.Sprintf("   ▲ %d more", offset)
-		},
-		ScrollDownRenderer: func(remaining int) string {
-			return fmt.Sprintf("   ▼ %d more", remaining)
-		},
-	})
+	// Count tasks by status for summary
+	pending, inProgress, completed := 0, 0, 0
+	for _, t := range m.claudeTasks {
+		switch t.Status {
+		case "pending":
+			pending++
+		case "in_progress":
+			inProgress++
+		case "completed":
+			completed++
+		}
+	}
+
+	// Reserve space for summary
+	contentHeight -= 3
+
+	if len(m.claudeTasks) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No tasks in this list"))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Multi-line rows - each task takes 3 lines
+	rowHeight := 3
+	visibleRows := contentHeight / rowHeight
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+
+	// Calculate scroll window
+	scroll := layout.CalculateScrollWindow(len(m.claudeTasks), m.selected, visibleRows)
+
+	// Scroll indicator top
+	if scroll.HasLess {
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
+		b.WriteString("\n")
+	}
+
+	// Render visible rows
+	end := scroll.Offset + scroll.VisibleRows
+	if end > len(m.claudeTasks) {
+		end = len(m.claudeTasks)
+	}
+
+	for i := scroll.Offset; i < end; i++ {
+		task := m.claudeTasks[i]
+		row := m.renderTaskCard(task, i == m.selected)
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+
+	// Scroll indicator bottom
+	if scroll.HasMore {
+		remaining := len(m.claudeTasks) - end
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
+		b.WriteString("\n")
+	}
+
+	// Summary stats
+	b.WriteString("\n")
+	b.WriteString(tui.Divider(m.width - 4))
+	b.WriteString("\n")
+	summaryParts := []string{}
+	if pending > 0 {
+		summaryParts = append(summaryParts, tui.StyleMuted.Render(fmt.Sprintf("%d pending", pending)))
+	}
+	if inProgress > 0 {
+		summaryParts = append(summaryParts, tui.StyleSuccess.Render(fmt.Sprintf("%d in progress", inProgress)))
+	}
+	if completed > 0 {
+		summaryParts = append(summaryParts, tui.StyleNeutral.Render(fmt.Sprintf("%d completed", completed)))
+	}
+	b.WriteString("   " + strings.Join(summaryParts, " • "))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+// renderTaskCard renders a task using the multi-line card format.
+func (m Model) renderTaskCard(task *control.TaskInfo, selected bool) string {
+	// Calculate age from created_at
+	age := formatTaskAge(task.CreatedAt)
+
+	// Get blockers as string slice
+	var blockers []string
+	for _, b := range task.BlockedBy {
+		blockers = append(blockers, b)
+	}
+
+	// Subject - use ActiveForm if in progress
+	subject := task.Subject
+	if task.ActiveForm != "" && task.Status == "in_progress" {
+		subject = task.ActiveForm
+	}
+
+	row := &components.TaskRow{
+		Subject:   subject,
+		Status:    task.Status,
+		Age:       age,
+		BlockedBy: blockers,
+		Selected:  selected,
+	}
+
+	return row.Render()
 }
 
 // renderTaskListSelector renders a horizontal selector for task lists.
