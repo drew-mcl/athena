@@ -111,7 +111,7 @@ func (s *claudeSession) forwardEvents() {
 		if ev == nil {
 			continue
 		}
-		s.events <- Event{
+		runnerEvent := Event{
 			Type:      string(ev.Type),
 			Subtype:   ev.Subtype,
 			SessionID: ev.SessionID,
@@ -120,6 +120,29 @@ func (s *claudeSession) forwardEvents() {
 			Input:     ev.Input,
 			Timestamp: ev.Timestamp,
 		}
+
+		// Forward usage data from result events
+		if ev.Usage != nil {
+			runnerEvent.Usage = &EventUsage{
+				InputTokens:  ev.Usage.InputTokens,
+				OutputTokens: ev.Usage.OutputTokens,
+				CacheReads:   ev.Usage.CacheReadInputTokens,
+			}
+		}
+
+		// Forward timing and cost data
+		if ev.Type == claudecode.EventTypeResult {
+			runnerEvent.DurationMS = ev.DurationMS
+			runnerEvent.APITimeMS = ev.APITimeMS
+			runnerEvent.CostUSD = ev.CostUSD
+			runnerEvent.NumTurns = ev.NumTurns
+			runnerEvent.CacheCreation = 0
+			if ev.Usage != nil {
+				runnerEvent.CacheCreation = ev.Usage.CacheCreationInputTokens
+			}
+		}
+
+		s.events <- runnerEvent
 	}
 	close(s.events)
 }

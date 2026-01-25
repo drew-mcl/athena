@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
-	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/terminal"
 	"github.com/drewfead/athena/internal/tui"
 	"github.com/drewfead/athena/internal/tui/layout"
@@ -149,7 +148,7 @@ type Model struct {
 	// Configuration
 	workflowMode config.WorkflowMode
 
-	// Debugging
+	// Debug options
 	debugKeys bool
 }
 
@@ -290,20 +289,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if m.debugKeys {
-			logging.Debug("tui key",
-				"key", msg.String(),
-				"tab", m.tab,
-				"level", m.level,
-				"input_mode", m.inputMode,
-				"detail_mode", m.detailMode,
-				"logs_mode", m.logsMode,
-				"plan_mode", m.planMode,
-				"context_mode", m.contextMode,
-				"worktree_mode", m.worktreeMode,
-				"promote_mode", m.promoteMode,
-			)
-		}
 		// Global keybindings
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -1307,13 +1292,6 @@ func truncateContent(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func clampWidth(width int) int {
-	if width < 1 {
-		return 1
-	}
-	return width
-}
-
 // renderMarkdown renders markdown content using glamour
 func (m Model) renderMarkdown(content string) string {
 	width := m.width - 4
@@ -1619,8 +1597,6 @@ func (m Model) getMaxSelection() int {
 			return max(0, len(m.jobs)-1)
 		case TabQuestions:
 			return max(0, len(m.questions())-1)
-		case TabAdmin:
-			return max(0, len(m.agents)-1)
 		}
 		return 0
 	}
@@ -1994,7 +1970,7 @@ func (m Model) renderJobDetail() (string, string) {
 
 	// Wrap task in a box for better readability
 	taskBox := tui.StyleInputBox.
-		Width(clampWidth(m.width-6)).
+		Width(m.width-6).
 		Padding(0, 1).
 		Render(job.NormalizedInput)
 
@@ -2110,35 +2086,14 @@ func (m Model) renderAgentDetail() (string, string) {
 		}
 	}
 
-	// Usage metrics - Summary View
-	if agent.Metrics != nil {
-		content.WriteString("\n")
-		content.WriteString(tui.StyleAccent.Render("  Summary Statistics"))
-		content.WriteString("\n\n")
+	// Usage metrics - Visual Panel
+	content.WriteString("\n")
+	content.WriteString(m.renderMetricsPanel(agent.Metrics))
 
-		// Create a grid-like layout using fixed widths
-		// Row 1: Duration | Cache | Tokens
-		row1 := fmt.Sprintf("  DUR: %-18s  MEM: %-18s  TOK: %-18s",
-			formatDuration(time.Duration(agent.Metrics.DurationMs)*time.Millisecond),
-			formatCompactNumber(agent.Metrics.CacheReads)+" reads",
-			formatCompactNumber(agent.Metrics.TotalTokens)+" total",
-		)
-
-		// Row 2: Tools | Files | Changes
-		row2 := fmt.Sprintf("  CMD: %-18s  FIL: %-18s  DIF: %-18s",
-			fmt.Sprintf("%d calls", agent.Metrics.ToolUseCount),
-			fmt.Sprintf("%d R / %d W", agent.Metrics.FilesRead, agent.Metrics.FilesWritten),
-			fmt.Sprintf("+%s lines", formatCompactNumber(agent.Metrics.LinesChanged)),
-		)
-
-		content.WriteString(row1)
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("       Duration              Cache Hits            Total Tokens"))
-		content.WriteString("\n\n")
-
-		content.WriteString(row2)
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("       Tool Calls            File Ops              Changes"))
+	// File activity (if any changes made)
+	if agent.Metrics != nil && (agent.Metrics.FilesRead > 0 || agent.Metrics.FilesWritten > 0 || agent.Metrics.LinesChanged > 0) {
+		content.WriteString("  ")
+		content.WriteString(renderFileActivity(agent.Metrics))
 		content.WriteString("\n")
 	}
 
@@ -2152,7 +2107,7 @@ func (m Model) renderAgentDetail() (string, string) {
 
 		// Wrap in a box
 		taskBox := tui.StyleInputBox.
-			Width(clampWidth(m.width-6)).
+			Width(m.width-6).
 			Padding(0, 1).
 			Render(renderedTask)
 
@@ -2228,7 +2183,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 
 	// Wrap description in a box
 	descBox := tui.StyleInputBox.
-		Width(clampWidth(m.width-6)).
+		Width(m.width-6).
 		Padding(0, 1).
 		Render(m.renderMarkdown(desc))
 	content.WriteString("  " + descBox)
@@ -2247,7 +2202,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 
 			line := fmt.Sprintf("  %s %s (%s) - %s",
 				statusIcon,
-				shortID(a.ID, 8),
+				a.ID[:8],
 				a.Archetype,
 				age)
 			content.WriteString(line + "\n")
@@ -2728,7 +2683,7 @@ func (m Model) renderInputPanel() string {
 	// Wrap in sleek box
 	// Use m.termWidth for the full width box
 	return tui.StyleInputBox.
-		Width(clampWidth(m.termWidth - 2)). // -2 for borders (left/right padding handled by style)
+		Width(m.termWidth - 2). // -2 for borders (left/right padding handled by style)
 		Render(b.String())
 }
 

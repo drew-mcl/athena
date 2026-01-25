@@ -43,6 +43,7 @@ type Spawner struct {
 type ManagedProcess struct {
 	AgentID   string
 	SessionID string
+	MetricsID string // ID of the agent_metrics record
 	Process   runner.Session
 	Cancel    context.CancelFunc
 }
@@ -154,10 +155,19 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	s.store.UpdateAgentPID(agentID, pid)
 	s.store.UpdateAgentStatus(agentID, store.AgentStatusRunning)
 
+	// Create metrics record
+	var metricsID string
+	if metrics, err := s.store.CreateMetrics(agentID, sessionID); err != nil {
+		logging.Warn("failed to create metrics record", "agent_id", agentID, "error", err)
+	} else {
+		metricsID = metrics.ID
+	}
+
 	// Track the managed process
 	mp := &ManagedProcess{
 		AgentID:   agentID,
 		SessionID: sessionID,
+		MetricsID: metricsID,
 		Process:   session,
 		Cancel:    cancel,
 	}
@@ -221,7 +231,15 @@ func (s *Spawner) ListRunning() []string {
 func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec, string) {
 	archetype := s.config.Archetypes[spec.Archetype]
 
-	// Build prompt with context prepended
+	// Build code index for relevant file suggestions
+	if s.contextMgr != nil {
+		if err := s.contextMgr.BuildIndexForProject(spec.WorktreePath); err != nil {
+			logging.Debug("failed to build code index", "error", err, "worktree", spec.WorktreePath)
+			// Non-fatal - context will work without index
+		}
+	}
+
+	// Build prompt with context prepended (now includes relevant files from index)
 	prompt := spec.Prompt
 	if s.contextMgr != nil {
 		promptWithContext, err := s.contextMgr.BuildPromptWithContext(spec.Prompt, spec.WorktreePath, spec.ProjectName)
@@ -402,12 +420,47 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 
 	case event.Type == "tool_use":
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusExecuting)
+		// Track file reads for access pattern analysis
+		if event.Name == "Read" && len(event.Input) > 0 {
+			s.trackFileAccess(mp, event.Input)
+		}
+
+	case event.Type == "tool_result":
+		// Track tool call outcome based on result content
+		if mp.MetricsID != "" {
+			success := !isToolResultError(event.Content)
+			s.store.IncrementToolCalls(mp.MetricsID, success)
+		}
 
 	case event.Type == "result":
 		if event.Subtype != "error" {
 			s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCompleted)
 		} else {
 			s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)
+		}
+
+		// Update metrics with result event data
+		if mp.MetricsID != "" && event.Usage != nil {
+			update := store.MetricsUpdate{
+				InputTokens:         event.Usage.InputTokens,
+				OutputTokens:        event.Usage.OutputTokens,
+				CacheReadTokens:     event.Usage.CacheReads,
+				CacheCreationTokens: event.CacheCreation,
+				DurationMS:          event.DurationMS,
+				APITimeMS:           event.APITimeMS,
+				CostCents:           int(event.CostUSD * 100),
+				NumTurns:            event.NumTurns,
+			}
+			if err := s.store.UpdateMetrics(mp.MetricsID, update); err != nil {
+				logging.Warn("failed to update metrics", "agent_id", mp.AgentID, "error", err)
+			} else {
+				logging.Info("agent metrics captured",
+					"agent_id", mp.AgentID,
+					"input_tokens", event.Usage.InputTokens,
+					"cache_reads", event.Usage.CacheReads,
+					"cost_usd", event.CostUSD,
+				)
+			}
 		}
 	}
 
@@ -733,4 +786,56 @@ func truncateContent(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+// trackFileAccess records a file read for access pattern analysis.
+func (s *Spawner) trackFileAccess(mp *ManagedProcess, input json.RawMessage) {
+	// Extract file_path from the Read tool input
+	var readInput struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(input, &readInput); err != nil {
+		logging.Debug("could not parse Read tool input", "error", err)
+		return
+	}
+	if readInput.FilePath == "" {
+		return
+	}
+
+	// Estimate tokens: rough approximation of ~4 chars per token
+	// We don't have the actual content size, so use a placeholder
+	// The actual content size would be in the tool_result event
+	estimatedTokens := 500 // Default estimate for file reads
+
+	if err := s.store.RecordFileAccess(mp.AgentID, mp.SessionID, readInput.FilePath, estimatedTokens); err != nil {
+		logging.Debug("failed to record file access", "error", err, "file", readInput.FilePath)
+	}
+}
+
+// isToolResultError checks if a tool result content indicates an error.
+// Claude Code tool results often contain error indicators in the response.
+func isToolResultError(content string) bool {
+	if content == "" {
+		return false
+	}
+	// Common error patterns in tool results
+	errorPatterns := []string{
+		"error:",
+		"Error:",
+		"ERROR:",
+		"failed:",
+		"Failed:",
+		"FAILED:",
+		"permission denied",
+		"no such file",
+		"command not found",
+		"exit code",
+		"exit status",
+	}
+	for _, pattern := range errorPatterns {
+		if strings.Contains(content, pattern) {
+			return true
+		}
+	}
+	return false
 }

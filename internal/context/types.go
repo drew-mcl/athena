@@ -51,21 +51,33 @@ const (
 	MarkerTypeState    MarkerType = "STATE" // For updating project state
 )
 
+// RelevantFile represents a file identified as relevant to the current task.
+type RelevantFile struct {
+	Path   string  // Relative path from project root
+	Score  float64 // Relevance score (0-1)
+	Reason string  // Why this file is relevant
+}
+
 // ContextBlock represents the assembled context to prepend to agent prompts.
 type ContextBlock struct {
 	ProjectName  string
 	WorktreePath string
 	TicketID     string
+	TaskPrompt   string // The task being performed (for index queries)
 
-	// Project-level state
-	StateEntries []*StateEntry
+	// Project-level state (STABLE - cached across agents)
+	StateEntries     []*StateEntry
+	ProjectStructure string // Brief description of key directories and file counts
 
-	// Workflow-level blackboard
-	Decisions  []*BlackboardEntry
-	Findings   []*BlackboardEntry
-	Attempts   []*BlackboardEntry
-	Questions  []*BlackboardEntry // Unresolved questions only
-	Artifacts  []*BlackboardEntry
+	// Workflow-level blackboard (SEMI-STABLE - cached within workflow)
+	Decisions []*BlackboardEntry
+	Findings  []*BlackboardEntry
+	Attempts  []*BlackboardEntry
+	Questions []*BlackboardEntry // Unresolved questions only
+	Artifacts []*BlackboardEntry
+
+	// Index-based relevant files (SEMI-STABLE - task-specific)
+	RelevantFiles []*RelevantFile
 
 	// Statistics
 	TotalEntries int

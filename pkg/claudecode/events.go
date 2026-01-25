@@ -29,6 +29,34 @@ type Event struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Timestamp time.Time       `json:"-"`
+
+	// Result event fields (populated when Type == EventTypeResult)
+	Usage      *EventUsage  `json:"usage,omitempty"`
+	ModelUsage ModelUsage   `json:"model_usage,omitempty"`
+	CostUSD    float64      `json:"total_cost_usd,omitempty"`
+	DurationMS int64        `json:"duration_ms,omitempty"`
+	APITimeMS  int64        `json:"duration_api_ms,omitempty"`
+	NumTurns   int          `json:"num_turns,omitempty"`
+}
+
+// EventUsage contains token usage statistics from Claude.
+type EventUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// ModelUsage tracks per-model usage (keyed by model ID).
+type ModelUsage map[string]ModelUsageEntry
+
+// ModelUsageEntry contains usage details for a specific model.
+type ModelUsageEntry struct {
+	InputTokens              int     `json:"inputTokens"`
+	OutputTokens             int     `json:"outputTokens"`
+	CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
+	CostUSD                  float64 `json:"costUSD"`
 }
 
 // SystemEvent is sent at the start of a session.
@@ -80,6 +108,7 @@ type contentBlock struct {
 //	{"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
 //	{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}
 //	{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}
+//	{"type":"result","usage":{...},"total_cost_usd":...}
 func ParseEvent(data []byte) (*Event, error) {
 	// Parse the raw envelope first
 	var raw struct {
@@ -90,6 +119,14 @@ func ParseEvent(data []byte) (*Event, error) {
 		Name      string          `json:"name,omitempty"`    // for flat format fallback
 		Input     json.RawMessage `json:"input,omitempty"`   // for flat format fallback
 		Message   *messageWrapper `json:"message,omitempty"`
+		// Result event fields
+		Result       string     `json:"result,omitempty"`
+		Usage        *EventUsage `json:"usage,omitempty"`
+		ModelUsage   ModelUsage  `json:"modelUsage,omitempty"`
+		TotalCostUSD float64     `json:"total_cost_usd,omitempty"`
+		DurationMS   int64       `json:"duration_ms,omitempty"`
+		DurationAPI  int64       `json:"duration_api_ms,omitempty"`
+		NumTurns     int         `json:"num_turns,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
@@ -103,6 +140,18 @@ func ParseEvent(data []byte) (*Event, error) {
 		Name:      raw.Name,
 		Input:     raw.Input,
 		Timestamp: time.Now(),
+	}
+
+	// Handle result events (session completion with usage stats)
+	if raw.Type == EventTypeResult {
+		event.Content = raw.Result
+		event.Usage = raw.Usage
+		event.ModelUsage = raw.ModelUsage
+		event.CostUSD = raw.TotalCostUSD
+		event.DurationMS = raw.DurationMS
+		event.APITimeMS = raw.DurationAPI
+		event.NumTurns = raw.NumTurns
+		return event, nil
 	}
 
 	// Handle nested message.content for assistant/user types

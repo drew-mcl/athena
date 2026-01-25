@@ -137,12 +137,54 @@ func (s *Store) migratePlanColumns() error {
 	return nil
 }
 
+// migrateMetricsColumns adds new columns to the agent_metrics table if they don't exist.
+func (s *Store) migrateMetricsColumns() error {
+	// Check if agent_metrics table exists
+	var tableName string
+	err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_metrics'").Scan(&tableName)
+	if err != nil {
+		// Table doesn't exist yet, will be created by main schema
+		return nil
+	}
+
+	// Get existing columns
+	rows, err := s.db.Query("PRAGMA table_info(agent_metrics)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultVal *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		existingCols[name] = true
+	}
+
+	// Add tool_failures column if missing
+	if !existingCols["tool_failures"] {
+		if _, err := s.db.Exec("ALTER TABLE agent_metrics ADD COLUMN tool_failures INTEGER DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) migrate() error {
 	// First, run any ALTER TABLE migrations for existing databases
 	if err := s.migrateWorktreeColumns(); err != nil {
 		return err
 	}
 	if err := s.migratePlanColumns(); err != nil {
+		return err
+	}
+	if err := s.migrateMetricsColumns(); err != nil {
 		return err
 	}
 
@@ -362,6 +404,84 @@ func (s *Store) migrate() error {
 		FOREIGN KEY (agent_id) REFERENCES agents(id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_snapshots_agent ON snapshots(agent_id, sequence DESC);
+
+	-- Agent metrics for usage tracking
+	CREATE TABLE IF NOT EXISTS agent_metrics (
+		id                    TEXT PRIMARY KEY,
+		agent_id              TEXT NOT NULL,
+		session_id            TEXT NOT NULL,
+
+		-- Token usage
+		input_tokens          INTEGER DEFAULT 0,
+		output_tokens         INTEGER DEFAULT 0,
+		cache_read_tokens     INTEGER DEFAULT 0,
+		cache_creation_tokens INTEGER DEFAULT 0,
+
+		-- Timing
+		duration_ms           INTEGER DEFAULT 0,
+		api_time_ms           INTEGER DEFAULT 0,
+
+		-- Cost (in cents)
+		cost_cents            INTEGER DEFAULT 0,
+
+		-- Activity
+		num_turns             INTEGER DEFAULT 0,
+		tool_calls            INTEGER DEFAULT 0,
+		tool_successes        INTEGER DEFAULT 0,
+		tool_failures         INTEGER DEFAULT 0,
+
+		-- Timestamps
+		started_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+		completed_at          DATETIME,
+
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_metrics_agent ON agent_metrics(agent_id);
+	CREATE INDEX IF NOT EXISTS idx_metrics_session ON agent_metrics(session_id);
+
+	-- Symbol index (rebuilt on change)
+	CREATE TABLE IF NOT EXISTS symbols (
+		project_hash  TEXT NOT NULL,
+		symbol_name   TEXT NOT NULL,
+		kind          TEXT NOT NULL,           -- func, struct, interface, const, var, method, type
+		file_path     TEXT NOT NULL,
+		line_number   INTEGER NOT NULL,
+		package       TEXT,
+		receiver      TEXT,
+		exported      BOOLEAN DEFAULT FALSE,
+		PRIMARY KEY (project_hash, symbol_name, file_path, line_number)
+	);
+	CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);
+	CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(project_hash, file_path);
+	CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(project_hash, kind);
+
+	-- Dependency graph
+	CREATE TABLE IF NOT EXISTS dependencies (
+		project_hash  TEXT NOT NULL,
+		from_file     TEXT NOT NULL,
+		to_file       TEXT NOT NULL,
+		dep_type      TEXT NOT NULL DEFAULT 'import',   -- import
+		import_path   TEXT,
+		is_internal   BOOLEAN DEFAULT FALSE,
+		PRIMARY KEY (project_hash, from_file, to_file, import_path)
+	);
+	CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies(project_hash, from_file);
+	CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies(project_hash, to_file);
+	CREATE INDEX IF NOT EXISTS idx_deps_internal ON dependencies(project_hash, is_internal);
+
+	-- File access tracking for agents
+	CREATE TABLE IF NOT EXISTS file_access (
+		id TEXT PRIMARY KEY,
+		agent_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		file_path TEXT NOT NULL,
+		access_count INTEGER DEFAULT 1,
+		tokens_consumed INTEGER DEFAULT 0,
+		first_access_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		last_access_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(agent_id, file_path)
+	);
+	CREATE INDEX IF NOT EXISTS idx_file_access_agent ON file_access(agent_id);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -589,16 +709,51 @@ type Plan struct {
 	UpdatedAt    time.Time
 }
 
-// AgentMetrics holds usage statistics for an agent.
+// AgentMetrics holds usage statistics for an agent session.
 type AgentMetrics struct {
-	ToolUseCount int
-	FilesRead    int
-	FilesWritten int
-	LinesChanged int
-	MessageCount int
-	Duration     time.Duration
-	InputTokens  int
-	OutputTokens int
-	CacheReads   int
-	TotalTokens  int
+	ID        string
+	AgentID   string
+	SessionID string
+
+	// Token usage
+	InputTokens        int
+	OutputTokens       int
+	CacheReadTokens    int
+	CacheCreationTokens int
+
+	// Timing
+	DurationMS int64
+	APITimeMS  int64
+
+	// Cost
+	CostCents int // Stored as cents to avoid float precision issues
+
+	// Activity
+	NumTurns      int
+	ToolCalls     int
+	ToolSuccesses int
+	ToolFailures  int
+
+	// Timestamps
+	StartedAt   time.Time
+	CompletedAt *time.Time
+}
+
+// CacheHitRate returns the percentage of input tokens served from cache.
+func (m *AgentMetrics) CacheHitRate() float64 {
+	total := m.InputTokens + m.CacheReadTokens + m.CacheCreationTokens
+	if total == 0 {
+		return 0
+	}
+	return float64(m.CacheReadTokens) / float64(total) * 100
+}
+
+// TotalInputTokens returns the sum of all input tokens (fresh + cached).
+func (m *AgentMetrics) TotalInputTokens() int {
+	return m.InputTokens + m.CacheReadTokens + m.CacheCreationTokens
+}
+
+// CostUSD returns the cost in USD.
+func (m *AgentMetrics) CostUSD() float64 {
+	return float64(m.CostCents) / 100
 }

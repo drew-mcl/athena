@@ -3,7 +3,10 @@ package context
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/drewfead/athena/internal/index"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/google/uuid"
 )
@@ -54,6 +57,77 @@ func (m *Manager) Assembler() *Assembler {
 	return m.assembler
 }
 
+// SetIndex sets the code index for relevant file lookup.
+// Call this with a project's index to enable intelligent file suggestions.
+func (m *Manager) SetIndex(idx *index.Index) {
+	m.assembler.WithIndex(idx)
+}
+
+// BuildIndexForProject builds and sets the code index for a project.
+// It first checks if a cached index exists and is still valid (based on file modification times).
+// If the cache is valid, it loads from SQLite. Otherwise, it rebuilds and caches the index.
+func (m *Manager) BuildIndexForProject(projectPath string) error {
+	start := time.Now()
+
+	indexer, err := index.NewIndexer(projectPath)
+	if err != nil {
+		return fmt.Errorf("failed to create indexer: %w", err)
+	}
+
+	// Compute current project hash based on file modification times
+	currentHash, err := indexer.ComputeHash()
+	if err != nil {
+		logging.Warn("failed to compute project hash, rebuilding index", "project", projectPath, "error", err)
+		// Fall through to rebuild
+	}
+
+	// Try to load cached index if we have a valid hash
+	if currentHash != "" && m.store != nil {
+		cachedIdx, err := m.store.LoadIndex(currentHash)
+		if err != nil {
+			logging.Debug("failed to load cached index", "project", projectPath, "hash", currentHash, "error", err)
+			// Fall through to rebuild
+		} else if cachedIdx != nil {
+			// Cache hit - use the cached index
+			cachedIdx.ProjectPath = indexer.ProjectPath()
+			cachedIdx.ModulePath = indexer.ModulePath()
+			m.SetIndex(cachedIdx)
+			logging.Info("index cache hit",
+				"project", projectPath,
+				"hash", currentHash,
+				"symbols", cachedIdx.SymbolCount(),
+				"files", cachedIdx.FileCount(),
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			return nil
+		}
+	}
+
+	// Cache miss - rebuild the index
+	idx, err := indexer.IndexProject()
+	if err != nil {
+		return fmt.Errorf("failed to build index: %w", err)
+	}
+
+	// Save to cache for future use
+	if m.store != nil {
+		if err := m.store.SaveIndex(idx); err != nil {
+			logging.Warn("failed to save index to cache", "project", projectPath, "error", err)
+			// Continue anyway - caching is optional
+		}
+	}
+
+	m.SetIndex(idx)
+	logging.Info("index cache miss - rebuilt index",
+		"project", projectPath,
+		"hash", idx.ProjectHash,
+		"symbols", idx.SymbolCount(),
+		"files", idx.FileCount(),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return nil
+}
+
 // AssembleContext builds a context block for a worktree.
 func (m *Manager) AssembleContext(worktreePath, projectName string) (*ContextBlock, error) {
 	opts := DefaultAssembleOptions(worktreePath, projectName)
@@ -71,8 +145,9 @@ func (m *Manager) FormatContext(block *ContextBlock) string {
 }
 
 // BuildPromptWithContext prepends context to a prompt.
+// The originalPrompt is also used as the task description for index-based file relevance.
 func (m *Manager) BuildPromptWithContext(originalPrompt, worktreePath, projectName string) (string, error) {
-	opts := DefaultAssembleOptions(worktreePath, projectName)
+	opts := DefaultAssembleOptions(worktreePath, projectName).WithTask(originalPrompt)
 	return m.assembler.BuildPromptWithContext(originalPrompt, opts)
 }
 

@@ -132,7 +132,7 @@ func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.T
 	// Determine status based on worktree lifecycle and agent
 	statusText := "IDLE"
 	statusStyle := tui.StyleMuted
-	
+
 	// Check agent status first (most specific)
 	agentActive := false
 	if wt.AgentID != "" {
@@ -165,7 +165,7 @@ func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.T
 			statusStyle = tui.StylePillActive
 		}
 	}
-	
+
 	// Format as fixed-width pill: [ STATUS    ]
 	// Truncate if too long (unlikely with standard statuses)
 	if len(statusText) > 9 {
@@ -192,7 +192,7 @@ func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.T
 	} else {
 		gitStatus = tui.StyleMuted.Render(gitStatus)
 	}
-	
+
 	// Count agents
 	count := 0
 	for _, a := range m.agents {

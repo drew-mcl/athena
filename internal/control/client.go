@@ -776,16 +776,33 @@ type AgentInfo struct {
 
 // AgentMetrics holds usage statistics for an agent.
 type AgentMetrics struct {
-	ToolUseCount int   `json:"tool_use_count"`
-	FilesRead    int   `json:"files_read"`
-	FilesWritten int   `json:"files_written"`
-	LinesChanged int   `json:"lines_changed"`
-	MessageCount int   `json:"message_count"`
-	DurationMs   int64 `json:"duration_ms"` // Duration in milliseconds for JSON serialization
-	InputTokens  int   `json:"input_tokens,omitempty"`
-	OutputTokens int   `json:"output_tokens,omitempty"`
-	CacheReads   int   `json:"cache_reads,omitempty"`
-	TotalTokens  int   `json:"total_tokens,omitempty"`
+	// Tool usage
+	ToolUseCount    int     `json:"tool_use_count"`
+	ToolSuccessRate float64 `json:"tool_success_rate,omitempty"` // Percentage
+
+	// File activity
+	FilesRead    int `json:"files_read"`
+	FilesWritten int `json:"files_written"`
+	LinesChanged int `json:"lines_changed"`
+	MessageCount int `json:"message_count"`
+
+	// Timing
+	DurationMs int64 `json:"duration_ms"` // Wall time
+	APITimeMs  int64 `json:"api_time_ms,omitempty"`
+	NumTurns   int   `json:"num_turns,omitempty"`
+
+	// Token usage
+	InputTokens   int `json:"input_tokens,omitempty"`
+	OutputTokens  int `json:"output_tokens,omitempty"`
+	CacheReads    int `json:"cache_reads,omitempty"`
+	CacheCreation int `json:"cache_creation,omitempty"`
+	TotalTokens   int `json:"total_tokens,omitempty"`
+
+	// Cache efficiency
+	CacheHitRate float64 `json:"cache_hit_rate,omitempty"` // Percentage
+
+	// Cost
+	CostCents int `json:"cost_cents,omitempty"`
 }
 
 // AgentEventInfo represents an agent event for API responses.
