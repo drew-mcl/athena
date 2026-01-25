@@ -22,13 +22,15 @@ build:
 	go build $(LDFLAGS) -o bin/athena ./cmd/athena
 	go build $(LDFLAGS) -o bin/athenad ./cmd/athenad
 	go build $(LDFLAGS) -o bin/wt ./cmd/wt
+	go build $(LDFLAGS) -o bin/athena-cli ./cmd/athena-cli
 
 # Install all binaries to GOBIN
 install: build
 	cp bin/athena $(GOBIN)/athena
 	cp bin/athenad $(GOBIN)/athenad
 	cp bin/wt $(GOBIN)/wt
-	@echo "Installed: athena, athenad, wt"
+	cp bin/athena-cli $(GOBIN)/athena-cli
+	@echo "Installed: athena, athenad, wt, athena-cli"
 
 clean:
 	rm -rf bin/
