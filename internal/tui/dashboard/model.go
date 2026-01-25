@@ -998,6 +998,16 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detailScroll = 0
 	case "G":
 		m.detailScroll = 10000 // Hack to go to bottom, renderer will clamp
+	case "ctrl+d":
+		// Half page down
+		m.detailScroll += m.height / 2
+	case "ctrl+u":
+		// Half page up
+		if m.detailScroll > m.height/2 {
+			m.detailScroll -= m.height / 2
+		} else {
+			m.detailScroll = 0
+		}
 
 	// Actions available in agent detail
 	case "L":
@@ -2078,7 +2088,7 @@ func (m Model) renderJobDetail() (string, string) {
 		}
 	}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  Press Esc or Enter to close"))
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  Esc/q:close"))
 }
 
 func (m Model) renderAgentDetail() (string, string) {
@@ -2188,7 +2198,7 @@ func (m Model) renderAgentDetail() (string, string) {
 		content.WriteString("\n")
 	}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  [L]ogs [a]ttach [e]nvim [s]hell [x]kill │ Esc to close"))
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
 }
 
 func (m Model) renderWorktreeDetail() (string, string) {
@@ -2298,7 +2308,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	content.WriteString(tui.StyleMuted.Render(wt.Path))
 	content.WriteString("\n")
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  [p] view plan  [M]erge  [c]leanup │ Esc to close"))
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [p] view plan  [M]erge  [c]leanup  Esc/q:close"))
 }
 
 func (m Model) renderLogs() (string, string) {
