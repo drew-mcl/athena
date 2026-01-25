@@ -251,7 +251,20 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 	// Build prompt with context prepended (now includes relevant files from index)
 	prompt := spec.Prompt
 	if s.contextMgr != nil {
-		promptWithContext, err := s.contextMgr.BuildPromptWithContext(spec.Prompt, spec.WorktreePath, spec.ProjectName)
+		opts := agentctx.DefaultAssembleOptions(spec.WorktreePath, spec.ProjectName)
+		opts.TaskPrompt = spec.Prompt
+		
+		// Use configured max tokens
+		if s.config.Agents.MaxContextTokens > 0 {
+			opts.MaxTokens = s.config.Agents.MaxContextTokens
+		}
+		
+		// Use configured max relevant files
+		if s.config.Agents.MaxRelevantFiles > 0 {
+			opts.MaxRelevantFiles = s.config.Agents.MaxRelevantFiles
+		}
+
+		promptWithContext, err := s.contextMgr.Assembler().BuildPromptWithContext(spec.Prompt, opts)
 		if err != nil {
 			logging.Warn("failed to build context for prompt", "error", err, "worktree", spec.WorktreePath)
 		} else {

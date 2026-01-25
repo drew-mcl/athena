@@ -63,6 +63,8 @@ type AgentsConfig struct {
 	Model             string        `yaml:"model"`
 	Budget            BudgetConfig  `yaml:"budget"`
 	ContextRetention  time.Duration `yaml:"context_retention"`
+	MaxContextTokens  int           `yaml:"max_context_tokens"` // Max tokens for context block
+	MaxRelevantFiles  int           `yaml:"max_relevant_files"` // Max relevant files to include
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
 }
@@ -235,6 +237,8 @@ func DefaultConfig() *Config {
 			Model:             "sonnet",
 			Budget:            BudgetConfig{MaxPerAgent: 5.0, MaxPerDay: 50.0, WarnThreshold: 0.8},
 			ContextRetention:  7 * 24 * time.Hour,
+			MaxContextTokens:  30000,
+			MaxRelevantFiles:  20,
 			HeartbeatInterval: 30 * time.Second,
 			HeartbeatTimeout:  2 * time.Minute,
 		},
