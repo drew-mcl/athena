@@ -53,7 +53,7 @@ func DefaultAssembleOptions(worktreePath, projectName string) AssembleOptions {
 	return AssembleOptions{
 		WorktreePath:         worktreePath,
 		ProjectName:          projectName,
-		MaxTokens:            2000, // ~1-2K tokens for context
+		MaxTokens:            30000, // Default to ~30k tokens for robust context
 		IncludeState:         true,
 		IncludeBlackboard:    true,
 		IncludeRelevantFiles: true, // Enable by default
