@@ -521,28 +521,100 @@ func (s *geminiSession) safePath(p string) (string, error) {
 
 // Persistence
 
-type sessionState struct {
-	History []*genai.Content `json:"history"`
+type serializableContent struct {
+	Role  string             `json:"role"`
+	Parts []serializablePart `json:"parts"`
 }
 
-// Custom JSON marshaler for genai.Content is tricky because parts are interfaces.
-// We'll use a simplified history structure for now, or rely on genai's serialization if available (it's not).
-// This is a complex part. For now, we'll skip complex history persistence and just save basic prompt/response text
-// to demonstrate the pattern, acknowledging that full history restore requires careful type mapping.
-// Actually, for a prototype, we can skip history persistence and just accept that Resume starts fresh 
-// (which violates the requirement but is safer than broken code).
-// 
-// BETTER: Just persist the *count* of turns or something simple, OR
-// implement a basic text-only history rehydration.
+type serializablePart struct {
+	Type             string                   `json:"type"` // "text", "blob", "function_call", "function_response"
+	Text             string                   `json:"text,omitempty"`
+	Blob             *genai.Blob              `json:"blob,omitempty"`
+	FunctionCall     *genai.FunctionCall      `json:"function_call,omitempty"`
+	FunctionResponse *genai.FunctionResponse  `json:"function_response,omitempty"`
+}
 
 func (s *geminiSession) saveHistory() error {
-	// TODO: Implement proper serialization of genai.Content which contains interfaces (Part).
-	// This requires mapping to a struct we can marshal.
-	return nil
+	if s.historyDir == "" {
+		return nil
+	}
+
+	var stored []serializableContent
+	for _, c := range s.chat.History {
+		sc := serializableContent{Role: c.Role}
+		for _, p := range c.Parts {
+			sp := serializablePart{}
+			switch v := p.(type) {
+			case genai.Text:
+				sp.Type = "text"
+				sp.Text = string(v)
+			case genai.Blob:
+				sp.Type = "blob"
+				sp.Blob = &v
+			case genai.FunctionCall:
+				sp.Type = "function_call"
+				sp.FunctionCall = &v
+			case genai.FunctionResponse:
+				sp.Type = "function_response"
+				sp.FunctionResponse = &v
+			default:
+				// Skip unsupported parts
+				continue
+			}
+			sc.Parts = append(sc.Parts, sp)
+		}
+		stored = append(stored, sc)
+	}
+
+	data, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal history: %w", err)
+	}
+
+	filename := filepath.Join(s.historyDir, s.id+".json")
+	return os.WriteFile(filename, data, 0600)
 }
 
 func (s *geminiSession) loadHistory() error {
-	// TODO: Implement loading
+	filename := filepath.Join(s.historyDir, s.id+".json")
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var stored []serializableContent
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("failed to unmarshal history: %w", err)
+	}
+
+	var history []*genai.Content
+	for _, sc := range stored {
+		c := &genai.Content{Role: sc.Role}
+		for _, sp := range sc.Parts {
+			switch sp.Type {
+			case "text":
+				c.Parts = append(c.Parts, genai.Text(sp.Text))
+			case "blob":
+				if sp.Blob != nil {
+					c.Parts = append(c.Parts, *sp.Blob)
+				}
+			case "function_call":
+				if sp.FunctionCall != nil {
+					c.Parts = append(c.Parts, *sp.FunctionCall)
+				}
+			case "function_response":
+				if sp.FunctionResponse != nil {
+					c.Parts = append(c.Parts, *sp.FunctionResponse)
+				}
+			}
+		}
+		history = append(history, c)
+	}
+
+	s.chat.History = history
 	return nil
 }
 
