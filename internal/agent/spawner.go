@@ -34,8 +34,8 @@ type Spawner struct {
 	contextMgr *agentctx.Manager
 	publisher  *worktree.Publisher // For auto-PR publishing
 
-	processes    map[string]*ManagedProcess
-	mu           sync.RWMutex
+	processes     map[string]*ManagedProcess
+	mu            sync.RWMutex
 	streamEmitter StreamEventEmitter
 }
 
@@ -92,6 +92,16 @@ type SpawnSpec struct {
 	TaskListID   string // Claude Code task list ID to set CLAUDE_CODE_TASK_LIST_ID
 }
 
+func (s *Spawner) agentLogPath(agentID string) string {
+	dataDir := filepath.Dir(s.config.Daemon.Database)
+	logDir := filepath.Join(dataDir, "agent-logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		logging.Warn("failed to create agent log directory", "dir", logDir, "error", err)
+		return ""
+	}
+	return filepath.Join(logDir, agentID+".log")
+}
+
 // Spawn creates and starts a new Claude Code agent.
 func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, error) {
 	// Generate IDs
@@ -118,6 +128,12 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 
 	// Build run spec based on archetype
 	runSpec, provider := s.buildRunSpec(spec, sessionID)
+
+	// Set log file for persistence/reattachment
+	logPath := s.agentLogPath(agentID)
+	if logPath != "" {
+		runSpec.LogFile = logPath
+	}
 
 	// Log the spec being executed for debugging
 	specBytes, _ := json.Marshal(runSpec)
@@ -195,6 +211,78 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	go s.handleEvents(mp)
 
 	return agent, nil
+}
+
+// Attach attaches to an existing agent process (e.g. after daemon restart).
+func (s *Spawner) Attach(agentID string) error {
+	agent, err := s.store.GetAgent(agentID)
+	if err != nil {
+		return fmt.Errorf("failed to get agent: %w", err)
+	}
+	if agent == nil {
+		return fmt.Errorf("agent not found: %s", agentID)
+	}
+	if agent.PID == nil {
+		return fmt.Errorf("agent has no PID: %s", agentID)
+	}
+
+	// Determine provider
+	archetype := s.config.Archetypes[agent.Archetype]
+	provider := archetype.Provider
+	if provider == "" {
+		provider = s.config.Agents.Provider
+	}
+	if provider == "" {
+		provider = "claude"
+	}
+
+	// Initialize runner
+	r, err := runner.New(provider)
+	if err != nil {
+		return fmt.Errorf("failed to create runner: %w", err)
+	}
+
+	// Create cancellable context
+	ctx := context.Background()
+	procCtx, cancel := context.WithCancel(ctx)
+
+	// Attach
+	logFile := s.agentLogPath(agentID)
+	session, err := r.Attach(procCtx, *agent.PID, runner.AttachOptions{
+		LogFile: logFile,
+		WorkDir: agent.WorktreePath,
+	})
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to attach: %w", err)
+	}
+
+	// Create managed process
+	// We might not have metrics ID handy unless we look it up, but that's okay.
+	// We can try to find the latest metrics record.
+	// For now, leave empty, it just means we won't update metrics for attached session (acceptable limitation).
+	// Actually we should try to look it up.
+	metricsID := ""
+	// cacheMetricID := ""
+
+	mp := &ManagedProcess{
+		AgentID:       agentID,
+		SessionID:     agent.ClaudeSessionID, // Might be empty if not claude
+		MetricsID:     metricsID,
+		Process:       session,
+		Cancel:        cancel,
+	}
+
+	s.mu.Lock()
+	s.processes[agentID] = mp
+	s.mu.Unlock()
+
+	logging.Info("reattached to agent", "agent_id", agentID, "pid", *agent.PID)
+
+	// Start event handler
+	go s.handleEvents(mp)
+
+	return nil
 }
 
 // Kill terminates an agent by ID.

@@ -27,6 +27,10 @@ The system is built in **Go** and consists of three main binaries:
 *   `internal/tui/`: UI components and views.
 *   `internal/logging/`: Structured logging (with Sentry integration).
 
+## Navigation
+
+*   **[Codebase Map](docs/CODEBASE_MAP.md):** Detailed index mapping high-level functionality to specific files and symbols. Use this to quickly locate code.
+
 ## Development Workflow
 
 ### Building and Running
