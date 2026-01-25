@@ -338,3 +338,61 @@ func (m *Manager) ExportState(projectName string) (string, error) {
 func GenerateEntryID() string {
 	return uuid.NewString()
 }
+
+// GetContextStats returns statistics about the context for a given worktree/project.
+// This is used to track cache hit rates across agents working on the same project.
+func (m *Manager) GetContextStats(worktreePath, projectName string) (*ContextStats, error) {
+	stats := &ContextStats{}
+
+	// Get state entries and estimate tokens
+	if projectName != "" {
+		stateEntries, err := m.state.List(projectName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load state entries: %w", err)
+		}
+		stats.StateEntriesCount = len(stateEntries)
+
+		// Estimate tokens for state section
+		var stateText strings.Builder
+		for _, e := range stateEntries {
+			stateText.WriteString(e.Key)
+			stateText.WriteString(": ")
+			stateText.WriteString(e.Value)
+			stateText.WriteString("\n")
+		}
+		stats.StateTokensEstimate = estimateTokensFromText(stateText.String())
+	}
+
+	// Get blackboard entries and estimate tokens
+	if worktreePath != "" {
+		bbEntries, err := m.blackboard.List(worktreePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load blackboard entries: %w", err)
+		}
+		stats.BlackboardEntriesCount = len(bbEntries)
+
+		// Estimate tokens for blackboard section
+		var bbText strings.Builder
+		for _, e := range bbEntries {
+			bbText.WriteString(string(e.EntryType))
+			bbText.WriteString(": ")
+			bbText.WriteString(e.Content)
+			bbText.WriteString("\n")
+		}
+		stats.BlackboardTokensEstimate = estimateTokensFromText(bbText.String())
+	}
+
+	// Calculate total
+	stats.TotalContextTokens = stats.StateTokensEstimate + stats.BlackboardTokensEstimate
+
+	return stats, nil
+}
+
+// estimateTokensFromText provides a rough token count for text.
+// Uses ~4 chars per token as a rough estimate.
+func estimateTokensFromText(text string) int {
+	if len(text) == 0 {
+		return 0
+	}
+	return len(text) / 4
+}

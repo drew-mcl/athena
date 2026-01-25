@@ -689,6 +689,22 @@ func (c *Client) GetContextPreview(worktreePath, projectName string) (string, er
 	return result.Context, nil
 }
 
+// GetCacheStats retrieves cross-agent cache hit rate statistics for a project.
+func (c *Client) GetCacheStats(projectName string) (*ProjectCacheStatsInfo, error) {
+	resp, err := c.Call("get_cache_stats", map[string]string{"project_name": projectName})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var stats ProjectCacheStatsInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &stats)
+	return &stats, nil
+}
+
 func (c *Client) readLoop() {
 	for c.scanner.Scan() {
 		select {
@@ -1049,6 +1065,20 @@ type StateSummaryInfo struct {
 	EnvironmentCount  int     `json:"environment_count"`
 	TotalCount        int     `json:"total_count"`
 	AvgConfidence     float64 `json:"avg_confidence"`
+}
+
+// ProjectCacheStatsInfo provides aggregated cache hit rate statistics for a project.
+type ProjectCacheStatsInfo struct {
+	ProjectName                 string  `json:"project_name"`
+	TotalAgents                 int     `json:"total_agents"`
+	FirstAgentCount             int     `json:"first_agent_count"`
+	SubsequentAgentCount        int     `json:"subsequent_agent_count"`
+	AvgCacheHitRate             float64 `json:"avg_cache_hit_rate"`
+	AvgFirstAgentCacheRate      float64 `json:"avg_first_agent_cache_rate"`
+	AvgSubsequentAgentCacheRate float64 `json:"avg_subsequent_agent_cache_rate"`
+	TotalStateTokens            int     `json:"total_state_tokens"`
+	TotalBlackboardTokens       int     `json:"total_blackboard_tokens"`
+	TotalCacheReads             int     `json:"total_cache_reads"`
 }
 
 // PostBlackboardRequest is the request to post a blackboard entry.

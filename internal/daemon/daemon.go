@@ -407,6 +407,7 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_context_preview", d.handleGetContextPreview)
 	// Metrics
 	d.server.Handle("get_metrics_trend", d.handleGetMetricsTrend)
+	d.server.Handle("get_cache_stats", d.handleGetCacheStats)
 	// Streaming (for athena-viz)
 	d.server.HandleStream("subscribe_stream", d.handleSubscribeStream)
 }
@@ -2084,6 +2085,38 @@ func (d *Daemon) handleGetMetricsTrend(params json.RawMessage) (any, error) {
 
 	// Return the store type directly (simple struct)
 	return trend, nil
+}
+
+func (d *Daemon) handleGetCacheStats(params json.RawMessage) (any, error) {
+	var req struct {
+		ProjectName string `json:"project_name"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if req.ProjectName == "" {
+		return nil, fmt.Errorf("project_name is required")
+	}
+
+	stats, err := d.store.GetProjectCacheStats(req.ProjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to control type
+	return &control.ProjectCacheStatsInfo{
+		ProjectName:                 stats.ProjectName,
+		TotalAgents:                 stats.TotalAgents,
+		FirstAgentCount:             stats.FirstAgentCount,
+		SubsequentAgentCount:        stats.SubsequentAgentCount,
+		AvgCacheHitRate:             stats.AvgCacheHitRate,
+		AvgFirstAgentCacheRate:      stats.AvgFirstAgentCacheRate,
+		AvgSubsequentAgentCacheRate: stats.AvgSubsequentAgentCacheRate,
+		TotalStateTokens:            stats.TotalStateTokens,
+		TotalBlackboardTokens:       stats.TotalBlackboardTokens,
+		TotalCacheReads:             stats.TotalCacheReads,
+	}, nil
 }
 
 // Helper functions for context handlers

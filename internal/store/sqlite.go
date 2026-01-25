@@ -10,6 +10,39 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// ContextCacheMetric tracks context cache performance for cross-agent analysis.
+type ContextCacheMetric struct {
+	ID                       string
+	AgentID                  string
+	ProjectName              string
+	WorktreePath             string
+	StateEntriesCount        int
+	StateTokensEstimate      int
+	BlackboardEntriesCount   int
+	BlackboardTokensEstimate int
+	CacheReadsTotal          int
+	CacheReadsInState        int
+	CacheReadsInBlackboard   int
+	TotalContextTokens       int
+	CacheHitRate             float64
+	IsFirstAgent             bool
+	CreatedAt                time.Time
+}
+
+// ProjectCacheStats provides aggregated cache statistics for a project.
+type ProjectCacheStats struct {
+	ProjectName         string
+	TotalAgents         int
+	FirstAgentCount     int
+	SubsequentAgentCount int
+	AvgCacheHitRate     float64
+	AvgFirstAgentCacheRate   float64
+	AvgSubsequentAgentCacheRate float64
+	TotalStateTokens    int
+	TotalBlackboardTokens int
+	TotalCacheReads     int
+}
+
 // Store is the main persistence layer for Athena.
 type Store struct {
 	db *sql.DB
@@ -176,6 +209,44 @@ func (s *Store) migrateMetricsColumns() error {
 	return nil
 }
 
+// migrateContextCacheMetrics creates the context_cache_metrics table if it doesn't exist.
+// This table is created via migration rather than main schema to support existing databases.
+func (s *Store) migrateContextCacheMetrics() error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS context_cache_metrics (
+		id TEXT PRIMARY KEY,
+		agent_id TEXT NOT NULL,
+		project_name TEXT NOT NULL,
+		worktree_path TEXT,
+
+		-- Context section sizes
+		state_entries_count INT DEFAULT 0,
+		state_tokens_estimate INT DEFAULT 0,
+		blackboard_entries_count INT DEFAULT 0,
+		blackboard_tokens_estimate INT DEFAULT 0,
+
+		-- Cache performance (attributed)
+		cache_reads_total INT DEFAULT 0,
+		cache_reads_in_state INT DEFAULT 0,
+		cache_reads_in_blackboard INT DEFAULT 0,
+
+		-- Overall metrics
+		total_context_tokens INT DEFAULT 0,
+		cache_hit_rate REAL DEFAULT 0,
+
+		-- Tracking
+		is_first_agent BOOLEAN DEFAULT FALSE,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_cache_project ON context_cache_metrics(project_name);
+	CREATE INDEX IF NOT EXISTS idx_cache_agent ON context_cache_metrics(agent_id);
+	`
+	_, err := s.db.Exec(schema)
+	return err
+}
+
 func (s *Store) migrate() error {
 	// First, run any ALTER TABLE migrations for existing databases
 	if err := s.migrateWorktreeColumns(); err != nil {
@@ -185,6 +256,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.migrateMetricsColumns(); err != nil {
+		return err
+	}
+	if err := s.migrateContextCacheMetrics(); err != nil {
 		return err
 	}
 
