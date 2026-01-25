@@ -3,10 +3,12 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drewfead/athena/internal/agent"
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/task"
 )
 
@@ -128,6 +130,11 @@ func (d *Daemon) handleCreateTask(params json.RawMessage) (any, error) {
 	provider := req.Provider
 	if provider == "" {
 		provider = "claude"
+	}
+
+	// Validate required fields
+	if strings.TrimSpace(req.Subject) == "" {
+		return nil, fmt.Errorf("task subject cannot be empty")
 	}
 
 	create := &task.TaskCreate{
@@ -307,10 +314,13 @@ func (d *Daemon) handleExecuteTask(params json.RawMessage) (any, error) {
 
 	// Update task status to in_progress
 	inProgress := task.StatusInProgress
-	d.taskRegistry.UpdateTask(provider, req.ListID, req.TaskID, &task.TaskUpdate{
+	if _, err := d.taskRegistry.UpdateTask(provider, req.ListID, req.TaskID, &task.TaskUpdate{
 		Status: &inProgress,
 		Owner:  &spawnedAgent.ID,
-	})
+	}); err != nil {
+		logging.Warn("failed to update task status after spawning agent",
+			"error", err, "task_id", req.TaskID, "agent_id", spawnedAgent.ID)
+	}
 
 	// Associate agent with worktree
 	d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)

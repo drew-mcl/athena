@@ -56,8 +56,8 @@ func NewProvider() (*Provider, error) {
 
 	tasksDir := filepath.Join(homeDir, ".claude", "tasks")
 
-	// Create the tasks directory if it doesn't exist
-	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+	// Create the tasks directory if it doesn't exist (restrictive permissions for security)
+	if err := os.MkdirAll(tasksDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create tasks directory: %w", err)
 	}
 
@@ -420,7 +420,7 @@ func (p *Provider) saveTaskFile(listID string, tf *taskFile) error {
 		return fmt.Errorf("failed to marshal task file: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write task file %s: %w", filePath, err)
 	}
 
