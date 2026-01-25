@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -304,8 +303,6 @@ func (m Model) Init() tea.Cmd {
 
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Global keybindings
@@ -337,160 +334,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalMode(msg)
 
 	case tea.WindowSizeMsg:
-		m.termWidth = msg.Width
-		m.termHeight = msg.Height
-
-		// Inner dimensions match terminal initially (reduced when input is active)
-		m.width = msg.Width
-		m.height = msg.Height
-
-		// Update text input width dynamically
-		inputWidth := m.width - 10
-		if inputWidth < 30 {
-			inputWidth = 30
-		}
-		if inputWidth > 100 {
-			inputWidth = 100
-		}
-		m.textInput.SetWidth(inputWidth)
-		m.syncInputHeight()
-
-		// Update table widths
-		m.worktreeTable.SetWidth(m.width)
-		m.jobTable.SetWidth(m.width)
-		m.agentTable.SetWidth(m.width)
-		m.taskTable.SetWidth(m.width)
-
-		if m.planMode {
-			if m.planStatus == "pending" {
-				m.planRendered = m.renderPendingPlan(m.planPlannerStatus)
-			} else {
-				m.planRendered = m.renderMarkdown(m.planContent)
-			}
-		}
+		return m.handleWindowSize(msg)
 
 	case tickMsg:
 		return m, tea.Batch(m.fetchData, m.tick())
 
 	case fetchDataResultMsg:
-		m.worktrees = msg.worktrees
-		m.agents = msg.agents
-		m.jobs = msg.jobs
-		m.notes = msg.notes
-		m.changelog = msg.changelog
-		m.taskLists = msg.taskLists
-		m.claudeTasks = msg.claudeTasks
-		m.projects = m.extractProjects()
-		m.lastUpdate = time.Now()
-		if msg.err != nil {
-			m.err = msg.err
-			m.statusMsg = "✗ " + msg.err.Error()
-			m.statusMsgTime = time.Now()
-			cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-				return clearErrMsg{}
-			}))
-		}
+		return m.handleFetchDataResult(msg)
 
 	case errMsg:
-		m.err = msg
-		// Also set as status message for more visibility
-		m.statusMsg = "✗ " + msg.Error()
-		m.statusMsgTime = time.Now()
-		// Auto-clear error after 5 seconds
-		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-			return clearErrMsg{}
-		})
+		return m.handleErr(msg)
 
 	case clearErrMsg:
 		m.err = nil
+		return m, nil
 
 	case dataUpdateMsg:
-		// Data was modified (create/update/delete), refresh
-		cmds = append(cmds, m.fetchData)
+		return m, m.fetchData
 
 	case eventMsg:
-		cmds = append(cmds, m.fetchData, m.listenForEvents())
+		return m.handleControlEvent(msg)
 
 	case logsResultMsg:
-		if m.logsAgentID == "" || msg.agentID != m.logsAgentID {
-			return m, nil
-		}
-		m.logsAgentID = msg.agentID
-		m.logs = msg.logs
-		m.logsMode = true
-		m.logsFollow = true
-		// Start at bottom (most recent) if following
-		m.logsScroll = max(0, len(m.logs)-m.logsViewportHeight())
+		return m.handleLogsResult(msg)
 
 	case planResultMsg:
-		if m.planWorktreePath == "" || msg.worktreePath != m.planWorktreePath {
-			return m, nil
-		}
-		m.planWorktreePath = msg.worktreePath
-		m.planContent = msg.content
-		m.planStatus = msg.status
-		m.planAgentID = msg.agentID
-		m.planPlannerStatus = msg.plannerStatus
-		m.planMode = true
-		m.planScroll = 0
-		// Render markdown with glamour (or show pending message)
-		if msg.status == "pending" {
-			m.planRendered = m.renderPendingPlan(msg.plannerStatus)
-		} else {
-			m.planRendered = m.renderMarkdown(msg.content)
-		}
+		return m.handlePlanResult(msg)
 
 	case contextResultMsg:
-		if m.contextWorktreePath == "" || msg.worktreePath != m.contextWorktreePath {
-			return m, nil
-		}
-		m.contextWorktreePath = msg.worktreePath
-		m.contextProjectName = msg.projectName
-		m.contextBlackboard = msg.blackboard
-		m.contextSummary = msg.summary
-		m.contextPreview = msg.preview
-		m.contextMode = true
-		m.contextScroll = 0
+		return m.handleContextResult(msg)
 
 	case publishResultMsg:
-		m.statusMsg = fmt.Sprintf("PR created: %s", msg.prURL)
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handlePublishResult(msg)
 
 	case mergeResultMsg:
-		if msg.hasConflicts {
-			if msg.agentSpawned {
-				m.statusMsg = "⚡ Merge conflict detected - resolver agent spawned"
-			} else {
-				m.statusMsg = "⚠ Merge conflict detected"
-			}
-		} else {
-			m.statusMsg = "✓ Branch merged to main"
-		}
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handleMergeResult(msg)
 
 	case cleanupResultMsg:
-		m.statusMsg = fmt.Sprintf("Worktree cleaned up: %s", filepath.Base(msg.path))
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handleCleanupResult(msg)
 
 	case clearStatusMsg:
 		m.statusMsg = ""
+		return m, nil
 
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		return m.handleSpinnerTick(msg)
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m *Model) extractProjects() []string {
