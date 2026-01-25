@@ -53,9 +53,10 @@ const (
 
 // RelevantFile represents a file identified as relevant to the current task.
 type RelevantFile struct {
-	Path   string  // Relative path from project root
-	Score  float64 // Relevance score (0-1)
-	Reason string  // Why this file is relevant
+	Path    string  // Relative path from project root
+	Score   float64 // Relevance score (0-1)
+	Reason  string  // Why this file is relevant
+	Content string  // Content of the file (truncated if large)
 }
 
 // ContextBlock represents the assembled context to prepend to agent prompts.

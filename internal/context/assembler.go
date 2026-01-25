@@ -2,6 +2,7 @@ package context
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,10 +110,21 @@ func (a *Assembler) Assemble(opts AssembleOptions) (*ContextBlock, error) {
 		scorer := index.NewScorer(a.index)
 		results := scorer.ScoreFiles(opts.TaskPrompt, opts.WorktreePath, maxFiles)
 		for _, r := range results {
+			content := ""
+			fullPath := filepath.Join(opts.WorktreePath, r.Path)
+			if data, err := os.ReadFile(fullPath); err == nil {
+				content = string(data)
+				// Truncate if too large (e.g. > 4KB) to save tokens
+				if len(content) > 4000 {
+					content = content[:4000] + "\n... (truncated)"
+				}
+			}
+
 			block.RelevantFiles = append(block.RelevantFiles, &RelevantFile{
-				Path:   r.Path,
-				Score:  r.Score,
-				Reason: r.Reason,
+				Path:    r.Path,
+				Score:   r.Score,
+				Reason:  r.Reason,
+				Content: content,
 			})
 		}
 	}
@@ -189,7 +201,15 @@ func (a *Assembler) formatRelevantFiles(sb *strings.Builder, block *ContextBlock
 	sb.WriteString("## Relevant Files\n")
 	sb.WriteString("These files are likely relevant to your task based on code analysis:\n\n")
 	for _, f := range block.RelevantFiles {
-		sb.WriteString(fmt.Sprintf("- `%s` - %s\n", f.Path, f.Reason))
+		sb.WriteString(fmt.Sprintf("### `%s`\n", f.Path))
+		sb.WriteString(fmt.Sprintf("_Reason: %s_\n\n", f.Reason))
+		if f.Content != "" {
+			sb.WriteString("```\n")
+			sb.WriteString(f.Content)
+			sb.WriteString("\n```\n\n")
+		} else {
+			sb.WriteString("(Content not available)\n\n")
+		}
 	}
 	sb.WriteString("\n")
 }
