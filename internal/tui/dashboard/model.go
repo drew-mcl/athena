@@ -87,6 +87,7 @@ type Model struct {
 	questionMode   bool // true = question, false = job
 	noteMode       bool // true = adding note
 	detailMode     bool // showing detail view
+	detailScroll   int  // scroll offset for detail view
 	detailJob      *control.JobInfo
 	detailAgent    *control.AgentInfo
 	detailWorktree *control.WorktreeInfo // showing worktree detail
@@ -972,13 +973,31 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Calculate max scroll (approximate, since we don't have the rendered content here easily without re-rendering)
+	// For now, we allow scrolling freely, the renderer will clamp.
+	// Ideally we'd store line count in Model or re-render to check bounds.
+	// Let's assume unlimited scroll down for now, and rely on visual feedback.
+	
 	switch msg.String() {
 	case "esc", "q", "enter":
 		m.detailMode = false
+		m.detailScroll = 0
 		m.detailJob = nil
 		m.detailAgent = nil
 		m.detailWorktree = nil
 		return m, nil
+
+	// Scrolling
+	case "j", "down":
+		m.detailScroll++
+	case "k", "up":
+		if m.detailScroll > 0 {
+			m.detailScroll--
+		}
+	case "g":
+		m.detailScroll = 0
+	case "G":
+		m.detailScroll = 10000 // Hack to go to bottom, renderer will clamp
 
 	// Actions available in agent detail
 	case "L":
@@ -1966,6 +1985,38 @@ func (m Model) renderDetailHeader() string {
 	return left + strings.Repeat(" ", padding) + stats
 }
 
+// applyScroll applies scroll offset to content, returning the visible window.
+func (m Model) applyScroll(content string, footer string) (string, string) {
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	
+	// Calculate available height for content
+	footerLines := strings.Count(footer, "\n") + 1
+	contentHeight := max(1, m.height - footerLines)
+
+	// Clamp scroll
+	maxScroll := max(0, totalLines - contentHeight)
+	if m.detailScroll > maxScroll {
+		m.detailScroll = maxScroll
+	}
+	
+	start := m.detailScroll
+	end := min(start + contentHeight, totalLines)
+	
+	visibleLines := lines[start:end]
+	
+	// Add scroll indicator if needed
+	if totalLines > contentHeight {
+		// We might overwrite the last line or append to footer?
+		// Let's append to footer for simplicity
+		percent := int(float64(start) / float64(max(1, maxScroll)) * 100)
+		scrollInd := fmt.Sprintf(" %d%%", percent)
+		footer = strings.TrimRight(footer, " ") + tui.StyleMuted.Render(scrollInd)
+	}
+	
+	return strings.Join(visibleLines, "\n"), footer
+}
+
 func (m Model) renderJobDetail() (string, string) {
 	var content strings.Builder
 	job := m.detailJob
@@ -2027,7 +2078,7 @@ func (m Model) renderJobDetail() (string, string) {
 		}
 	}
 
-	return content.String(), tui.StyleHelp.Render("  Press Esc or Enter to close")
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  Press Esc or Enter to close"))
 }
 
 func (m Model) renderAgentDetail() (string, string) {
@@ -2137,7 +2188,7 @@ func (m Model) renderAgentDetail() (string, string) {
 		content.WriteString("\n")
 	}
 
-	return content.String(), tui.StyleHelp.Render("  [L]ogs [a]ttach [e]nvim [s]hell [x]kill │ Esc to close")
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  [L]ogs [a]ttach [e]nvim [s]hell [x]kill │ Esc to close"))
 }
 
 func (m Model) renderWorktreeDetail() (string, string) {
@@ -2247,7 +2298,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	content.WriteString(tui.StyleMuted.Render(wt.Path))
 	content.WriteString("\n")
 
-	return content.String(), tui.StyleHelp.Render("  [p] view plan  [M]erge  [c]leanup │ Esc to close")
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  [p] view plan  [M]erge  [c]leanup │ Esc to close"))
 }
 
 func (m Model) renderLogs() (string, string) {
