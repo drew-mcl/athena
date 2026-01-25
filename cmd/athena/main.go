@@ -2,14 +2,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/index"
+	"github.com/spf13/cobra"
 )
 
 var cfg *config.Config
@@ -141,7 +142,9 @@ var indexQueryCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
-		return runIndexQuery(args[0], project)
+		format, _ := cmd.Flags().GetString("format")
+		exportedOnly, _ := cmd.Flags().GetBool("exported-only")
+		return runIndexQuery(args[0], project, format, exportedOnly)
 	},
 }
 
@@ -152,7 +155,8 @@ var indexDepsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		reverse, _ := cmd.Flags().GetBool("reverse")
-		return runIndexDeps(args[0], project, reverse)
+		format, _ := cmd.Flags().GetString("format")
+		return runIndexDeps(args[0], project, reverse, format)
 	},
 }
 
@@ -163,7 +167,8 @@ var indexRelevantCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		limit, _ := cmd.Flags().GetInt("limit")
-		return runIndexRelevant(args[0], project, limit)
+		format, _ := cmd.Flags().GetString("format")
+		return runIndexRelevant(args[0], project, limit, format)
 	},
 }
 
@@ -194,7 +199,7 @@ func runIndexBuild(projectPath string) error {
 	return nil
 }
 
-func runIndexQuery(symbol, projectPath string) error {
+func runIndexQuery(symbol, projectPath, format string, exportedOnly bool) error {
 	path, err := resolveProjectPath(projectPath)
 	if err != nil {
 		return err
@@ -211,11 +216,81 @@ func runIndexQuery(symbol, projectPath string) error {
 	}
 
 	results := idx.LookupSymbol(symbol)
+
+	// Filter to exported symbols if requested
+	if exportedOnly {
+		filtered := make([]index.Symbol, 0, len(results))
+		for _, sym := range results {
+			if sym.Exported {
+				filtered = append(filtered, sym)
+			}
+		}
+		results = filtered
+	}
+
 	if len(results) == 0 {
+		if format == "json" {
+			fmt.Println("[]")
+			return nil
+		}
 		fmt.Printf("No definitions found for '%s'\n", symbol)
 		return nil
 	}
 
+	switch format {
+	case "json":
+		return formatQueryJSON(results)
+	case "compact":
+		return formatQueryCompact(results)
+	default: // "text" or empty
+		return formatQueryText(symbol, results)
+	}
+}
+
+// symbolJSON is the JSON representation of a symbol for output.
+type symbolJSON struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Package  string `json:"package,omitempty"`
+	Receiver string `json:"receiver,omitempty"`
+	Exported bool   `json:"exported"`
+}
+
+func formatQueryJSON(results []index.Symbol) error {
+	output := make([]symbolJSON, 0, len(results))
+	for _, sym := range results {
+		output = append(output, symbolJSON{
+			Name:     sym.Name,
+			Kind:     string(sym.Kind),
+			File:     sym.FilePath,
+			Line:     sym.LineNumber,
+			Package:  sym.Package,
+			Receiver: sym.Receiver,
+			Exported: sym.Exported,
+		})
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func formatQueryCompact(results []index.Symbol) error {
+	for _, sym := range results {
+		if sym.Receiver != "" {
+			fmt.Printf("%s.%s (%s) at %s:%d\n", sym.Receiver, sym.Name, sym.Kind, sym.FilePath, sym.LineNumber)
+		} else {
+			fmt.Printf("%s (%s) at %s:%d\n", sym.Name, sym.Kind, sym.FilePath, sym.LineNumber)
+		}
+	}
+	return nil
+}
+
+func formatQueryText(symbol string, results []index.Symbol) error {
 	fmt.Printf("%s (%s) defined in:\n", symbol, results[0].Kind)
 	for _, sym := range results {
 		fmt.Printf("  %s:%d\n", sym.FilePath, sym.LineNumber)
@@ -223,7 +298,7 @@ func runIndexQuery(symbol, projectPath string) error {
 	return nil
 }
 
-func runIndexDeps(filePath, projectPath string, reverse bool) error {
+func runIndexDeps(filePath, projectPath string, reverse bool, format string) error {
 	path, err := resolveProjectPath(projectPath)
 	if err != nil {
 		return err
@@ -241,33 +316,137 @@ func runIndexDeps(filePath, projectPath string, reverse bool) error {
 
 	if reverse {
 		deps := idx.GetDependents(filePath)
-		if len(deps) == 0 {
-			fmt.Printf("No files import %s\n", filePath)
+		return formatDependentsOutput(filePath, deps, format)
+	}
+
+	deps := idx.GetDependencies(filePath)
+	return formatDepsOutput(filePath, deps, format)
+}
+
+// depsJSON is the JSON representation of dependencies for output.
+type depsJSON struct {
+	File     string   `json:"file"`
+	Imports  []string `json:"imports,omitempty"`
+	External []string `json:"external,omitempty"`
+}
+
+// dependentsJSON is the JSON representation of dependents for output.
+type dependentsJSON struct {
+	File       string   `json:"file"`
+	ImportedBy []string `json:"imported_by"`
+}
+
+func formatDepsOutput(filePath string, deps []index.Dependency, format string) error {
+	if len(deps) == 0 {
+		if format == "json" {
+			data, _ := json.Marshal(depsJSON{File: filePath, Imports: []string{}, External: []string{}})
+			fmt.Println(string(data))
 			return nil
 		}
-		fmt.Printf("%s is imported by:\n", filePath)
-		for _, dep := range deps {
-			fmt.Printf("  %s\n", dep)
+		fmt.Printf("%s has no imports\n", filePath)
+		return nil
+	}
+
+	switch format {
+	case "json":
+		return formatDepsJSON(filePath, deps)
+	case "compact":
+		return formatDepsCompact(filePath, deps)
+	default: // "text" or empty
+		return formatDepsText(filePath, deps)
+	}
+}
+
+func formatDepsJSON(filePath string, deps []index.Dependency) error {
+	output := depsJSON{File: filePath}
+	for _, dep := range deps {
+		if dep.IsInternal {
+			output.Imports = append(output.Imports, dep.ToFile)
+		} else {
+			output.External = append(output.External, dep.ImportPath)
 		}
-	} else {
-		deps := idx.GetDependencies(filePath)
-		if len(deps) == 0 {
-			fmt.Printf("%s has no imports\n", filePath)
-			return nil
-		}
-		fmt.Printf("%s imports:\n", filePath)
-		for _, dep := range deps {
-			if dep.IsInternal {
-				fmt.Printf("  %s\n", dep.ToFile)
-			} else {
-				fmt.Printf("  %s (external)\n", dep.ImportPath)
-			}
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func formatDepsCompact(filePath string, deps []index.Dependency) error {
+	for _, dep := range deps {
+		if dep.IsInternal {
+			fmt.Printf("%s -> %s\n", filePath, dep.ToFile)
+		} else {
+			fmt.Printf("%s -> %s (external)\n", filePath, dep.ImportPath)
 		}
 	}
 	return nil
 }
 
-func runIndexRelevant(task, projectPath string, limit int) error {
+func formatDepsText(filePath string, deps []index.Dependency) error {
+	fmt.Printf("%s imports:\n", filePath)
+	for _, dep := range deps {
+		if dep.IsInternal {
+			fmt.Printf("  %s\n", dep.ToFile)
+		} else {
+			fmt.Printf("  %s (external)\n", dep.ImportPath)
+		}
+	}
+	return nil
+}
+
+func formatDependentsOutput(filePath string, deps []string, format string) error {
+	if len(deps) == 0 {
+		if format == "json" {
+			data, _ := json.Marshal(dependentsJSON{File: filePath, ImportedBy: []string{}})
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("No files import %s\n", filePath)
+		return nil
+	}
+
+	switch format {
+	case "json":
+		return formatDependentsJSON(filePath, deps)
+	case "compact":
+		return formatDependentsCompact(filePath, deps)
+	default: // "text" or empty
+		return formatDependentsText(filePath, deps)
+	}
+}
+
+func formatDependentsJSON(filePath string, deps []string) error {
+	output := dependentsJSON{
+		File:       filePath,
+		ImportedBy: deps,
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func formatDependentsCompact(filePath string, deps []string) error {
+	for _, dep := range deps {
+		fmt.Printf("%s <- %s\n", filePath, dep)
+	}
+	return nil
+}
+
+func formatDependentsText(filePath string, deps []string) error {
+	fmt.Printf("%s is imported by:\n", filePath)
+	for _, dep := range deps {
+		fmt.Printf("  %s\n", dep)
+	}
+	return nil
+}
+
+func runIndexRelevant(task, projectPath string, limit int, format string) error {
 	path, err := resolveProjectPath(projectPath)
 	if err != nil {
 		return err
@@ -286,10 +465,66 @@ func runIndexRelevant(task, projectPath string, limit int) error {
 	scorer := index.NewScorer(idx)
 	results := scorer.ScoreFiles(task, path, limit)
 	if len(results) == 0 {
+		if format == "json" {
+			fmt.Println("[]")
+			return nil
+		}
 		fmt.Printf("No relevant files found for: %s\n", task)
 		return nil
 	}
 
+	switch format {
+	case "json":
+		return formatRelevantJSON(results, path)
+	case "compact":
+		return formatRelevantCompact(results, path)
+	default: // "text" or empty
+		return formatRelevantText(task, results)
+	}
+}
+
+// relevantFileJSON is the JSON representation of a relevant file for output.
+type relevantFileJSON struct {
+	Path   string  `json:"path"`
+	Score  float64 `json:"score"`
+	Reason string  `json:"reason"`
+}
+
+func formatRelevantJSON(results []index.ScoredFile, projectPath string) error {
+	output := make([]relevantFileJSON, 0, len(results))
+	for _, r := range results {
+		// Compute relative path for cleaner output
+		relPath, err := filepath.Rel(projectPath, r.Path)
+		if err != nil {
+			relPath = r.Path
+		}
+		output = append(output, relevantFileJSON{
+			Path:   relPath,
+			Score:  r.Score,
+			Reason: r.Reason,
+		})
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func formatRelevantCompact(results []index.ScoredFile, projectPath string) error {
+	for _, r := range results {
+		// Compute relative path for cleaner output
+		relPath, err := filepath.Rel(projectPath, r.Path)
+		if err != nil {
+			relPath = r.Path
+		}
+		fmt.Printf("%s (%.2f)\n", relPath, r.Score)
+	}
+	return nil
+}
+
+func formatRelevantText(task string, results []index.ScoredFile) error {
 	fmt.Printf("Relevant files for \"%s\":\n", task)
 	for i, r := range results {
 		fmt.Printf("%2d. %s (%.2f) - %s\n", i+1, r.Path, r.Score, r.Reason)
@@ -324,11 +559,18 @@ func init() {
 
 	// Index flags
 	indexBuildCmd.Flags().StringP("project", "p", "", "Project path (default: current directory)")
+
 	indexQueryCmd.Flags().StringP("project", "p", "", "Project path")
+	indexQueryCmd.Flags().StringP("format", "f", "text", "Output format: text, json, compact")
+	indexQueryCmd.Flags().Bool("exported-only", false, "Only show exported (public) symbols")
+
 	indexDepsCmd.Flags().StringP("project", "p", "", "Project path")
 	indexDepsCmd.Flags().BoolP("reverse", "r", false, "Show files that import this file")
+	indexDepsCmd.Flags().StringP("format", "f", "text", "Output format: text, json, compact")
+
 	indexRelevantCmd.Flags().StringP("project", "p", "", "Project path")
 	indexRelevantCmd.Flags().IntP("limit", "l", 10, "Maximum files to show")
+	indexRelevantCmd.Flags().StringP("format", "f", "text", "Output format: text, json, compact")
 
 	indexCmd.AddCommand(indexBuildCmd, indexQueryCmd, indexDepsCmd, indexRelevantCmd)
 

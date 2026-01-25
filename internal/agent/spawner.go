@@ -41,11 +41,12 @@ type Spawner struct {
 
 // ManagedProcess wraps a Claude process with management metadata.
 type ManagedProcess struct {
-	AgentID   string
-	SessionID string
-	MetricsID string // ID of the agent_metrics record
-	Process   runner.Session
-	Cancel    context.CancelFunc
+	AgentID       string
+	SessionID     string
+	MetricsID     string // ID of the agent_metrics record
+	CacheMetricID string // ID of the context_cache_metrics record
+	Process       runner.Session
+	Cancel        context.CancelFunc
 }
 
 // NewSpawner creates a new agent spawner with default pipeline.
@@ -164,13 +165,20 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 		metricsID = metrics.ID
 	}
 
+	// Record initial context cache metrics
+	var cacheMetricID string
+	if s.contextMgr != nil {
+		cacheMetricID = s.recordInitialContextStats(agentID, spec.WorktreePath, spec.ProjectName)
+	}
+
 	// Track the managed process
 	mp := &ManagedProcess{
-		AgentID:   agentID,
-		SessionID: sessionID,
-		MetricsID: metricsID,
-		Process:   session,
-		Cancel:    cancel,
+		AgentID:       agentID,
+		SessionID:     sessionID,
+		MetricsID:     metricsID,
+		CacheMetricID: cacheMetricID,
+		Process:       session,
+		Cancel:        cancel,
 	}
 
 	s.mu.Lock()
@@ -466,6 +474,11 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 					"cache_reads", event.Usage.CacheReads,
 					"cost_usd", event.CostUSD,
 				)
+			}
+
+			// Update context cache metrics with cache read data
+			if event.Usage.CacheReads > 0 {
+				s.updateCacheMetrics(mp, event.Usage.CacheReads)
 			}
 		}
 	}
@@ -844,4 +857,115 @@ func isToolResultError(content string) bool {
 		}
 	}
 	return false
+}
+
+// recordInitialContextStats records context statistics at agent spawn time.
+// Returns the cache metric ID for later updates.
+func (s *Spawner) recordInitialContextStats(agentID, worktreePath, projectName string) string {
+	if s.contextMgr == nil {
+		return ""
+	}
+
+	// Get context stats
+	stats, err := s.contextMgr.GetContextStats(worktreePath, projectName)
+	if err != nil {
+		logging.Warn("failed to get context stats", "agent_id", agentID, "error", err)
+		return ""
+	}
+
+	// Check if this is the first agent on the project
+	isFirst, err := s.store.IsFirstAgentOnProject(projectName)
+	if err != nil {
+		logging.Warn("failed to check first agent status", "project", projectName, "error", err)
+		isFirst = true // Assume first if we can't check
+	}
+
+	// Create cache metric record
+	metric := &store.ContextCacheMetric{
+		AgentID:                  agentID,
+		ProjectName:              projectName,
+		WorktreePath:             worktreePath,
+		StateEntriesCount:        stats.StateEntriesCount,
+		StateTokensEstimate:      stats.StateTokensEstimate,
+		BlackboardEntriesCount:   stats.BlackboardEntriesCount,
+		BlackboardTokensEstimate: stats.BlackboardTokensEstimate,
+		TotalContextTokens:       stats.TotalContextTokens,
+		IsFirstAgent:             isFirst,
+	}
+
+	if err := s.store.CreateContextCacheMetric(metric); err != nil {
+		logging.Warn("failed to create context cache metric", "agent_id", agentID, "error", err)
+		return ""
+	}
+
+	logging.Debug("recorded initial context stats",
+		"agent_id", agentID,
+		"project", projectName,
+		"state_entries", stats.StateEntriesCount,
+		"state_tokens", stats.StateTokensEstimate,
+		"blackboard_entries", stats.BlackboardEntriesCount,
+		"blackboard_tokens", stats.BlackboardTokensEstimate,
+		"is_first_agent", isFirst,
+	)
+
+	return metric.ID
+}
+
+// updateCacheMetrics updates the cache metrics with actual cache read data from the result event.
+// Uses a heuristic to attribute cache reads to state vs blackboard sections.
+func (s *Spawner) updateCacheMetrics(mp *ManagedProcess, cacheReads int) {
+	if mp.CacheMetricID == "" {
+		return
+	}
+
+	// Get the existing metric to access token estimates
+	metric, err := s.store.GetContextCacheMetricForAgent(mp.AgentID)
+	if err != nil || metric == nil {
+		logging.Warn("failed to get cache metric for update", "agent_id", mp.AgentID, "error", err)
+		return
+	}
+
+	// Attribute cache reads to sections using prefix heuristic:
+	// State section is first in the context (STABLE section), so cache reads up to
+	// state token count are attributed to state.
+	cacheReadsInState := cacheReads
+	cacheReadsInBlackboard := 0
+
+	if cacheReads > metric.StateTokensEstimate {
+		// Some cache reads go to state, remainder to blackboard
+		cacheReadsInState = metric.StateTokensEstimate
+		cacheReadsInBlackboard = cacheReads - metric.StateTokensEstimate
+		if cacheReadsInBlackboard > metric.BlackboardTokensEstimate {
+			// Cap at blackboard estimate
+			cacheReadsInBlackboard = metric.BlackboardTokensEstimate
+		}
+	}
+
+	// Calculate cache hit rate
+	var cacheHitRate float64
+	if metric.TotalContextTokens > 0 {
+		cacheHitRate = float64(cacheReads) / float64(metric.TotalContextTokens) * 100
+		if cacheHitRate > 100 {
+			cacheHitRate = 100 // Cap at 100%
+		}
+	}
+
+	// Update the metric
+	metric.CacheReadsTotal = cacheReads
+	metric.CacheReadsInState = cacheReadsInState
+	metric.CacheReadsInBlackboard = cacheReadsInBlackboard
+	metric.CacheHitRate = cacheHitRate
+
+	if err := s.store.UpdateContextCacheMetric(metric); err != nil {
+		logging.Warn("failed to update cache metric", "agent_id", mp.AgentID, "error", err)
+		return
+	}
+
+	logging.Info("updated context cache metrics",
+		"agent_id", mp.AgentID,
+		"cache_reads_total", cacheReads,
+		"cache_reads_in_state", cacheReadsInState,
+		"cache_reads_in_blackboard", cacheReadsInBlackboard,
+		"cache_hit_rate", cacheHitRate,
+	)
 }

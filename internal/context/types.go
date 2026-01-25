@@ -117,3 +117,18 @@ type StateSummary struct {
 	TotalCount        int
 	AvgConfidence     float64
 }
+
+// ContextStats provides statistics about the context that would be provided to an agent.
+// This is used for cache hit rate tracking and analysis.
+type ContextStats struct {
+	// State section (STABLE - cached across agents on same project)
+	StateEntriesCount   int
+	StateTokensEstimate int
+
+	// Blackboard section (SEMI-STABLE - cached within workflow)
+	BlackboardEntriesCount   int
+	BlackboardTokensEstimate int
+
+	// Total context
+	TotalContextTokens int
+}
