@@ -63,7 +63,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Close()
 
-	model := dashboard.New(client, cfg).WithDebugKeys(debugKeys)
+	model := dashboard.New(client, cfg).WithDebugKeys(debugKeys).WithInitialProject(initialProject)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

@@ -157,6 +157,9 @@ type Model struct {
 
 	// Debug options
 	debugKeys bool
+
+	// Initial navigation
+	initialProject string // Project to navigate to on startup
 }
 
 // Messages
@@ -247,12 +250,13 @@ func New(client *control.Client, cfg *config.Config) Model {
 
 	agentTable := layout.NewTable([]layout.Column{
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "IMPL", MinWidth: 10, MaxWidth: 12, Flex: 0}, // New Implementation column
-		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
-		{Header: "WORKTREE", MinWidth: 15, MaxWidth: 25, Flex: 1},
-		{Header: "SUMMARY", MinWidth: 30, MaxWidth: 0, Flex: 4}, // Largest column
-		{Header: "ACTIVITY", MinWidth: 20, MaxWidth: 40, Flex: 1},
-		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
+		{Header: "TYPE", MinWidth: 8, MaxWidth: 10, Flex: 0},
+		{Header: "WORKTREE", MinWidth: 12, MaxWidth: 18, Flex: 1},
+		{Header: "ACTIVITY", MinWidth: 25, MaxWidth: 45, Flex: 2},
+		{Header: "TOKENS", MinWidth: 6, MaxWidth: 8, Flex: 0},
+		{Header: "CACHE", MinWidth: 6, MaxWidth: 8, Flex: 0},
+		{Header: "TOOLS", MinWidth: 5, MaxWidth: 6, Flex: 0},
+		{Header: "AGE", MinWidth: 4, MaxWidth: 6, Flex: 0},
 	})
 
 	taskTable := layout.NewTable([]layout.Column{
@@ -288,6 +292,12 @@ func New(client *control.Client, cfg *config.Config) Model {
 // WithDebugKeys enables or disables key logging for the TUI.
 func (m Model) WithDebugKeys(enabled bool) Model {
 	m.debugKeys = enabled
+	return m
+}
+
+// WithInitialProject sets a project to navigate to on startup.
+func (m Model) WithInitialProject(project string) Model {
+	m.initialProject = project
 	return m
 }
 
@@ -381,6 +391,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.claudeTasks = msg.claudeTasks
 		m.projects = m.extractProjects()
 		m.lastUpdate = time.Now()
+
+		// Handle initial project navigation (only on first data load)
+		if m.initialProject != "" && m.level == LevelDashboard {
+			for _, proj := range m.projects {
+				if proj == m.initialProject {
+					m.selectedProject = proj
+					m.level = LevelProject
+					m.tab = TabWorktrees
+					m.selected = 0
+					m.initialProject = "" // Clear so we don't navigate again
+					break
+				}
+			}
+		}
+
 		if msg.err != nil {
 			m.err = msg.err
 			m.statusMsg = "✗ " + msg.err.Error()
@@ -603,6 +628,13 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case TabNotes:
 				// Notes don't drill down
 				return m, nil
+			case TabAdmin:
+				// Admin shows agents - open agent detail
+				if m.selected < len(m.agents) {
+					m.detailAgent = m.agents[m.selected]
+					m.detailMode = true
+					return m, nil
+				}
 			}
 			if project != "" {
 				m.selectedProject = project
@@ -1648,6 +1680,8 @@ func (m Model) getMaxSelection() int {
 			return max(0, len(m.claudeTasks)-1)
 		case TabQuestions:
 			return max(0, len(m.questions())-1)
+		case TabAdmin:
+			return max(0, len(m.agents)-1)
 		}
 		return 0
 	}
@@ -1827,9 +1861,9 @@ func (m Model) renderHeader() string {
 
 	// Tab names for display
 	tabNames := map[Tab]string{
-		TabProjects:  "projects",
+		TabProjects:  "overview",
 		TabWorktrees: "worktrees",
-		TabJobs:      "jobs",
+		TabJobs:      "agents",
 		TabQuestions: "questions",
 		TabAgents:    "agents",
 		TabTasks:     "tasks",
@@ -2185,17 +2219,11 @@ func (m Model) renderAgentDetail() (string, string) {
 		content.WriteString("\n")
 		content.WriteString(tui.StyleMuted.Render("  Task:\n"))
 
-		// Render markdown for better formatting
+		// Render markdown for better formatting, indented
 		renderedTask := m.renderMarkdown(agent.Prompt)
-
-		// Wrap in a box
-		taskBox := tui.StyleInputBox.
-			Width(m.width-6).
-			Padding(0, 1).
-			Render(renderedTask)
-
-		content.WriteString("  " + taskBox)
-		content.WriteString("\n")
+		for _, line := range strings.Split(renderedTask, "\n") {
+			content.WriteString("    " + line + "\n")
+		}
 	}
 
 	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
@@ -2205,110 +2233,251 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	var content strings.Builder
 	wt := m.detailWorktree
 
-	// Header
-	icon := tui.Logo()
-	content.WriteString(icon + " " + tui.StyleLogo.Render("Worktree"))
+	// Determine status
+	statusText := "IDLE"
+	statusStyle := tui.StyleMuted
+	activeAgentCount := 0
 
-	// Status Pill
-	var statusPill string
-	agentActive := false
-
-	// Check for active agent first
-	if wt.AgentID != "" {
-		for _, a := range m.agents {
-			if a.ID == wt.AgentID {
-				agentActive = true
-				text := strings.ToUpper(a.Status)
-				if a.Status == "running" || a.Status == "executing" {
-					statusPill = tui.StyleMuted.Render("[") + tui.StylePillActive.Render(text) + tui.StyleMuted.Render("]")
-				} else if a.Status == "planning" {
-					statusPill = tui.StyleMuted.Render("[") + tui.StylePillReview.Render(text) + tui.StyleMuted.Render("]")
-				} else {
-					statusPill = tui.StyleMuted.Render("[") + tui.StatusStyle(a.Status).Render(text) + tui.StyleMuted.Render("]")
-				}
-				break
+	for _, a := range m.agents {
+		if a.WorktreePath == wt.Path {
+			activeAgentCount++
+			if a.Status == "running" || a.Status == "executing" {
+				statusText = "RUNNING"
+				statusStyle = tui.StyleSuccess
+			} else if a.Status == "planning" && statusText != "RUNNING" {
+				statusText = "PLANNING"
+				statusStyle = tui.StyleInfo
+			} else if a.Status == "awaiting" && statusText == "IDLE" {
+				statusText = "AWAITING"
+				statusStyle = tui.StyleWarning
 			}
 		}
 	}
 
-	if !agentActive {
-		if wt.WTStatus == "active" {
-			statusPill = tui.StyleMuted.Render("[") + tui.StylePillActive.Render("ACTIVE") + tui.StyleMuted.Render("]")
+	if activeAgentCount == 0 {
+		if wt.WTStatus == "merged" {
+			statusText = "MERGED"
+			statusStyle = tui.StyleNeutral
 		} else if wt.WTStatus == "stale" {
-			statusPill = tui.StyleMuted.Render("[") + tui.StylePillStale.Render("STALE") + tui.StyleMuted.Render("]")
-		} else if wt.WTStatus == "merged" {
-			statusPill = tui.StyleMuted.Render("[") + tui.StyleNeutral.Render("MERGED") + tui.StyleMuted.Render("]")
-		} else {
-			statusPill = tui.StyleMuted.Render("[") + tui.StyleMuted.Render(strings.ToUpper(wt.WTStatus)) + tui.StyleMuted.Render("]")
+			statusText = "STALE"
+			statusStyle = tui.StyleWarning
 		}
 	}
 
-	content.WriteString(" " + statusPill)
+	// Header line: branch name + status pill (right-aligned)
+	branchStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorFg)
+	statusPill := tui.StyleMuted.Render("[ ") + statusStyle.Render(fmt.Sprintf("%-9s", statusText)) + tui.StyleMuted.Render(" ]")
 
+	headerLeft := branchStyle.Render(wt.Branch)
 	if wt.TicketID != "" {
-		content.WriteString(tui.StyleMuted.Render(" │ " + wt.TicketID))
+		headerLeft += tui.StyleMuted.Render(" | ") + tui.StyleAccent.Render(wt.TicketID)
 	}
 
-	content.WriteString("\n")
+	headerPadding := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(statusPill) - 4
+	if headerPadding < 2 {
+		headerPadding = 2
+	}
+
+	content.WriteString("  " + headerLeft + strings.Repeat(" ", headerPadding) + statusPill + "\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
 
-	// Core Feature / Description
-	content.WriteString(tui.StyleMuted.Render("  Feature:"))
-	content.WriteString("\n")
+	// Summary section
 	desc := wt.Summary
 	if desc == "" {
 		desc = wt.Description
 	}
-	if desc == "" {
-		desc = "No description provided."
+	if desc != "" {
+		content.WriteString(tui.StyleMuted.Render("  Summary:\n"))
+		for _, line := range wrapText(desc, m.width-8) {
+			content.WriteString("    " + line + "\n")
+		}
+		content.WriteString("\n")
 	}
 
-	// Wrap description in a box
-	descBox := tui.StyleInputBox.
-		Width(m.width-6).
-		Padding(0, 1).
-		Render(m.renderMarkdown(desc))
-	content.WriteString("  " + descBox)
+	// Git info line
+	gitStatus := wt.Status
+	if strings.Contains(gitStatus, "dirty") {
+		gitStatus = tui.StyleWarning.Render("dirty")
+	} else if strings.Contains(gitStatus, "clean") {
+		gitStatus = tui.StyleSuccess.Render("clean")
+	}
+	content.WriteString(tui.StyleMuted.Render("  Git: "))
+	content.WriteString(wt.Project + " | " + gitStatus)
 	content.WriteString("\n\n")
 
-	// Agents that worked on this
-	content.WriteString(tui.StyleAccent.Render("  Agents:"))
-	content.WriteString("\n")
+	// Divider
+	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n\n")
+
+	// AGENTS section
+	agentLabel := "AGENTS"
+	if activeAgentCount > 0 {
+		agentLabel += fmt.Sprintf("  %s", tui.StyleAccent.Render(fmt.Sprintf("%d active", activeAgentCount)))
+	}
+	content.WriteString(tui.StyleHeader.Render("  " + agentLabel))
+	content.WriteString("\n\n")
 
 	foundAgents := false
 	for _, a := range m.agents {
 		if a.WorktreePath == wt.Path {
 			foundAgents = true
-			statusIcon := tui.StatusStyle(a.Status).Render(tui.StatusIcons[a.Status])
-			age := formatDuration(time.Since(parseCreatedAt(a.CreatedAt)))
-
-			line := fmt.Sprintf("  %s %s (%s) - %s",
-				statusIcon,
-				a.ID[:8],
-				a.Archetype,
-				age)
-			content.WriteString(line + "\n")
+			m.renderWorktreeAgent(&content, a)
 		}
 	}
 
 	if !foundAgents {
-		content.WriteString(tui.StyleMuted.Render("    No agents associated with this worktree."))
+		content.WriteString(tui.StyleMuted.Render("    No agents on this worktree."))
 		content.WriteString("\n")
 	}
 	content.WriteString("\n")
 
-	// Git Status
-	content.WriteString(tui.StyleAccent.Render("  Git Status:"))
-	content.WriteString(" " + wt.Status)
+	// TASKS section - find tasks matching this worktree path
+	tasks := m.worktreeTasks(wt.Path)
+	if len(tasks) > 0 {
+		content.WriteString(tui.Divider(m.width))
+		content.WriteString("\n\n")
+
+		// Count by status
+		pending, inProgress, completed := 0, 0, 0
+		for _, t := range tasks {
+			switch t.Status {
+			case "pending":
+				pending++
+			case "in_progress":
+				inProgress++
+			case "completed":
+				completed++
+			}
+		}
+
+		taskLabel := fmt.Sprintf("TASKS  %s", tui.StyleMuted.Render(fmt.Sprintf("%d/%d complete", completed, len(tasks))))
+		content.WriteString(tui.StyleHeader.Render("  " + taskLabel))
+		content.WriteString("\n\n")
+
+		for _, t := range tasks {
+			m.renderWorktreeTask(&content, t)
+		}
+		content.WriteString("\n")
+	}
+
+	// Path at bottom
+	content.WriteString(tui.StyleMuted.Render("  Path: " + wt.Path))
 	content.WriteString("\n")
 
-	// Path
-	content.WriteString(tui.StyleMuted.Render("  Path: "))
-	content.WriteString(tui.StyleMuted.Render(wt.Path))
-	content.WriteString("\n")
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  [a]ttach [e]nvim [s]hell [p]lan [c]ontext [L]ogs [n]ew agent  Esc:close"))
+}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [p] view plan  [M]erge  [c]leanup  Esc/q:close"))
+// renderWorktreeAgent renders a single agent line in worktree detail.
+func (m Model) renderWorktreeAgent(b *strings.Builder, a *control.AgentInfo) {
+	// Status indicator (text-based, no emoji)
+	var statusChar string
+	switch a.Status {
+	case "running", "executing":
+		statusChar = tui.StyleSuccess.Render("*")
+	case "planning":
+		statusChar = tui.StyleInfo.Render("~")
+	case "awaiting":
+		statusChar = tui.StyleWarning.Render("?")
+	case "completed":
+		statusChar = tui.StyleMuted.Render("-")
+	case "crashed":
+		statusChar = tui.StyleDanger.Render("!")
+	default:
+		statusChar = tui.StyleMuted.Render("-")
+	}
+
+	// Metrics
+	tokens := "-"
+	cache := ""
+	if a.Metrics != nil {
+		if a.Metrics.TotalTokens > 0 {
+			tokens = formatCompactNumber(a.Metrics.TotalTokens)
+		}
+		if a.Metrics.CacheReads > 0 {
+			cache = fmt.Sprintf(" (%s cached)", tui.StyleSuccess.Render(formatCompactNumber(a.Metrics.CacheReads)))
+		}
+	}
+
+	age := formatDuration(time.Since(parseCreatedAt(a.CreatedAt)))
+	activity := a.LastActivity
+	if activity == "" {
+		activity = a.Status
+	}
+
+	// Line 1: status + archetype + id + tokens
+	b.WriteString(fmt.Sprintf("    %s %s %s", statusChar, a.Archetype, shortID(a.ID, 8)))
+	b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("  %s tokens%s", tokens, cache)))
+	b.WriteString("\n")
+
+	// Line 2: activity + age
+	b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("      %s", activity)))
+	b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("  %s ago", age)))
+	b.WriteString("\n")
+}
+
+// renderWorktreeTask renders a single task line in worktree detail.
+func (m Model) renderWorktreeTask(b *strings.Builder, t *control.TaskInfo) {
+	// Status indicator (text-based, no emoji)
+	var statusChar string
+	switch t.Status {
+	case "completed":
+		statusChar = tui.StyleSuccess.Render("+")
+	case "in_progress":
+		statusChar = tui.StyleAccent.Render("*")
+	default:
+		statusChar = tui.StyleMuted.Render("o")
+	}
+
+	// Subject
+	subject := t.Subject
+	if t.ActiveForm != "" && t.Status == "in_progress" {
+		subject = t.ActiveForm
+	}
+
+	subjectStyle := lipgloss.NewStyle().Foreground(tui.ColorFg)
+	if t.Status == "completed" {
+		subjectStyle = lipgloss.NewStyle().Foreground(tui.ColorFgMuted)
+	}
+
+	b.WriteString(fmt.Sprintf("    %s %s", statusChar, subjectStyle.Render(subject)))
+
+	// Status label on right
+	statusLabel := ""
+	switch t.Status {
+	case "completed":
+		statusLabel = tui.StyleMuted.Render("done")
+	case "in_progress":
+		statusLabel = tui.StyleAccent.Render("in progress")
+	default:
+		if len(t.BlockedBy) > 0 {
+			statusLabel = tui.StyleWarning.Render("blocked")
+		}
+	}
+	if statusLabel != "" {
+		b.WriteString("  " + statusLabel)
+	}
+	b.WriteString("\n")
+}
+
+// worktreeTasks returns tasks from task lists matching the worktree path.
+func (m Model) worktreeTasks(wtPath string) []*control.TaskInfo {
+	var result []*control.TaskInfo
+
+	// Find task list matching this worktree
+	for _, list := range m.taskLists {
+		if list.Path == wtPath {
+			// Return tasks from this list
+			for _, t := range m.claudeTasks {
+				if t.ListID == list.ID {
+					result = append(result, t)
+				}
+			}
+			break
+		}
+	}
+
+	return result
 }
 
 func (m Model) renderLogs() (string, string) {

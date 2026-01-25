@@ -27,16 +27,16 @@ var (
 	ColorAccentDim = lipgloss.Color("#a67744") // Softer accent for borders
 )
 
-// StatusIcons - Clean symbols (no emojis)
+// StatusIcons - ASCII-only symbols
 var StatusIcons = map[string]string{
-	"running":    "●", // Active (Green)
-	"planning":   "○", // Thinking (Blue)
-	"executing":  "▶", // In progress (Green)
+	"running":    "*", // Active (Green)
+	"planning":   "~", // Thinking (Blue)
+	"executing":  ">", // In progress (Green)
 	"awaiting":   "?", // Waiting (Amber)
-	"crashed":    "X", // Failed (Red)
-	"pending":    "·", // Queued (Amber)
-	"completed":  "✓", // Done (Green) - Checkmark is usually acceptable text symbol
-	"terminated": "■", // Stopped (Muted)
+	"crashed":    "!", // Failed (Red)
+	"pending":    ".", // Queued (Amber)
+	"completed":  "+", // Done (Green)
+	"terminated": "#", // Stopped (Muted)
 	"idle":       "-", // Inactive (Muted)
 	"spawning":   "^", // Starting up (Amber)
 	"attached":   "@", // Interactive console (Blue)

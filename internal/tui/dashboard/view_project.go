@@ -3,8 +3,10 @@ package dashboard
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/tui"
 	"github.com/drewfead/athena/internal/tui/layout"
@@ -12,92 +14,273 @@ import (
 
 func (m Model) renderWorktrees() string {
 	wts := m.projectWorktrees()
+	var b strings.Builder
 
 	contentHeight := layout.ContentHeight(m.height)
 
-	return layout.RenderTableList(layout.TableListOptions{
-		Table:         m.worktreeTable,
-		TotalItems:    len(wts),
-		Selected:      m.selected,
-		ContentHeight: contentHeight,
-		EmptyMessage:  "   No worktrees for this project.",
-		RowRenderer: func(index int, selected bool) string {
-			return m.renderGlobalWorktreeRow(wts[index], m.worktreeTable, selected)
-		},
-		ScrollUpRenderer: func(offset int) string {
-			return fmt.Sprintf("   ▲ %d more", offset)
-		},
-		ScrollDownRenderer: func(remaining int) string {
-			return fmt.Sprintf("   ▼ %d more", remaining)
-		},
-	})
+	if len(wts) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No worktrees for this project."))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Multi-line rows - each worktree takes 4 lines (3 content + 1 blank)
+	rowHeight := 4
+	visibleRows := contentHeight / rowHeight
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+
+	// Calculate scroll window
+	scroll := layout.CalculateScrollWindow(len(wts), m.selected, visibleRows)
+
+	// Scroll indicator top
+	if scroll.HasLess {
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
+		b.WriteString("\n")
+	}
+
+	// Render visible rows
+	end := scroll.Offset + scroll.VisibleRows
+	if end > len(wts) {
+		end = len(wts)
+	}
+
+	for i := scroll.Offset; i < end; i++ {
+		wt := wts[i]
+		row := m.renderWorktreeCard(wt, i == m.selected)
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+
+	// Scroll indicator bottom
+	if scroll.HasMore {
+		remaining := len(wts) - end
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 func (m Model) renderAgents() string {
 	agents := m.projectAgents()
+	var b strings.Builder
 
 	contentHeight := layout.ContentHeight(m.height)
 
-	return layout.RenderTableList(layout.TableListOptions{
-		Table:         m.agentTable,
-		TotalItems:    len(agents),
-		Selected:      m.selected,
-		ContentHeight: contentHeight,
-		EmptyMessage:  "   No agents running.",
-		RowRenderer: func(index int, selected bool) string {
-			return m.renderAgentRow(agents[index], m.agentTable, selected)
-		},
-		ScrollUpRenderer: func(offset int) string {
-			return fmt.Sprintf("   ▲ %d more", offset)
-		},
-		ScrollDownRenderer: func(remaining int) string {
-			return fmt.Sprintf("   ▼ %d more", remaining)
-		},
-	})
-}
-
-func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, selected bool) string {
-	// Determine status icon - override for completed planners with pending plans
-	var icon string
-	if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "draft" {
-		// Plan ready - use warning icon to draw attention
-		icon = tui.StyleWarning.Render("!")
-	} else if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "approved" {
-		// Plan approved - use info icon
-		icon = tui.StyleInfo.Render("»")
-	} else {
-		icon = tui.StatusStyle(agent.Status).Render(tui.StatusIcons[agent.Status])
+	if len(agents) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No agents running on this project."))
+		b.WriteString("\n")
+		return b.String()
 	}
-	wtName := filepath.Base(agent.WorktreePath)
-	age := formatDuration(time.Since(parseCreatedAt(agent.CreatedAt)))
 
-	// Look up worktree summary for this agent
-	summary := ""
-	for _, wt := range m.worktrees {
-		if wt.Path == agent.WorktreePath {
-			summary = wt.Summary
-			if summary == "" && wt.Description != "" {
-				summary = wt.Description
-			}
-			break
+	// Count active agents
+	activeCount := 0
+	for _, a := range agents {
+		if a.Status == "running" || a.Status == "planning" || a.Status == "executing" {
+			activeCount++
 		}
 	}
-	if summary == "" {
-		summary = tui.StyleMuted.Render("—")
+
+	// Header with count
+	header := "AGENTS"
+	if activeCount > 0 {
+		header += fmt.Sprintf("  %s", tui.StyleAccent.Render(fmt.Sprintf("%d active", activeCount)))
+	} else {
+		header += fmt.Sprintf("  %s", tui.StyleMuted.Render(fmt.Sprintf("%d total", len(agents))))
+	}
+	b.WriteString(tui.StyleHeader.Render("  " + header))
+	b.WriteString("\n\n")
+
+	// Multi-line rows - each agent takes 3 lines + 1 blank
+	rowHeight := 4
+	visibleRows := (contentHeight - 3) / rowHeight
+	if visibleRows < 1 {
+		visibleRows = 1
 	}
 
-	// Columns: ST, IMPL, TYPE, WORKTREE, SUMMARY, ACTIVITY, AGE
-	values := []string{
-		icon,
-		tui.StyleMuted.Render("Claude Code"), // Default harness (TODO: dynamic)
-		agent.Archetype,
-		wtName,
-		summary,
-		formatActivity(agent),
-		age,
+	// Calculate scroll window
+	scroll := layout.CalculateScrollWindow(len(agents), m.selected, visibleRows)
+
+	// Scroll indicator top
+	if scroll.HasLess {
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ... %d more above", scroll.Offset)))
+		b.WriteString("\n")
 	}
 
-	return table.RenderRow(values, selected)
+	// Render visible rows
+	end := scroll.Offset + scroll.VisibleRows
+	if end > len(agents) {
+		end = len(agents)
+	}
+
+	for i := scroll.Offset; i < end; i++ {
+		agent := agents[i]
+		row := m.renderAgentCard(agent, i == m.selected)
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+
+	// Scroll indicator bottom
+	if scroll.HasMore {
+		remaining := len(agents) - end
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ... %d more below", remaining)))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// renderAgentCard renders a multi-line agent card for project view.
+func (m Model) renderAgentCard(agent *control.AgentInfo, selected bool) string {
+	var lines []string
+
+	// Line 1: Status + archetype + worktree + status pill
+	line1 := m.renderAgentCardLine1(agent)
+	lines = append(lines, line1)
+
+	// Line 2: Activity description
+	line2 := m.renderAgentCardLine2(agent)
+	lines = append(lines, line2)
+
+	// Line 3: Metrics
+	line3 := m.renderAgentCardLine3(agent)
+	lines = append(lines, line3)
+
+	// Blank line for spacing
+	lines = append(lines, "")
+
+	// Build with selection indicator
+	var sb strings.Builder
+	indicator := "  "
+	if selected {
+		indicator = tui.StyleAccent.Render("> ")
+	}
+
+	for i, line := range lines {
+		if i == 0 {
+			sb.WriteString(indicator)
+		} else {
+			sb.WriteString("  ")
+		}
+		if selected && i == 0 {
+			sb.WriteString(lipgloss.NewStyle().Bold(true).Render(line))
+		} else {
+			sb.WriteString(line)
+		}
+		if i < len(lines)-1 {
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+func (m Model) renderAgentCardLine1(agent *control.AgentInfo) string {
+	var sb strings.Builder
+
+	// Status indicator - special handling for planner with plan ready
+	var statusChar string
+	if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "draft" {
+		statusChar = tui.StyleWarning.Render("!")
+	} else if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "approved" {
+		statusChar = tui.StyleInfo.Render(">")
+	} else {
+		statusChar = tui.StatusIcons[agent.Status]
+		if statusChar == "" {
+			statusChar = "-"
+		}
+		statusChar = tui.StatusStyle(agent.Status).Render(statusChar)
+	}
+	sb.WriteString(statusChar)
+	sb.WriteString(" ")
+
+	// Archetype
+	sb.WriteString(agent.Archetype)
+	sb.WriteString("  ")
+
+	// Worktree name
+	wtName := filepath.Base(agent.WorktreePath)
+	sb.WriteString(tui.StyleMuted.Render(wtName))
+
+	// Status pill
+	statusText := strings.ToUpper(agent.Status)
+	if agent.Archetype == "planner" && agent.Status == "completed" {
+		if agent.PlanStatus == "draft" {
+			statusText = "PLAN READY"
+		} else if agent.PlanStatus == "approved" {
+			statusText = "APPROVED"
+		}
+	}
+
+	var statusStyle lipgloss.Style
+	switch agent.Status {
+	case "running", "executing":
+		statusStyle = tui.StyleSuccess
+	case "planning":
+		statusStyle = tui.StyleInfo
+	case "awaiting":
+		statusStyle = tui.StyleWarning
+	case "crashed":
+		statusStyle = tui.StyleDanger
+	case "completed":
+		if agent.PlanStatus == "draft" {
+			statusStyle = tui.StyleWarning
+		} else if agent.PlanStatus == "approved" {
+			statusStyle = tui.StyleInfo
+		} else {
+			statusStyle = tui.StyleMuted
+		}
+	default:
+		statusStyle = tui.StyleMuted
+	}
+
+	sb.WriteString("  ")
+	sb.WriteString(tui.StyleMuted.Render("[ "))
+	sb.WriteString(statusStyle.Render(fmt.Sprintf("%-10s", statusText)))
+	sb.WriteString(tui.StyleMuted.Render(" ]"))
+
+	return sb.String()
+}
+
+func (m Model) renderAgentCardLine2(agent *control.AgentInfo) string {
+	activity := m.formatAgentActivity(agent)
+	if activity == "" {
+		activity = tui.StyleMuted.Render("No activity recorded")
+	}
+	return "  " + activity
+}
+
+func (m Model) renderAgentCardLine3(agent *control.AgentInfo) string {
+	var parts []string
+
+	// Tokens
+	tokens := "-"
+	if agent.Metrics != nil && agent.Metrics.TotalTokens > 0 {
+		tokens = formatCompactNumber(agent.Metrics.TotalTokens)
+	}
+	parts = append(parts, tui.StyleMuted.Render("tokens: ")+tokens)
+
+	// Cache
+	cache := "-"
+	if agent.Metrics != nil && agent.Metrics.CacheReads > 0 {
+		cache = tui.StyleSuccess.Render(formatCompactNumber(agent.Metrics.CacheReads))
+	}
+	parts = append(parts, tui.StyleMuted.Render("cache: ")+cache)
+
+	// Tools
+	tools := "-"
+	if agent.Metrics != nil && agent.Metrics.ToolUseCount > 0 {
+		tools = fmt.Sprintf("%d", agent.Metrics.ToolUseCount)
+	}
+	parts = append(parts, tui.StyleMuted.Render("tools: ")+tools)
+
+	// Age
+	age := formatDuration(time.Since(parseCreatedAt(agent.CreatedAt)))
+	parts = append(parts, tui.StyleMuted.Render("age: ")+age)
+
+	return "  " + strings.Join(parts, "  |  ")
 }
 
 // Fun status messages by agent state
@@ -245,6 +428,49 @@ func formatActivity(agent *control.AgentInfo) string {
 	default:
 		return agent.Status
 	}
+}
+
+// agentTaskInfo returns task list name and in-progress task count for an agent.
+func (m Model) agentTaskInfo(agent *control.AgentInfo) (listName string, inProgress int, total int) {
+	// Find task list matching agent's worktree path
+	for _, list := range m.taskLists {
+		if list.Path == agent.WorktreePath {
+			listName = list.Name
+			total = list.TaskCount
+			break
+		}
+	}
+
+	// Count in-progress tasks owned by this agent
+	for _, task := range m.claudeTasks {
+		if task.Owner == agent.ID && task.Status == "in_progress" {
+			inProgress++
+		}
+	}
+
+	return listName, inProgress, total
+}
+
+// formatAgentActivity returns activity with task info if available.
+func (m Model) formatAgentActivity(agent *control.AgentInfo) string {
+	activity := formatActivity(agent)
+
+	// Add task info if agent has an associated task list
+	listName, inProgress, total := m.agentTaskInfo(agent)
+	if listName != "" {
+		taskInfo := fmt.Sprintf("[%s", listName)
+		if total > 0 {
+			if inProgress > 0 {
+				taskInfo += fmt.Sprintf(": %d/%d", inProgress, total)
+			} else {
+				taskInfo += fmt.Sprintf(": %d", total)
+			}
+		}
+		taskInfo += "]"
+		return tui.StyleMuted.Render(taskInfo) + " " + activity
+	}
+
+	return activity
 }
 
 func (m Model) renderNotes() string {
