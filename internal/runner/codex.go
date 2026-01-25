@@ -40,3 +40,7 @@ func (r *CodexRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, err
 	_ = spec
 	return nil, ErrCodexNotImplemented
 }
+
+func (r *CodexRunner) Attach(ctx context.Context, pid int, opts AttachOptions) (Session, error) {
+	return nil, ErrCodexNotImplemented
+}

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -313,8 +313,6 @@ func (m Model) Init() tea.Cmd {
 
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Global keybindings
@@ -346,175 +344,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalMode(msg)
 
 	case tea.WindowSizeMsg:
-		m.termWidth = msg.Width
-		m.termHeight = msg.Height
-
-		// Inner dimensions match terminal initially (reduced when input is active)
-		m.width = msg.Width
-		m.height = msg.Height
-
-		// Update text input width dynamically
-		inputWidth := m.width - 10
-		if inputWidth < 30 {
-			inputWidth = 30
-		}
-		if inputWidth > 100 {
-			inputWidth = 100
-		}
-		m.textInput.SetWidth(inputWidth)
-		m.syncInputHeight()
-
-		// Update table widths
-		m.worktreeTable.SetWidth(m.width)
-		m.jobTable.SetWidth(m.width)
-		m.agentTable.SetWidth(m.width)
-		m.taskTable.SetWidth(m.width)
-
-		if m.planMode {
-			if m.planStatus == "pending" {
-				m.planRendered = m.renderPendingPlan(m.planPlannerStatus)
-			} else {
-				m.planRendered = m.renderMarkdown(m.planContent)
-			}
-		}
+		return m.handleWindowSize(msg)
 
 	case tickMsg:
 		return m, tea.Batch(m.fetchData, m.tick())
 
 	case fetchDataResultMsg:
-		m.worktrees = msg.worktrees
-		m.agents = msg.agents
-		m.jobs = msg.jobs
-		m.notes = msg.notes
-		m.changelog = msg.changelog
-		m.taskLists = msg.taskLists
-		m.claudeTasks = msg.claudeTasks
-		m.projects = m.extractProjects()
-		m.lastUpdate = time.Now()
-
-		// Handle initial project navigation (only on first data load)
-		if m.initialProject != "" && m.level == LevelDashboard {
-			for _, proj := range m.projects {
-				if proj == m.initialProject {
-					m.selectedProject = proj
-					m.level = LevelProject
-					m.tab = TabWorktrees
-					m.selected = 0
-					m.initialProject = "" // Clear so we don't navigate again
-					break
-				}
-			}
-		}
-
-		if msg.err != nil {
-			m.err = msg.err
-			m.statusMsg = "✗ " + msg.err.Error()
-			m.statusMsgTime = time.Now()
-			cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-				return clearErrMsg{}
-			}))
-		}
+		return m.handleFetchDataResult(msg)
 
 	case errMsg:
-		m.err = msg
-		// Also set as status message for more visibility
-		m.statusMsg = "✗ " + msg.Error()
-		m.statusMsgTime = time.Now()
-		// Auto-clear error after 5 seconds
-		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-			return clearErrMsg{}
-		})
+		return m.handleErr(msg)
 
 	case clearErrMsg:
 		m.err = nil
+		return m, nil
 
 	case dataUpdateMsg:
-		// Data was modified (create/update/delete), refresh
-		cmds = append(cmds, m.fetchData)
+		return m, m.fetchData
 
 	case eventMsg:
-		cmds = append(cmds, m.fetchData, m.listenForEvents())
+		return m.handleControlEvent(msg)
 
 	case logsResultMsg:
-		if m.logsAgentID == "" || msg.agentID != m.logsAgentID {
-			return m, nil
-		}
-		m.logsAgentID = msg.agentID
-		m.logs = msg.logs
-		m.logsMode = true
-		m.logsFollow = true
-		// Start at bottom (most recent) if following
-		m.logsScroll = max(0, len(m.logs)-m.logsViewportHeight())
+		return m.handleLogsResult(msg)
 
 	case planResultMsg:
-		if m.planWorktreePath == "" || msg.worktreePath != m.planWorktreePath {
-			return m, nil
-		}
-		m.planWorktreePath = msg.worktreePath
-		m.planContent = msg.content
-		m.planStatus = msg.status
-		m.planAgentID = msg.agentID
-		m.planPlannerStatus = msg.plannerStatus
-		m.planMode = true
-		m.planScroll = 0
-		// Render markdown with glamour (or show pending message)
-		if msg.status == "pending" {
-			m.planRendered = m.renderPendingPlan(msg.plannerStatus)
-		} else {
-			m.planRendered = m.renderMarkdown(msg.content)
-		}
+		return m.handlePlanResult(msg)
 
 	case contextResultMsg:
-		if m.contextWorktreePath == "" || msg.worktreePath != m.contextWorktreePath {
-			return m, nil
-		}
-		m.contextWorktreePath = msg.worktreePath
-		m.contextProjectName = msg.projectName
-		m.contextBlackboard = msg.blackboard
-		m.contextSummary = msg.summary
-		m.contextPreview = msg.preview
-		m.contextMode = true
-		m.contextScroll = 0
+		return m.handleContextResult(msg)
 
 	case publishResultMsg:
-		m.statusMsg = fmt.Sprintf("PR created: %s", msg.prURL)
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handlePublishResult(msg)
 
 	case mergeResultMsg:
-		if msg.hasConflicts {
-			if msg.agentSpawned {
-				m.statusMsg = "⚡ Merge conflict detected - resolver agent spawned"
-			} else {
-				m.statusMsg = "⚠ Merge conflict detected"
-			}
-		} else {
-			m.statusMsg = "✓ Branch merged to main"
-		}
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(5*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handleMergeResult(msg)
 
 	case cleanupResultMsg:
-		m.statusMsg = fmt.Sprintf("Worktree cleaned up: %s", filepath.Base(msg.path))
-		m.statusMsgTime = time.Now()
-		cmds = append(cmds, m.fetchData, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
-		}))
+		return m.handleCleanupResult(msg)
 
 	case clearStatusMsg:
 		m.statusMsg = ""
+		return m, nil
 
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		return m.handleSpinnerTick(msg)
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m *Model) extractProjects() []string {
@@ -3487,68 +3364,121 @@ func (m Model) fetchData() tea.Msg {
 		return errMsg(fmt.Errorf("not connected"))
 	}
 
+	res := fetchDataResultMsg{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	var errs []error
 
-	wts, err := m.client.ListWorktrees()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list worktrees: %w", err))
-		wts = m.worktrees
-	}
-	agents, err := m.client.ListAgents()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list agents: %w", err))
-		agents = m.agents
-	}
-	jobs, err := m.client.ListJobs()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list jobs: %w", err))
-		jobs = m.jobs
-	}
-	notes, err := m.client.ListNotes()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list notes: %w", err))
-		notes = m.notes
-	}
-	changelog, err := m.client.ListChangelog("", 100)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list changelog: %w", err))
-		changelog = m.changelog
-	}
-
-	// Fetch task lists and tasks (non-fatal if fails)
-	taskLists, err := m.client.ListTaskLists()
-	if err != nil {
-		// Task fetching is optional, don't add to errs
-		taskLists = m.taskLists
-	}
-	var claudeTasks []*control.TaskInfo
-	// Fetch tasks from selected list or first list
-	listID := m.selectedTaskList
-	if listID == "" && len(taskLists) > 0 {
-		listID = taskLists[0].ID
-	}
-	if listID != "" {
-		claudeTasks, err = m.client.ListTasks(listID, "")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		wts, err := m.client.ListWorktrees()
+		mu.Lock()
 		if err != nil {
-			claudeTasks = m.claudeTasks
+			errs = append(errs, fmt.Errorf("list worktrees: %w", err))
+			res.worktrees = m.worktrees
+		} else {
+			res.worktrees = wts
 		}
-	}
+		mu.Unlock()
+	}()
 
-	var fetchErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		agents, err := m.client.ListAgents()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list agents: %w", err))
+			res.agents = m.agents
+		} else {
+			res.agents = agents
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		jobs, err := m.client.ListJobs()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list jobs: %w", err))
+			res.jobs = m.jobs
+		} else {
+			res.jobs = jobs
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notes, err := m.client.ListNotes()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list notes: %w", err))
+			res.notes = m.notes
+		} else {
+			res.notes = notes
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		changelog, err := m.client.ListChangelog("", 100)
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list changelog: %w", err))
+			res.changelog = m.changelog
+		} else {
+			res.changelog = changelog
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		taskLists, err := m.client.ListTaskLists()
+		mu.Lock()
+		if err != nil {
+			res.taskLists = m.taskLists
+		} else {
+			res.taskLists = taskLists
+		}
+		mu.Unlock()
+
+		// Fetch tasks from selected list or first list
+		var listID string
+		mu.Lock()
+		listID = m.selectedTaskList
+		if listID == "" && len(res.taskLists) > 0 {
+			listID = res.taskLists[0].ID
+		}
+		mu.Unlock()
+
+		if listID != "" {
+			tasks, err := m.client.ListTasks(listID, "")
+			mu.Lock()
+			if err != nil {
+				res.claudeTasks = m.claudeTasks
+			} else {
+				res.claudeTasks = tasks
+			}
+			mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+
 	if len(errs) > 0 {
-		fetchErr = errors.Join(errs...)
+		res.err = errors.Join(errs...)
 	}
 
-	return fetchDataResultMsg{
-		worktrees:   wts,
-		agents:      agents,
-		jobs:        jobs,
-		notes:       notes,
-		changelog:   changelog,
-		taskLists:   taskLists,
-		claudeTasks: claudeTasks,
-		err:         fetchErr,
-	}
+	return res
 }
 
 func (m Model) listenForEvents() tea.Cmd {

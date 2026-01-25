@@ -101,6 +101,8 @@ Add corresponding client methods in `internal/control/client.go`.
 
 ## Key Files
 
+For a detailed mapping of functionality to code, see the **[Codebase Map](docs/CODEBASE_MAP.md)**.
+
 | File | Purpose |
 |------|---------|
 | `internal/daemon/daemon.go` | Core daemon, API handlers |

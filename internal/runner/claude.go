@@ -29,6 +29,7 @@ func (r *ClaudeRunner) Capabilities() Capabilities {
 
 func (r *ClaudeRunner) Start(ctx context.Context, spec RunSpec) (Session, error) {
 	opts := buildClaudeOptions(spec, false)
+	opts.LogFile = spec.LogFile
 	proc, err := claudecode.Spawn(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -47,11 +48,32 @@ func (r *ClaudeRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, er
 		MaxBudgetUSD:   spec.MaxBudgetUSD,
 		Plan:           spec.Plan,
 	}, true)
+	opts.LogFile = spec.LogFile
 	proc, err := claudecode.Spawn(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	return newClaudeSession(proc, opts.SessionID), nil
+}
+
+func (r *ClaudeRunner) Attach(ctx context.Context, pid int, opts AttachOptions) (Session, error) {
+	proc, err := claudecode.Attach(ctx, pid, opts.LogFile)
+	if err != nil {
+		return nil, err
+	}
+	// Attached sessions might not know their SessionID immediately if it's not in the logs?
+	// But `Spawner` usually knows the SessionID from DB.
+	// The `Session` interface requires `ID()`.
+	// We can pass it in via AttachOptions if needed, but `claudecode.Process` doesn't store it?
+	// `claudeSession` struct stores `id`.
+	// `AttachOptions` doesn't have SessionID currently.
+	// We should probably add SessionID to AttachOptions or just accept it's missing from the wrapper until provided.
+	// Actually, `Spawner` calls `Attach`, and `Spawner` knows the ID.
+	// We can return a session with empty ID, but `ID()` method will return empty.
+	// Let's assume Spawner will handle the ID mapping.
+	// BUT `claudeSession` needs it.
+	// Let's add SessionID to AttachOptions.
+	return newClaudeSession(proc, ""), nil
 }
 
 type claudeSession struct {

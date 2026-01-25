@@ -2,6 +2,9 @@
 
 Guidance for agents working on this repo.
 
+## Navigation
+- **[Codebase Map](docs/CODEBASE_MAP.md)**: Detailed index mapping functionality to specific files and symbols. Use this to orient yourself.
+
 ## Git Workflow
 - `main` is protected; do not commit directly.
 - Work on feature branches and keep them short-lived.
