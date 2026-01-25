@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0](https://github.com/drew-mcl/athena/compare/athena-v0.4.0...athena-v0.5.0) (2026-01-25)
+
+
+### Features
+
+* add CLI format flags and cache hit rate tracking ([1144e5f](https://github.com/drew-mcl/athena/commit/1144e5f23b6e2c9c436c8bac6126becbf7d61640))
+* **cli:** add athena-cli for spawning agents and jobs ([a5923b7](https://github.com/drew-mcl/athena/commit/a5923b75f07665e57be0ad57ca3dea0122b71f6a))
+* **context:** add code index and context optimization system ([f8a47d4](https://github.com/drew-mcl/athena/commit/f8a47d4091dd70f811012dae80b22dc18d68f211))
+* **context:** increase default context budget and make it configurable ([d0f1cb2](https://github.com/drew-mcl/athena/commit/d0f1cb2472403e029af6ecb99b5459ee596c72aa))
+* **tasks:** integrate Claude Code Tasks into Athena dashboard ([7083d2a](https://github.com/drew-mcl/athena/commit/7083d2a253595488fcc0338ae93fc8f6c6910185))
+
+
+### Bug Fixes
+
+* **tasks:** address code review findings ([26300c5](https://github.com/drew-mcl/athena/commit/26300c52cc5f1d9fd2f1b86e6724be4c63b579c9))
+* **tui:** add scrolling to detail views ([c8bb1af](https://github.com/drew-mcl/athena/commit/c8bb1af8ac6fcb63ea3873388b4de0ad3b86e5db))
+* **tui:** improve detail view scrolling and footer ([938ceb9](https://github.com/drew-mcl/athena/commit/938ceb98ae3dc16ef6bba1dd2ebe8b400b55daf7))
+
 ## [0.4.0](https://github.com/drew-mcl/athena/compare/athena-v0.3.0...athena-v0.4.0) (2026-01-20)
 
 
