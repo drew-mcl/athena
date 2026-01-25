@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/drewfead/athena/internal/logging"
 )
 
 // Registry manages multiple task providers and aggregates their results.
@@ -80,7 +82,7 @@ func (r *Registry) ListAllTaskLists() ([]TaskList, error) {
 	for _, p := range r.providers {
 		lists, err := p.ListTaskLists()
 		if err != nil {
-			// Continue with other providers, but log the error
+			logging.Warn("failed to list tasks from provider", "provider", p.Name(), "error", err)
 			continue
 		}
 		allLists = append(allLists, lists...)
@@ -164,7 +166,8 @@ func (r *Registry) WatchAll(ctx context.Context) (<-chan TaskEvent, error) {
 	for _, p := range providers {
 		ch, err := p.Watch(ctx)
 		if err != nil {
-			continue // Skip providers that can't be watched
+			logging.Debug("provider watch failed", "provider", p.Name(), "error", err)
+			continue
 		}
 
 		wg.Add(1)
