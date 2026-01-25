@@ -47,8 +47,13 @@ func (r *GeminiRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, er
 		SystemPrompt:    spec.SystemPrompt,
 		MaxBudgetUSD:    spec.MaxBudgetUSD,
 		Plan:            spec.Plan,
+		LogFile:         spec.LogFile,
 	}
 	return newGeminiSession(ctx, runSpec, &spec)
+}
+
+func (r *GeminiRunner) Attach(ctx context.Context, pid int, opts AttachOptions) (Session, error) {
+	return nil, fmt.Errorf("attach not supported for gemini runner")
 }
 
 type geminiSession struct {

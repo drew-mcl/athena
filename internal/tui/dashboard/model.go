@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -3318,68 +3319,121 @@ func (m Model) fetchData() tea.Msg {
 		return errMsg(fmt.Errorf("not connected"))
 	}
 
+	res := fetchDataResultMsg{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	var errs []error
 
-	wts, err := m.client.ListWorktrees()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list worktrees: %w", err))
-		wts = m.worktrees
-	}
-	agents, err := m.client.ListAgents()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list agents: %w", err))
-		agents = m.agents
-	}
-	jobs, err := m.client.ListJobs()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list jobs: %w", err))
-		jobs = m.jobs
-	}
-	notes, err := m.client.ListNotes()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list notes: %w", err))
-		notes = m.notes
-	}
-	changelog, err := m.client.ListChangelog("", 100)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list changelog: %w", err))
-		changelog = m.changelog
-	}
-
-	// Fetch task lists and tasks (non-fatal if fails)
-	taskLists, err := m.client.ListTaskLists()
-	if err != nil {
-		// Task fetching is optional, don't add to errs
-		taskLists = m.taskLists
-	}
-	var claudeTasks []*control.TaskInfo
-	// Fetch tasks from selected list or first list
-	listID := m.selectedTaskList
-	if listID == "" && len(taskLists) > 0 {
-		listID = taskLists[0].ID
-	}
-	if listID != "" {
-		claudeTasks, err = m.client.ListTasks(listID, "")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		wts, err := m.client.ListWorktrees()
+		mu.Lock()
 		if err != nil {
-			claudeTasks = m.claudeTasks
+			errs = append(errs, fmt.Errorf("list worktrees: %w", err))
+			res.worktrees = m.worktrees
+		} else {
+			res.worktrees = wts
 		}
-	}
+		mu.Unlock()
+	}()
 
-	var fetchErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		agents, err := m.client.ListAgents()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list agents: %w", err))
+			res.agents = m.agents
+		} else {
+			res.agents = agents
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		jobs, err := m.client.ListJobs()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list jobs: %w", err))
+			res.jobs = m.jobs
+		} else {
+			res.jobs = jobs
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notes, err := m.client.ListNotes()
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list notes: %w", err))
+			res.notes = m.notes
+		} else {
+			res.notes = notes
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		changelog, err := m.client.ListChangelog("", 100)
+		mu.Lock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list changelog: %w", err))
+			res.changelog = m.changelog
+		} else {
+			res.changelog = changelog
+		}
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		taskLists, err := m.client.ListTaskLists()
+		mu.Lock()
+		if err != nil {
+			res.taskLists = m.taskLists
+		} else {
+			res.taskLists = taskLists
+		}
+		mu.Unlock()
+
+		// Fetch tasks from selected list or first list
+		var listID string
+		mu.Lock()
+		listID = m.selectedTaskList
+		if listID == "" && len(res.taskLists) > 0 {
+			listID = res.taskLists[0].ID
+		}
+		mu.Unlock()
+
+		if listID != "" {
+			tasks, err := m.client.ListTasks(listID, "")
+			mu.Lock()
+			if err != nil {
+				res.claudeTasks = m.claudeTasks
+			} else {
+				res.claudeTasks = tasks
+			}
+			mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+
 	if len(errs) > 0 {
-		fetchErr = errors.Join(errs...)
+		res.err = errors.Join(errs...)
 	}
 
-	return fetchDataResultMsg{
-		worktrees:   wts,
-		agents:      agents,
-		jobs:        jobs,
-		notes:       notes,
-		changelog:   changelog,
-		taskLists:   taskLists,
-		claudeTasks: claudeTasks,
-		err:         fetchErr,
-	}
+	return res
 }
 
 func (m Model) listenForEvents() tea.Cmd {

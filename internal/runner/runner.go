@@ -43,12 +43,19 @@ type RunSpec struct {
 	Plan            bool
 	GitIdentity     *GitIdentityConfig
 	Env             map[string]string
+	LogFile         string
 }
 
 type GitIdentityConfig struct {
 	AuthorName   string
 	AuthorEmail  string
 	CoAuthorLine string
+}
+
+// AttachOptions defines parameters for attaching to an existing process.
+type AttachOptions struct {
+	LogFile string
+	WorkDir string
 }
 
 // ResumeSpec defines how to resume an existing session.
@@ -62,6 +69,7 @@ type ResumeSpec struct {
 	SystemPrompt    string
 	MaxBudgetUSD    float64
 	Plan            bool
+	LogFile         string
 }
 
 // Event is a normalized runner event.
@@ -110,6 +118,7 @@ type Runner interface {
 	Capabilities() Capabilities
 	Start(ctx context.Context, spec RunSpec) (Session, error)
 	Resume(ctx context.Context, spec ResumeSpec) (Session, error)
+	Attach(ctx context.Context, pid int, opts AttachOptions) (Session, error)
 }
 
 // New constructs a runner for the requested provider.

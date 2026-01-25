@@ -38,6 +38,10 @@ type SpawnOptions struct {
 	// MaxBudgetUSD limits spending (only works with --print).
 	MaxBudgetUSD float64
 
+	// LogFile specifies a file to write raw stdout/stderr to.
+	// If set, output is written here instead of using pipes, enabling reattachment.
+	LogFile string
+
 	// GitIdentity configures the git author/committer identity for this agent.
 	// When set, the agent's commits will show as this identity.
 	GitIdentity *GitIdentityConfig
