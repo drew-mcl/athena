@@ -2,6 +2,9 @@
 
 **The Intelligence Orchestrator and Bloomberg Terminal of Engineering**
 
+> [!WARNING]
+> Athena is pre-1.0 and under active development. Expect breaking changes and incomplete functionality until we reach a stable release.
+
 The future is not Hephaestus—the IDE fork of building. It’s Athena: the Bloomberg terminal of engineering—one command-and-control platform that condenses everything (project management, CI/CD, IDE context, agent monitoring, ops views, integrations) into a single terminal, fanning out to external APIs but converging back into one unified interface.
 
 Athena at its core orchestrates AI coding agents (Claude Code, Codex, and whatever comes next) for maximum developer productivity. It's not another harness - it's the control plane that coordinates the racing products in this space while keeping *your* data yours.

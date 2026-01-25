@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/tui"
+	"github.com/drewfead/athena/internal/tui/components"
 	"github.com/drewfead/athena/internal/tui/layout"
 )
 
@@ -102,19 +103,26 @@ func (m Model) renderAdmin() string {
 func (m Model) renderAdminSummary(summary adminSummary) string {
 	gap := 2
 	cols := 3
-	cardWidth := (m.width - gap*(cols-1)) / cols
-	if cardWidth < 24 {
+	// Account for left margin (3 chars) and some breathing room
+	usableWidth := m.width - 6
+	cardWidth := (usableWidth - gap*(cols-1)) / cols
+	if cardWidth < 30 {
 		cols = 2
-		cardWidth = (m.width - gap) / 2
+		cardWidth = (usableWidth - gap) / 2
 	}
-	if cardWidth < 24 {
+	if cardWidth < 30 {
 		cols = 1
-		cardWidth = m.width
+		cardWidth = usableWidth
 	}
 	if cardWidth < 1 {
 		cardWidth = 1
 	}
 
+	// Live update indicator
+	updateIndicator := "◌"
+	if time.Since(m.lastUpdate) < 2*time.Second {
+		updateIndicator = "●"
+	}
 	updated := "n/a"
 	if !m.lastUpdate.IsZero() {
 		updated = fmt.Sprintf("%s ago", formatDuration(time.Since(m.lastUpdate)))
@@ -134,26 +142,34 @@ func (m Model) renderAdminSummary(summary adminSummary) string {
 		}
 	}
 
+	// Token usage with progress bar (assume 100K max for visualization)
+	tokenMax := 100000
+	tokenPct := float64(summary.totalTokens) / float64(tokenMax) * 100
+	if tokenPct > 100 {
+		tokenPct = 100
+	}
+	tokenBar := components.NewProgressBar(int(tokenPct), 100).
+		WithWidth(10).
+		WithColor(tui.ColorAccent)
+
+	// Cache reads - show actual count (these are prompt cache hits from Claude)
+	cacheReadsStr := formatCompactNumber(summary.totalCacheReads)
+
 	cards := []string{
-		adminCard("Health", []string{
+		adminCard("System", []string{
 			adminMetricLine("daemon", daemonStatus),
 			adminMetricLine("workflow", m.renderWorkflowStatus()),
-			adminMetricLine("updated", updated),
+			adminMetricLine("updated", tui.StyleMuted.Render(updateIndicator)+" "+updated),
 		}, cardWidth),
 		adminCard("Agents", []string{
 			adminMetricLine("active", tui.StyleAccent.Render(fmt.Sprintf("%d/%d", summary.activeAgents, summary.totalAgents))),
 			adminMetricLine("attention", attentionStyle.Render(fmt.Sprintf("%d", attention))),
-			adminMetricLine("restarts", fmt.Sprintf("%d", summary.totalRestarts)),
+			adminMetricLine("restarts", fmt.Sprintf("%d total", summary.totalRestarts)),
 		}, cardWidth),
-		adminCard("Usage", []string{
-			adminMetricLine("tokens", tui.StyleAccent.Render(formatCompactNumber(summary.totalTokens))),
-			adminMetricLine("cache", fmt.Sprintf("%d", summary.totalCacheReads)),
-			adminMetricLine("compute", formatDurationMs(summary.totalDuration)),
-		}, cardWidth),
-		adminCard("Ops", []string{
-			adminMetricLine("tools", fmt.Sprintf("%d", summary.totalToolCalls)),
-			adminMetricLine("files", fmt.Sprintf("%dR/%dW", summary.totalFilesRead, summary.totalFilesWrite)),
-			adminMetricLine("changes", fmt.Sprintf("%d", summary.totalLines)),
+		adminCard("Tokens", []string{
+			fmt.Sprintf("used    %s %s", tokenBar.Render(), tui.StyleMuted.Render(formatCompactNumber(summary.totalTokens))),
+			adminMetricLine("cached", tui.StyleSuccess.Render(cacheReadsStr)+" reads"),
+			adminMetricLine("tools", fmt.Sprintf("%d calls", summary.totalToolCalls)),
 		}, cardWidth),
 	}
 
@@ -182,7 +198,7 @@ func (m Model) renderAdminAgentRow(agent *control.AgentInfo, table *layout.Table
 		project = "-"
 	}
 
-	activity := formatActivity(agent)
+	activity := m.formatAgentActivity(agent)
 	if activity == "" {
 		activity = "-"
 	}

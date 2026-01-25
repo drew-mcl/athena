@@ -26,6 +26,11 @@ type JobsConfig struct {
 	QuickJobTimeout time.Duration `yaml:"quick_job_timeout"`
 }
 
+// FeatureFlags controls experimental features.
+type FeatureFlags struct {
+	ClaudeTasks bool `yaml:"claude_tasks"` // Enable Claude Code tasks tab
+}
+
 // Config is the root configuration for Athena.
 type Config struct {
 	Repos        ReposConfig          `yaml:"repos"`
@@ -37,6 +42,7 @@ type Config struct {
 	Gemini       GeminiConfig         `yaml:"gemini"`
 	Jobs         JobsConfig           `yaml:"jobs"`
 	UI           UIConfig             `yaml:"ui"`
+	Features     FeatureFlags         `yaml:"features"`
 }
 
 // GeminiConfig defines Google Gemini integration settings.
@@ -237,8 +243,8 @@ func DefaultConfig() *Config {
 			Model:             "sonnet",
 			Budget:            BudgetConfig{MaxPerAgent: 5.0, MaxPerDay: 50.0, WarnThreshold: 0.8},
 			ContextRetention:  7 * 24 * time.Hour,
-			MaxContextTokens:  30000,
-			MaxRelevantFiles:  20,
+			MaxContextTokens:  100000,
+			MaxRelevantFiles:  50,
 			HeartbeatInterval: 30 * time.Second,
 			HeartbeatTimeout:  2 * time.Minute,
 		},
@@ -351,6 +357,9 @@ When you complete your work, you MUST commit all changes:
 			RefreshInterval: time.Second,
 			WorkflowMode:    WorkflowModeApprove, // Default to approve - sensible middle ground
 		},
+		Features: FeatureFlags{
+			ClaudeTasks: false, // Disabled by default; enable via ATHENA_CLAUDE_TASKS=true
+		},
 	}
 }
 
@@ -379,7 +388,9 @@ func Load() (*Config, error) {
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Return default config if file doesn't exist
-		return DefaultConfig(), nil
+		cfg := DefaultConfig()
+		cfg.applyEnvOverrides()
+		return cfg, nil
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -393,6 +404,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.expandEnvVars()
+	cfg.applyEnvOverrides()
 	return cfg, nil
 }
 
@@ -423,6 +435,14 @@ func (i *AgentIdentity) expandEnvVars() {
 		if home, err := os.UserHomeDir(); err == nil {
 			i.PrivateKeyPath = filepath.Join(home, i.PrivateKeyPath[2:])
 		}
+	}
+}
+
+// applyEnvOverrides applies environment variable overrides to config.
+// These override both default values and config file values.
+func (c *Config) applyEnvOverrides() {
+	if v := os.Getenv("ATHENA_CLAUDE_TASKS"); v == "true" || v == "1" {
+		c.Features.ClaudeTasks = true
 	}
 }
 
