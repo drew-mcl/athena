@@ -75,6 +75,13 @@ type Event struct {
 	Timestamp time.Time       `json:"-"`
 	Raw       json.RawMessage `json:"raw,omitempty"`
 	Usage     *EventUsage     `json:"usage,omitempty"`
+
+	// Result event fields (timing, cost, turns)
+	DurationMS    int64   `json:"duration_ms,omitempty"`
+	APITimeMS     int64   `json:"api_time_ms,omitempty"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	NumTurns      int     `json:"num_turns,omitempty"`
+	CacheCreation int     `json:"cache_creation,omitempty"`
 }
 
 // EventUsage tracks token usage for an event.

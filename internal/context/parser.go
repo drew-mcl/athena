@@ -14,21 +14,30 @@ func NewParser() *Parser {
 }
 
 // Marker patterns for extraction
+// Supports two formats:
+// 1. Block format: ## DECISION: <title>\n<content>
+// 2. Inline format: [[DECISION: <content>]]
 var (
-	// ## DECISION: <title>\n<content>
+	// Block format: ## DECISION: <title>\n<content>
 	decisionPattern = regexp.MustCompile(`(?m)^##\s*DECISION:\s*(.+)\n((?:.*\n)*?)(?:(?:^##\s)|(?:\z))`)
 
-	// ## FINDING: <title>\n<content>\nReference: <ref>
+	// Block format: ## FINDING: <title>\n<content>\nReference: <ref>
 	findingPattern = regexp.MustCompile(`(?m)^##\s*FINDING:\s*(.+)\n((?:.*\n)*?)(?:(?:^##\s)|(?:\z))`)
 
-	// ## TRIED: <what>\nOutcome: <outcome>\nReason: <reason>
+	// Block format: ## TRIED: <what>\nOutcome: <outcome>\nReason: <reason>
 	triedPattern = regexp.MustCompile(`(?m)^##\s*TRIED:\s*(.+)\n((?:.*\n)*?)(?:(?:^##\s)|(?:\z))`)
 
-	// ## QUESTION: <question>\nContext: <context>
+	// Block format: ## QUESTION: <question>\nContext: <context>
 	questionPattern = regexp.MustCompile(`(?m)^##\s*QUESTION:\s*(.+)\n((?:.*\n)*?)(?:(?:^##\s)|(?:\z))`)
 
-	// ## STATE: <type>/<key>\n<value>
+	// Block format: ## STATE: <type>/<key>\n<value>
 	statePattern = regexp.MustCompile(`(?m)^##\s*STATE:\s*(.+)\n((?:.*\n)*?)(?:(?:^##\s)|(?:\z))`)
+
+	// Inline formats: [[MARKER: <content>]]
+	inlineDecisionPattern = regexp.MustCompile(`\[\[DECISION:\s*(.+?)\]\]`)
+	inlineFindingPattern  = regexp.MustCompile(`\[\[FINDING:\s*(.+?)\]\]`)
+	inlineTriedPattern    = regexp.MustCompile(`\[\[TRIED:\s*(.+?)\]\]`)
+	inlineQuestionPattern = regexp.MustCompile(`\[\[QUESTION:\s*(.+?)\]\]`)
 
 	// Reference line extraction
 	referencePattern = regexp.MustCompile(`(?m)^Reference:\s*(.+)$`)
@@ -93,6 +102,7 @@ func (p *Parser) ParseState(text string) []*ParsedMarker {
 func (p *Parser) extractDecisions(text string) []*ParsedMarker {
 	var markers []*ParsedMarker
 
+	// Block format: ## DECISION: <title>\n<content>
 	matches := decisionPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
 		if len(match) >= 3 {
@@ -108,12 +118,27 @@ func (p *Parser) extractDecisions(text string) []*ParsedMarker {
 		}
 	}
 
+	// Inline format: [[DECISION: <content>]]
+	inlineMatches := inlineDecisionPattern.FindAllStringSubmatch(text, -1)
+	for _, match := range inlineMatches {
+		if len(match) >= 2 {
+			content := strings.TrimSpace(match[1])
+			markers = append(markers, &ParsedMarker{
+				MarkerType: MarkerTypeDecision,
+				Title:      "",
+				Content:    content,
+				Metadata:   make(map[string]string),
+			})
+		}
+	}
+
 	return markers
 }
 
 func (p *Parser) extractFindings(text string) []*ParsedMarker {
 	var markers []*ParsedMarker
 
+	// Block format: ## FINDING: <title>\n<content>
 	matches := findingPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
 		if len(match) >= 3 {
@@ -138,12 +163,27 @@ func (p *Parser) extractFindings(text string) []*ParsedMarker {
 		}
 	}
 
+	// Inline format: [[FINDING: <content>]]
+	inlineMatches := inlineFindingPattern.FindAllStringSubmatch(text, -1)
+	for _, match := range inlineMatches {
+		if len(match) >= 2 {
+			content := strings.TrimSpace(match[1])
+			markers = append(markers, &ParsedMarker{
+				MarkerType: MarkerTypeFinding,
+				Title:      "",
+				Content:    content,
+				Metadata:   make(map[string]string),
+			})
+		}
+	}
+
 	return markers
 }
 
 func (p *Parser) extractTried(text string) []*ParsedMarker {
 	var markers []*ParsedMarker
 
+	// Block format: ## TRIED: <title>\n<content>
 	matches := triedPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
 		if len(match) >= 3 {
@@ -174,12 +214,27 @@ func (p *Parser) extractTried(text string) []*ParsedMarker {
 		}
 	}
 
+	// Inline format: [[TRIED: <content>]]
+	inlineMatches := inlineTriedPattern.FindAllStringSubmatch(text, -1)
+	for _, match := range inlineMatches {
+		if len(match) >= 2 {
+			content := strings.TrimSpace(match[1])
+			markers = append(markers, &ParsedMarker{
+				MarkerType: MarkerTypeTried,
+				Title:      "",
+				Content:    content,
+				Metadata:   make(map[string]string),
+			})
+		}
+	}
+
 	return markers
 }
 
 func (p *Parser) extractQuestions(text string) []*ParsedMarker {
 	var markers []*ParsedMarker
 
+	// Block format: ## QUESTION: <title>\n<content>
 	matches := questionPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
 		if len(match) >= 3 {
@@ -199,6 +254,20 @@ func (p *Parser) extractQuestions(text string) []*ParsedMarker {
 				Title:      title,
 				Content:    content,
 				Metadata:   metadata,
+			})
+		}
+	}
+
+	// Inline format: [[QUESTION: <content>]]
+	inlineMatches := inlineQuestionPattern.FindAllStringSubmatch(text, -1)
+	for _, match := range inlineMatches {
+		if len(match) >= 2 {
+			content := strings.TrimSpace(match[1])
+			markers = append(markers, &ParsedMarker{
+				MarkerType: MarkerTypeQuestion,
+				Title:      "",
+				Content:    content,
+				Metadata:   make(map[string]string),
 			})
 		}
 	}

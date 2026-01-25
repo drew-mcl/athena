@@ -100,6 +100,101 @@ func (m Model) renderAgentRow(agent *control.AgentInfo, table *layout.Table, sel
 	return table.RenderRow(values, selected)
 }
 
+// Fun status messages by agent state
+var funStatusMessages = map[string][]string{
+	"planning": {
+		"Brainstorming...",
+		"Calculating...",
+		"Wondering...",
+		"Pondering the orb...",
+		"Strategizing...",
+		"Connecting dots...",
+		"Reviewing the plan...",
+		"Consulting the oracle...",
+		"Simulating outcomes...",
+		"Thinking deeply...",
+		"Analyzing requirements...",
+		"Mapping the territory...",
+		"Sketching ideas...",
+		"Formulating hypothesis...",
+		"Checking the map...",
+		"Plotting course...",
+		"Synthesizing data...",
+		"Optimizing route...",
+		"Designing solution...",
+		"Architecting...",
+		"Dreaming up code...",
+		"Consulting rubber duck...",
+		"Parsing intent...",
+		"Decoding matrix...",
+		"Checking specifications...",
+	},
+	"executing": {
+		"Grafting...",
+		"Putting in the work...",
+		"Doing your work...",
+		"Writing code...",
+		"Crushing tickets...",
+		"Shipping features...",
+		"Generating value...",
+		"Refactoring reality...",
+		"Compiling success...",
+		"Executing order 66...",
+		"Applying fixes...",
+		"Hammering the keyboard...",
+		"Typing furiously...",
+		"Injecting logic...",
+		"Polishing pixels...",
+		"Wiring circuits...",
+		"Building the future...",
+		"Deploying brilliance...",
+		"Making it happen...",
+		"Crunching bits...",
+		"Assembling bytes...",
+		"Weaving software...",
+		"Crafting elegance...",
+		"Solving puzzles...",
+		"Getting it done...",
+	},
+	"running": {
+		"Working...",
+		"Busy...",
+		"On the job...",
+		"Processing...",
+		"Handling it...",
+		"In the zone...",
+		"Flow state...",
+		"Running cycles...",
+		"Spinning up...",
+		"Active...",
+	},
+}
+
+// getFunStatus returns a consistent random message based on agent ID and state.
+// We use the ID as a seed so the message doesn't flicker on every render frame.
+func getFunStatus(id, state string) string {
+	msgs, ok := funStatusMessages[state]
+	if !ok || len(msgs) == 0 {
+		return ""
+	}
+
+	// Simple hash of ID to pick a message
+	hash := 0
+	for _, c := range id {
+		hash += int(c)
+	}
+
+	// Add state length to vary it when state changes
+	hash += len(state)
+
+	// Use time (minute) to rotate messages occasionally but not too fast
+	// This keeps it "alive" but readable
+	hash += time.Now().Minute()
+
+	idx := hash % len(msgs)
+	return msgs[idx]
+}
+
 // formatActivity returns a human-readable description of what the agent is doing.
 // If LastActivity is populated, it shows that with a relative time suffix.
 // Otherwise, it falls back to descriptive status messages.
@@ -132,23 +227,21 @@ func formatActivity(agent *control.AgentInfo) string {
 		return agent.LastActivity
 	}
 
+	// Fallback to status-based descriptions with fun flavor
+	funMsg := getFunStatus(agent.ID, agent.Status)
+	if funMsg != "" {
+		return tui.StyleDanger.Render(funMsg) // "nice pink" as requested
+	}
+
 	switch agent.Status {
-	case "planning":
-		return tui.StyleInfo.Render("Planning")
-	case "executing":
-		return tui.StyleSuccess.Render("Executing")
-	case "running":
-		return tui.StyleSuccess.Render("Running")
 	case "awaiting":
-		return tui.StyleWarning.Render("Awaiting input")
+		return "Waiting for user input"
 	case "crashed":
-		return tui.StyleDanger.Render("Crashed - needs restart")
-	case "pending":
-		return tui.StyleMuted.Render("Queued")
-	case "spawning":
-		return tui.StyleWarning.Render("Spawning")
+		return tui.StyleDanger.Render("Process crashed - needs restart")
+	case "stopped":
+		return "Stopped"
 	case "completed":
-		return tui.StyleMuted.Render("Complete")
+		return tui.StyleMuted.Render("—")
 	default:
 		return agent.Status
 	}

@@ -241,20 +241,78 @@ func DefaultConfig() *Config {
 		Archetypes: map[string]Archetype{
 			"planner": {
 				Description:    "Planning agent that explores codebases and creates implementation plans",
-				Prompt:         "You are a planning agent. Explore the codebase thoroughly and draft a detailed implementation plan. Do NOT modify any files.",
+				Prompt: `You are a planning agent. Create a detailed implementation plan. Do NOT modify any files.
+
+## Using the Context Block
+Your prompt is prepended with context sections:
+- **Project State**: Architecture decisions, conventions, constraints - follow these
+- **Project Structure**: Directory layout - understand where code lives
+- **Relevant Files**: START HERE - these files match your task based on code analysis
+- **Workflow Context**: Decisions/findings from previous agents - don't repeat their work
+
+## Your Workflow
+1. Read the Relevant Files first - they're pre-selected for your task
+2. Use the Project Structure to navigate - explore related directories
+3. Check if previous agents already explored this area (see Workflow Context)
+4. Create a detailed plan with specific files and implementation steps
+
+## Recording Your Work
+Use markers in your output to help future agents:
+- [[DECISION: <what you decided and why>]]
+- [[FINDING: <important discovery about the code>]]
+- [[TRIED: <approach you attempted and the result>]]
+- [[QUESTION: <unresolved question for human review>]]`,
 				PermissionMode: "plan",
 				AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
 				Model:          "opus",
 			},
 			"executor": {
 				Description:    "Execution agent that implements plans and commits changes",
-				Prompt:         "You are an execution agent. Follow the provided plan exactly. Report progress after each step.\n\nIMPORTANT: When you complete your work, you MUST commit all changes before finishing. Use conventional commit format (feat:, fix:, refactor:, etc.) with a clear subject line and a body explaining what was changed and why. Never leave uncommitted changes in the worktree.",
+				Prompt: `You are an execution agent. Follow the provided plan exactly.
+
+## Using the Context Block
+- **Project State**: Conventions to follow (naming, patterns, architecture)
+- **Relevant Files**: Files identified for this task - read them first
+- **Workflow Context**: Prior decisions - build on the planner's work, don't redo research
+
+## Your Workflow
+1. Read the plan carefully - understand all steps before starting
+2. Read Relevant Files to understand existing patterns
+3. Implement changes step by step, following project conventions
+4. Test your changes before committing
+
+## Recording Your Work
+Record important information for future agents:
+- [[DECISION: <implementation choice you made>]]
+- [[FINDING: <discovered constraint or pattern>]]
+- [[TRIED: <approach and outcome>]]
+
+## IMPORTANT: Commit Requirements
+When you complete your work, you MUST commit all changes:
+- Use conventional commit format (feat:, fix:, refactor:, etc.)
+- Write a clear subject line and explanatory body
+- Never leave uncommitted changes in the worktree`,
 				PermissionMode: "default",
 				Model:          "sonnet",
 			},
 			"reviewer": {
 				Description:    "Code review agent that analyzes changes",
-				Prompt:         "You are a code review agent. Analyze changes for bugs, security issues, and style violations.",
+				Prompt: `You are a code review agent. Analyze changes for bugs, security issues, and style violations.
+
+## Using the Context Block
+- **Project State**: Conventions and constraints to check against
+- **Relevant Files**: Files related to the changes being reviewed
+- **Workflow Context**: What the implementer tried and decided
+
+## Review Checklist
+1. Read the Relevant Files to understand the codebase patterns
+2. Check changes against Project State conventions
+3. Look for bugs, security issues, performance problems
+4. Verify tests exist and are meaningful
+
+## Recording Your Findings
+- [[FINDING: <issue found with severity and location>]]
+- [[DECISION: <approval/rejection with rationale>]]`,
 				PermissionMode: "plan",
 				AllowedTools:   []string{"Glob", "Grep", "Read", "Task"},
 				Model:          "sonnet",

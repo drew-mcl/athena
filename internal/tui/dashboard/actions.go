@@ -8,11 +8,11 @@ import (
 
 // Action defines a keyboard action with its context
 type Action struct {
-	Key     string // The key binding (e.g., "n", "enter", "L")
-	Label   string // Display label (e.g., "new", "drill", "logs")
-	Tabs    []Tab  // Which tabs this applies to (nil = all tabs)
+	Key     string  // The key binding (e.g., "n", "enter", "L")
+	Label   string  // Display label (e.g., "new", "drill", "logs")
+	Tabs    []Tab   // Which tabs this applies to (nil = all tabs)
 	Levels  []Level // Which levels this applies to (nil = all levels)
-	Tooltip string // Extended description shown on unavailable action
+	Tooltip string  // Extended description shown on unavailable action
 }
 
 // allActions defines all available actions with their context

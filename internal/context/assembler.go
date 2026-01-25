@@ -2,13 +2,18 @@ package context
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/drewfead/athena/internal/index"
 )
 
 // Assembler builds context blocks to prepend to agent prompts.
 type Assembler struct {
 	blackboard *Blackboard
 	state      *StateStore
+	index      *index.Index // Optional code index for relevant file lookup
 }
 
 // NewAssembler creates a new Assembler instance.
@@ -19,31 +24,48 @@ func NewAssembler(blackboard *Blackboard, state *StateStore) *Assembler {
 	}
 }
 
+// WithIndex sets the code index for relevant file lookup.
+func (a *Assembler) WithIndex(idx *index.Index) *Assembler {
+	a.index = idx
+	return a
+}
+
 // AssembleOptions configures context assembly.
 type AssembleOptions struct {
 	WorktreePath string
 	ProjectName  string
 	TicketID     string
+	TaskPrompt   string // The task description (used for index queries)
 
 	// Budget control
 	MaxTokens int // Approximate token budget (0 = unlimited)
 
 	// Content filters
-	IncludeState       bool // Include project-level state
-	IncludeBlackboard  bool // Include workflow-level blackboard
-	MinStateConfidence float64 // Minimum confidence for state entries (0-1)
+	IncludeState         bool    // Include project-level state
+	IncludeBlackboard    bool    // Include workflow-level blackboard
+	IncludeRelevantFiles bool    // Include index-based relevant files
+	MinStateConfidence   float64 // Minimum confidence for state entries (0-1)
+	MaxRelevantFiles     int     // Maximum relevant files to include (default 10)
 }
 
 // DefaultAssembleOptions returns sensible defaults.
 func DefaultAssembleOptions(worktreePath, projectName string) AssembleOptions {
 	return AssembleOptions{
-		WorktreePath:       worktreePath,
-		ProjectName:        projectName,
-		MaxTokens:          2000, // ~1-2K tokens for context
-		IncludeState:       true,
-		IncludeBlackboard:  true,
-		MinStateConfidence: 0.5,
+		WorktreePath:         worktreePath,
+		ProjectName:          projectName,
+		MaxTokens:            2000, // ~1-2K tokens for context
+		IncludeState:         true,
+		IncludeBlackboard:    true,
+		IncludeRelevantFiles: true, // Enable by default
+		MinStateConfidence:   0.5,
+		MaxRelevantFiles:     10,
 	}
+}
+
+// WithTask returns options configured for a specific task.
+func (opts AssembleOptions) WithTask(task string) AssembleOptions {
+	opts.TaskPrompt = task
+	return opts
 }
 
 // Assemble builds a context block from the blackboard and state stores.
@@ -52,6 +74,7 @@ func (a *Assembler) Assemble(opts AssembleOptions) (*ContextBlock, error) {
 		ProjectName:  opts.ProjectName,
 		WorktreePath: opts.WorktreePath,
 		TicketID:     opts.TicketID,
+		TaskPrompt:   opts.TaskPrompt,
 		TokenBudget:  opts.MaxTokens,
 	}
 
@@ -77,30 +100,98 @@ func (a *Assembler) Assemble(opts AssembleOptions) (*ContextBlock, error) {
 		block.Artifacts = artifacts
 	}
 
+	// Find relevant files using code index
+	if opts.IncludeRelevantFiles && opts.TaskPrompt != "" && a.index != nil {
+		maxFiles := opts.MaxRelevantFiles
+		if maxFiles <= 0 {
+			maxFiles = 10
+		}
+		scorer := index.NewScorer(a.index)
+		results := scorer.ScoreFiles(opts.TaskPrompt, opts.WorktreePath, maxFiles)
+		for _, r := range results {
+			block.RelevantFiles = append(block.RelevantFiles, &RelevantFile{
+				Path:   r.Path,
+				Score:  r.Score,
+				Reason: r.Reason,
+			})
+		}
+	}
+
+	// Generate project structure from the index (stable, cacheable content)
+	if a.index != nil {
+		block.ProjectStructure = a.generateProjectStructure()
+	}
+
 	// Calculate totals
 	block.TotalEntries = len(block.StateEntries) +
 		len(block.Decisions) +
 		len(block.Findings) +
 		len(block.Attempts) +
 		len(block.Questions) +
-		len(block.Artifacts)
+		len(block.Artifacts) +
+		len(block.RelevantFiles)
 
 	return block, nil
 }
 
 // Format renders a context block as a markdown string.
+//
+// PROMPT CACHING STRATEGY:
+// Claude caches prompts from the BEGINNING, so we order sections by stability:
+//
+// 1. STABLE (cached across agents working on same project):
+//    - Project State: Architecture, conventions, constraints - rarely changes
+//    - Project Structure: Directory layout and file counts - rarely changes
+//
+// 2. SEMI-STABLE (cached within a workflow):
+//    - Relevant Files: Task-specific file suggestions
+//    - Current Workflow: Decisions, findings, attempts - changes during workflow
+//
+// 3. UNIQUE (never cached - appended separately in BuildPromptWithContext):
+//    - The actual task prompt
+//
+// This ordering maximizes cache hits when multiple agents work on the same
+// project or when the same workflow spawns multiple agent invocations.
 func (a *Assembler) Format(block *ContextBlock) string {
-	if block.TotalEntries == 0 {
+	if block.TotalEntries == 0 && block.ProjectStructure == "" {
 		return "" // No context to add
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# Context\n\n")
+
+	// ============================================================
+	// STABLE SECTION - Cached across agents on the same project
+	// ============================================================
+	sb.WriteString("# Context (STABLE - cached across agents)\n\n")
 
 	a.formatProjectState(&sb, block)
+	a.formatProjectStructure(&sb, block)
+
+	// Visual separator between stable and dynamic sections
+	sb.WriteString("---\n\n")
+
+	// ============================================================
+	// SEMI-STABLE SECTION - Cached within a workflow
+	// ============================================================
+	sb.WriteString("# Workflow Context (SEMI-STABLE - cached within workflow)\n\n")
+
+	a.formatRelevantFiles(&sb, block)
 	a.formatWorkflowSections(&sb, block)
 
 	return sb.String()
+}
+
+// formatRelevantFiles renders the relevant files section.
+func (a *Assembler) formatRelevantFiles(sb *strings.Builder, block *ContextBlock) {
+	if len(block.RelevantFiles) == 0 {
+		return
+	}
+	sb.WriteString("## Relevant Files\n")
+	sb.WriteString("These files are likely relevant to your task based on code analysis:\n\n")
+	for _, f := range block.RelevantFiles {
+		sb.WriteString(fmt.Sprintf("- `%s` - %s\n", f.Path, f.Reason))
+	}
+	sb.WriteString("\n")
 }
 
 // formatProjectState renders the project state section.
@@ -111,6 +202,87 @@ func (a *Assembler) formatProjectState(sb *strings.Builder, block *ContextBlock)
 	sb.WriteString("## Project State\n")
 	a.formatStateEntries(sb, block.StateEntries)
 	sb.WriteString("\n")
+}
+
+// formatProjectStructure renders the project structure section.
+func (a *Assembler) formatProjectStructure(sb *strings.Builder, block *ContextBlock) {
+	if block.ProjectStructure == "" {
+		return
+	}
+	sb.WriteString("## Project Structure\n")
+	sb.WriteString(block.ProjectStructure)
+	sb.WriteString("\n")
+}
+
+// generateProjectStructure creates a summary of the codebase layout from the index.
+// This information is stable and highly cacheable.
+func (a *Assembler) generateProjectStructure() string {
+	if a.index == nil {
+		return ""
+	}
+
+	// Count files per top-level directory
+	dirCounts := make(map[string]int)
+	for filePath := range a.index.FileSymbols {
+		// Get the top-level directory (e.g., "internal/daemon" -> "internal")
+		parts := strings.Split(filePath, string(filepath.Separator))
+		if len(parts) > 0 {
+			topDir := parts[0]
+			dirCounts[topDir]++
+		}
+	}
+
+	if len(dirCounts) == 0 {
+		return ""
+	}
+
+	// Sort directories for consistent output
+	var dirs []string
+	for dir := range dirCounts {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+
+	var sb strings.Builder
+	sb.WriteString("Key directories and file counts:\n")
+
+	for _, dir := range dirs {
+		// Get subdirectory breakdown for important directories
+		if dir == "internal" || dir == "cmd" || dir == "pkg" {
+			subDirs := a.getSubdirectories(dir)
+			if len(subDirs) > 0 {
+				sb.WriteString(fmt.Sprintf("- `%s/` (%d files total)\n", dir, dirCounts[dir]))
+				for _, subDir := range subDirs {
+					sb.WriteString(fmt.Sprintf("  - `%s`\n", subDir))
+				}
+			} else {
+				sb.WriteString(fmt.Sprintf("- `%s/` (%d files)\n", dir, dirCounts[dir]))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("- `%s/` (%d files)\n", dir, dirCounts[dir]))
+		}
+	}
+
+	return sb.String()
+}
+
+// getSubdirectories returns unique subdirectory names under a given top-level directory.
+func (a *Assembler) getSubdirectories(topDir string) []string {
+	subDirs := make(map[string]bool)
+
+	for filePath := range a.index.FileSymbols {
+		parts := strings.Split(filePath, string(filepath.Separator))
+		if len(parts) >= 2 && parts[0] == topDir {
+			subDirs[parts[1]] = true
+		}
+	}
+
+	var result []string
+	for subDir := range subDirs {
+		result = append(result, subDir)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // formatWorkflowSections renders all blackboard sections.
@@ -226,6 +398,7 @@ func (a *Assembler) formatEntry(e *BlackboardEntry) string {
 }
 
 // BuildPromptWithContext prepends context to an existing prompt.
+// The task is appended last as it is UNIQUE per invocation and never cached.
 func (a *Assembler) BuildPromptWithContext(originalPrompt string, opts AssembleOptions) (string, error) {
 	block, err := a.Assemble(opts)
 	if err != nil {
@@ -242,8 +415,8 @@ func (a *Assembler) BuildPromptWithContext(originalPrompt string, opts AssembleO
 		return originalPrompt, nil
 	}
 
-	// Add separator between context and task
-	return context + "---\n\n# Your Task\n" + originalPrompt, nil
+	// Add separator between context and task (UNIQUE - never cached)
+	return context + "---\n\n# Your Task (UNIQUE - never cached)\n" + originalPrompt, nil
 }
 
 // EstimateTokens provides a rough token count for the context block.
@@ -267,17 +440,21 @@ func (a *Assembler) TruncateToTokenBudget(block *ContextBlock, maxTokens int) *C
 	}
 
 	// Create a copy and start trimming from least important
+	// Note: We preserve stable content (StateEntries, ProjectStructure) as long as possible
+	// since they provide the best cache hit potential.
 	trimmed := &ContextBlock{
-		ProjectName:  block.ProjectName,
-		WorktreePath: block.WorktreePath,
-		TicketID:     block.TicketID,
-		TokenBudget:  maxTokens,
-		StateEntries: block.StateEntries,
-		Decisions:    block.Decisions,
-		Findings:     block.Findings,
-		Attempts:     block.Attempts,
-		Questions:    block.Questions,
-		Artifacts:    block.Artifacts,
+		ProjectName:      block.ProjectName,
+		WorktreePath:     block.WorktreePath,
+		TicketID:         block.TicketID,
+		TokenBudget:      maxTokens,
+		StateEntries:     block.StateEntries,
+		ProjectStructure: block.ProjectStructure,
+		Decisions:        block.Decisions,
+		Findings:         block.Findings,
+		Attempts:         block.Attempts,
+		Questions:        block.Questions,
+		Artifacts:        block.Artifacts,
+		RelevantFiles:    block.RelevantFiles,
 	}
 
 	// Priority for trimming (least important first):

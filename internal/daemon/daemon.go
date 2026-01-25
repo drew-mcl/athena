@@ -405,6 +405,8 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("set_project_state", d.handleSetProjectState)
 	d.server.Handle("get_state_summary", d.handleGetStateSummary)
 	d.server.Handle("get_context_preview", d.handleGetContextPreview)
+	// Metrics
+	d.server.Handle("get_metrics_trend", d.handleGetMetricsTrend)
 	// Streaming (for athena-viz)
 	d.server.HandleStream("subscribe_stream", d.handleSubscribeStream)
 }
@@ -936,19 +938,40 @@ func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 
 	// Compute metrics for active agents
 	if a.Status != store.AgentStatusPending {
-		if metrics, err := d.store.GetAgentMetrics(a.ID); err == nil && metrics != nil {
+		// Try to get stored real-time metrics first
+		if storedMetrics, err := d.store.GetMetricsByAgent(a.ID); err == nil && storedMetrics != nil {
 			info.Metrics = &control.AgentMetrics{
-				ToolUseCount: metrics.ToolUseCount,
-				FilesRead:    metrics.FilesRead,
-				FilesWritten: metrics.FilesWritten,
-				LinesChanged: metrics.LinesChanged,
-				MessageCount: metrics.MessageCount,
-				DurationMs:   metrics.Duration.Milliseconds(),
-				InputTokens:  metrics.InputTokens,
-				OutputTokens: metrics.OutputTokens,
-				CacheReads:   metrics.CacheReads,
-				TotalTokens:  metrics.TotalTokens,
+				DurationMs:     storedMetrics.DurationMS,
+				InputTokens:    storedMetrics.InputTokens,
+				OutputTokens:   storedMetrics.OutputTokens,
+				CacheReads:     storedMetrics.CacheReadTokens,
+				CacheCreation:  storedMetrics.CacheCreationTokens,
+				TotalTokens:    storedMetrics.TotalInputTokens(),
+				CacheHitRate:   storedMetrics.CacheHitRate(),
+				CostCents:      storedMetrics.CostCents,
+				NumTurns:       storedMetrics.NumTurns,
+				ToolUseCount:   storedMetrics.ToolCalls,
+				ToolSuccessRate: float64(storedMetrics.ToolSuccesses) / float64(max(storedMetrics.ToolCalls, 1)) * 100,
 			}
+		}
+
+		// Supplement with computed metrics from messages
+		if computed, err := d.store.GetComputedMetrics(a.ID); err == nil && computed != nil {
+			if info.Metrics == nil {
+				info.Metrics = &control.AgentMetrics{
+					ToolUseCount: computed.ToolUseCount,
+					DurationMs:   computed.Duration.Milliseconds(),
+					InputTokens:  computed.InputTokens,
+					OutputTokens: computed.OutputTokens,
+					CacheReads:   computed.CacheReads,
+					TotalTokens:  computed.TotalTokens,
+				}
+			}
+			// Always use computed file metrics
+			info.Metrics.FilesRead = computed.FilesRead
+			info.Metrics.FilesWritten = computed.FilesWritten
+			info.Metrics.LinesChanged = computed.LinesChanged
+			info.Metrics.MessageCount = computed.MessageCount
 		}
 	}
 
@@ -2038,6 +2061,29 @@ func (d *Daemon) handleGetContextPreview(params json.RawMessage) (any, error) {
 	}
 
 	return map[string]string{"context": preview}, nil
+}
+
+func (d *Daemon) handleGetMetricsTrend(params json.RawMessage) (any, error) {
+	var req struct {
+		Period string `json:"period"` // "today", "week", "all"
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Default to "all" if not specified
+	period := req.Period
+	if period == "" {
+		period = "all"
+	}
+
+	trend, err := d.store.GetMetricsTrend(period)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return the store type directly (simple struct)
+	return trend, nil
 }
 
 // Helper functions for context handlers

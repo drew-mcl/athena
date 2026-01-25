@@ -357,14 +357,30 @@ func nullString(s string) *string {
 	return &s
 }
 
-// GetAgentMetrics computes usage statistics for an agent from its conversation.
-func (s *Store) GetAgentMetrics(agentID string) (*AgentMetrics, error) {
+// ComputedMetrics holds retrospectively computed statistics from conversation messages.
+// This is separate from AgentMetrics which stores real-time data from result events.
+type ComputedMetrics struct {
+	MessageCount int
+	Duration     time.Duration
+	InputTokens  int
+	OutputTokens int
+	CacheReads   int
+	TotalTokens  int
+	ToolUseCount int
+	FilesRead    int
+	FilesWritten int
+	LinesChanged int
+}
+
+// GetComputedMetrics computes usage statistics for an agent from its conversation history.
+// For real-time metrics captured at session end, use GetMetricsByAgent instead.
+func (s *Store) GetComputedMetrics(agentID string) (*ComputedMetrics, error) {
 	conv, err := s.GetConversation(agentID)
 	if err != nil {
 		return nil, err
 	}
 
-	metrics := &AgentMetrics{
+	metrics := &ComputedMetrics{
 		MessageCount: len(conv.Messages),
 		Duration:     conv.Duration(),
 	}
