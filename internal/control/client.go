@@ -1068,3 +1068,206 @@ type SetStateRequest struct {
 	Confidence float64 `json:"confidence,omitempty"` // Defaults to 1.0
 	AgentID    string  `json:"agent_id,omitempty"`   // Optional source agent
 }
+
+// TaskListInfo represents a task list for API responses.
+type TaskListInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Path      string `json:"path,omitempty"`
+	TaskCount int    `json:"task_count"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// TaskInfo represents a task for API responses.
+type TaskInfo struct {
+	ID          string         `json:"id"`
+	ListID      string         `json:"list_id"`
+	Subject     string         `json:"subject"`
+	Description string         `json:"description,omitempty"`
+	Status      string         `json:"status"` // pending | in_progress | completed
+	ActiveForm  string         `json:"active_form,omitempty"`
+	Owner       string         `json:"owner,omitempty"`
+	Blocks      []string       `json:"blocks,omitempty"`
+	BlockedBy   []string       `json:"blocked_by,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   string         `json:"created_at"`
+	UpdatedAt   string         `json:"updated_at"`
+}
+
+// CreateTaskRequest is the request to create a new task.
+type CreateTaskRequest struct {
+	ListID      string `json:"list_id"`
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
+}
+
+// UpdateTaskRequest is the request to update a task.
+type UpdateTaskRequest struct {
+	ListID      string   `json:"list_id"`
+	TaskID      string   `json:"task_id"`
+	Subject     string   `json:"subject,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	ActiveForm  string   `json:"active_form,omitempty"`
+	Owner       string   `json:"owner,omitempty"`
+	Blocks      []string `json:"blocks,omitempty"`
+	BlockedBy   []string `json:"blocked_by,omitempty"`
+}
+
+// ExecuteTaskRequest is the request to execute a task with an agent.
+type ExecuteTaskRequest struct {
+	ListID       string `json:"list_id"`
+	TaskID       string `json:"task_id"`
+	WorktreePath string `json:"worktree_path,omitempty"` // Optional: use specific worktree
+	Archetype    string `json:"archetype,omitempty"`     // Optional: agent archetype
+}
+
+// ListTaskProviders retrieves all registered task providers.
+func (c *Client) ListTaskProviders() ([]string, error) {
+	resp, err := c.Call("list_task_providers", nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var providers []string
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &providers)
+	return providers, nil
+}
+
+// ListTaskLists retrieves all task lists.
+func (c *Client) ListTaskLists() ([]*TaskListInfo, error) {
+	resp, err := c.Call("list_task_lists", nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var lists []*TaskListInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &lists)
+	return lists, nil
+}
+
+// ListTasks retrieves tasks from a list.
+func (c *Client) ListTasks(listID string, status string) ([]*TaskInfo, error) {
+	resp, err := c.Call("list_tasks", map[string]any{
+		"list_id": listID,
+		"status":  status,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var tasks []*TaskInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &tasks)
+	return tasks, nil
+}
+
+// GetTask retrieves a specific task.
+func (c *Client) GetTask(listID, taskID string) (*TaskInfo, error) {
+	resp, err := c.Call("get_task", map[string]string{
+		"list_id": listID,
+		"task_id": taskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var task TaskInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &task)
+	return &task, nil
+}
+
+// CreateTask creates a new task in a list.
+func (c *Client) CreateTask(req CreateTaskRequest) (*TaskInfo, error) {
+	resp, err := c.Call("create_task", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var task TaskInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &task)
+	return &task, nil
+}
+
+// UpdateTask updates an existing task.
+func (c *Client) UpdateTask(req UpdateTaskRequest) (*TaskInfo, error) {
+	resp, err := c.Call("update_task", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var task TaskInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &task)
+	return &task, nil
+}
+
+// DeleteTask removes a task from a list.
+func (c *Client) DeleteTask(listID, taskID string) error {
+	resp, err := c.Call("delete_task", map[string]string{
+		"list_id": listID,
+		"task_id": taskID,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// ExecuteTask spawns an agent to execute a task.
+func (c *Client) ExecuteTask(req ExecuteTaskRequest) (*AgentInfo, error) {
+	resp, err := c.Call("execute_task", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var agent AgentInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &agent)
+	return &agent, nil
+}
+
+// BroadcastTask broadcasts a task to other sessions.
+func (c *Client) BroadcastTask(listID, taskID string) error {
+	resp, err := c.Call("broadcast_task", map[string]string{
+		"list_id": listID,
+		"task_id": taskID,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}

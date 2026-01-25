@@ -49,7 +49,7 @@ const (
 )
 
 // Dashboard level tabs (global view)
-var dashboardTabs = []Tab{TabProjects, TabWorktrees, TabJobs, TabQuestions, TabAdmin}
+var dashboardTabs = []Tab{TabProjects, TabWorktrees, TabJobs, TabTasks, TabQuestions, TabAdmin}
 
 // Project level tabs (drill-in view)
 var projectTabs = []Tab{TabWorktrees, TabAgents, TabTasks, TabNotes}
@@ -63,6 +63,11 @@ type Model struct {
 	agents    []*control.AgentInfo
 	notes     []*control.NoteInfo      // Quick notes/ideas
 	changelog []*control.ChangelogInfo // Completed work history
+
+	// Claude Code Tasks
+	taskLists        []*control.TaskListInfo
+	claudeTasks      []*control.TaskInfo
+	selectedTaskList string // ID of selected task list
 
 	// Navigation
 	level           Level
@@ -138,6 +143,7 @@ type Model struct {
 	worktreeTable *layout.Table
 	jobTable      *layout.Table
 	agentTable    *layout.Table
+	taskTable     *layout.Table
 
 	// Client connection
 	client *control.Client
@@ -159,12 +165,14 @@ type (
 	errMsg             error
 	eventMsg           control.Event
 	fetchDataResultMsg struct {
-		worktrees []*control.WorktreeInfo
-		agents    []*control.AgentInfo
-		jobs      []*control.JobInfo
-		notes     []*control.NoteInfo
-		changelog []*control.ChangelogInfo
-		err       error
+		worktrees   []*control.WorktreeInfo
+		agents      []*control.AgentInfo
+		jobs        []*control.JobInfo
+		notes       []*control.NoteInfo
+		changelog   []*control.ChangelogInfo
+		taskLists   []*control.TaskListInfo
+		claudeTasks []*control.TaskInfo
+		err         error
 	}
 	logsResultMsg struct {
 		agentID string
@@ -246,6 +254,14 @@ func New(client *control.Client, cfg *config.Config) Model {
 		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
 	})
 
+	taskTable := layout.NewTable([]layout.Column{
+		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
+		{Header: "TASK", MinWidth: 30, MaxWidth: 0, Flex: 4},
+		{Header: "LIST", MinWidth: 12, MaxWidth: 20, Flex: 1},
+		{Header: "OWNER", MinWidth: 10, MaxWidth: 15, Flex: 0},
+		{Header: "AGE", MinWidth: 5, MaxWidth: 8, Flex: 0},
+	})
+
 	// Default workflow mode if config not provided
 	workflowMode := config.WorkflowModeApprove
 	if cfg != nil {
@@ -263,6 +279,7 @@ func New(client *control.Client, cfg *config.Config) Model {
 		worktreeTable: worktreeTable,
 		jobTable:      jobTable,
 		agentTable:    agentTable,
+		taskTable:     taskTable,
 		workflowMode:  workflowMode,
 	}
 }
@@ -340,6 +357,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktreeTable.SetWidth(m.width)
 		m.jobTable.SetWidth(m.width)
 		m.agentTable.SetWidth(m.width)
+		m.taskTable.SetWidth(m.width)
 
 		if m.planMode {
 			if m.planStatus == "pending" {
@@ -358,6 +376,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.jobs = msg.jobs
 		m.notes = msg.notes
 		m.changelog = msg.changelog
+		m.taskLists = msg.taskLists
+		m.claudeTasks = msg.claudeTasks
 		m.projects = m.extractProjects()
 		m.lastUpdate = time.Now()
 		if msg.err != nil {
@@ -1595,6 +1615,8 @@ func (m Model) getMaxSelection() int {
 			return max(0, len(m.worktrees)-1)
 		case TabJobs:
 			return max(0, len(m.jobs)-1)
+		case TabTasks:
+			return max(0, len(m.claudeTasks)-1)
 		case TabQuestions:
 			return max(0, len(m.questions())-1)
 		}
@@ -3263,18 +3285,39 @@ func (m Model) fetchData() tea.Msg {
 		changelog = m.changelog
 	}
 
+	// Fetch task lists and tasks (non-fatal if fails)
+	taskLists, err := m.client.ListTaskLists()
+	if err != nil {
+		// Task fetching is optional, don't add to errs
+		taskLists = m.taskLists
+	}
+	var claudeTasks []*control.TaskInfo
+	// Fetch tasks from selected list or first list
+	listID := m.selectedTaskList
+	if listID == "" && len(taskLists) > 0 {
+		listID = taskLists[0].ID
+	}
+	if listID != "" {
+		claudeTasks, err = m.client.ListTasks(listID, "")
+		if err != nil {
+			claudeTasks = m.claudeTasks
+		}
+	}
+
 	var fetchErr error
 	if len(errs) > 0 {
 		fetchErr = errors.Join(errs...)
 	}
 
 	return fetchDataResultMsg{
-		worktrees: wts,
-		agents:    agents,
-		jobs:      jobs,
-		notes:     notes,
-		changelog: changelog,
-		err:       fetchErr,
+		worktrees:   wts,
+		agents:      agents,
+		jobs:        jobs,
+		notes:       notes,
+		changelog:   changelog,
+		taskLists:   taskLists,
+		claudeTasks: claudeTasks,
+		err:         fetchErr,
 	}
 }
 
