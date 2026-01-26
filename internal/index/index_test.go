@@ -6,7 +6,9 @@ import (
 	"testing"
 )
 
-func TestIndexer_IndexProject(t *testing.T) {
+const newIndexerFailedFormat = "NewIndexer failed: %v"
+
+func TestIndexerIndexProject(t *testing.T) {
 	// Get the project root (parent of internal/index)
 	wd, err := os.Getwd()
 	if err != nil {
@@ -16,7 +18,7 @@ func TestIndexer_IndexProject(t *testing.T) {
 
 	indexer, err := NewIndexer(projectRoot)
 	if err != nil {
-		t.Fatalf("NewIndexer failed: %v", err)
+		t.Fatalf(newIndexerFailedFormat, err)
 	}
 
 	if indexer.ModulePath() != "github.com/drewfead/athena" {
@@ -67,7 +69,7 @@ func TestIndexer_IndexProject(t *testing.T) {
 	}
 }
 
-func TestIndexer_IndexFile(t *testing.T) {
+func TestIndexerIndexFile(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +78,7 @@ func TestIndexer_IndexFile(t *testing.T) {
 
 	indexer, err := NewIndexer(projectRoot)
 	if err != nil {
-		t.Fatalf("NewIndexer failed: %v", err)
+		t.Fatalf(newIndexerFailedFormat, err)
 	}
 
 	// Index this test file
@@ -88,13 +90,13 @@ func TestIndexer_IndexFile(t *testing.T) {
 	// Should find test functions
 	found := false
 	for _, sym := range symbols {
-		if sym.Name == "TestIndexer_IndexProject" {
+		if sym.Name == "TestIndexerIndexProject" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected to find TestIndexer_IndexProject function")
+		t.Error("expected to find TestIndexerIndexProject function")
 	}
 
 	// Should have testing import
@@ -198,7 +200,7 @@ func TestSearchSymbols(t *testing.T) {
 
 	indexer, err := NewIndexer(projectRoot)
 	if err != nil {
-		t.Fatalf("NewIndexer failed: %v", err)
+		t.Fatalf(newIndexerFailedFormat, err)
 	}
 
 	idx, err := indexer.IndexProject()

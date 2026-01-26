@@ -1,10 +1,10 @@
 package context
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestParser_ParseBlockFormats(t *testing.T) {
+const expectedOneFindingFormat = "expected 1 finding, got %d"
+
+func TestParserParseBlockFormats(t *testing.T) {
 	p := NewParser()
 
 	text := `Some output text
@@ -37,7 +37,7 @@ Context: v1 API is deprecated but still works
 		t.Errorf("expected 1 decision, got %d", counts[MarkerTypeDecision])
 	}
 	if counts[MarkerTypeFinding] != 1 {
-		t.Errorf("expected 1 finding, got %d", counts[MarkerTypeFinding])
+		t.Errorf(expectedOneFindingFormat, counts[MarkerTypeFinding])
 	}
 	if counts[MarkerTypeTried] != 1 {
 		t.Errorf("expected 1 tried, got %d", counts[MarkerTypeTried])
@@ -47,7 +47,7 @@ Context: v1 API is deprecated but still works
 	}
 }
 
-func TestParser_ParseInlineFormats(t *testing.T) {
+func TestParserParseInlineFormats(t *testing.T) {
 	p := NewParser()
 
 	text := `I explored the codebase and [[DECISION: use the existing auth middleware]].
@@ -66,7 +66,7 @@ One thing remains unclear: [[QUESTION: should we cache parsed configs?]]`
 		t.Errorf("expected 1 decision, got %d", counts[MarkerTypeDecision])
 	}
 	if counts[MarkerTypeFinding] != 1 {
-		t.Errorf("expected 1 finding, got %d", counts[MarkerTypeFinding])
+		t.Errorf(expectedOneFindingFormat, counts[MarkerTypeFinding])
 	}
 	if counts[MarkerTypeTried] != 1 {
 		t.Errorf("expected 1 tried, got %d", counts[MarkerTypeTried])
@@ -76,7 +76,7 @@ One thing remains unclear: [[QUESTION: should we cache parsed configs?]]`
 	}
 }
 
-func TestParser_ParseMixedFormats(t *testing.T) {
+func TestParserParseMixedFormats(t *testing.T) {
 	p := NewParser()
 
 	text := `## DECISION: Main Architecture Choice
@@ -112,7 +112,7 @@ And I noticed [[FINDING: the cache layer is not being used]].
 	}
 }
 
-func TestParser_InlineContent(t *testing.T) {
+func TestParserInlineContent(t *testing.T) {
 	p := NewParser()
 
 	text := `[[DECISION: use repository pattern for data access]]`
@@ -135,7 +135,7 @@ func TestParser_InlineContent(t *testing.T) {
 	}
 }
 
-func TestParser_HasMarkers(t *testing.T) {
+func TestParserHasMarkers(t *testing.T) {
 	p := NewParser()
 
 	tests := []struct {
@@ -159,7 +159,7 @@ func TestParser_HasMarkers(t *testing.T) {
 	}
 }
 
-func TestParser_MarkerCount(t *testing.T) {
+func TestParserMarkerCount(t *testing.T) {
 	p := NewParser()
 
 	text := `## DECISION: First
@@ -177,7 +177,7 @@ content
 	}
 }
 
-func TestParser_BlockFindingWithReference(t *testing.T) {
+func TestParserBlockFindingWithReference(t *testing.T) {
 	p := NewParser()
 
 	text := `## FINDING: Database Connection Issue
@@ -188,7 +188,7 @@ Reference: db/pool.go:42
 	markers := p.ParseFindings(text)
 
 	if len(markers) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(markers))
+		t.Fatalf(expectedOneFindingFormat, len(markers))
 	}
 
 	m := markers[0]
@@ -200,7 +200,7 @@ Reference: db/pool.go:42
 	}
 }
 
-func TestParser_BlockTriedWithOutcomeAndReason(t *testing.T) {
+func TestParserBlockTriedWithOutcomeAndReason(t *testing.T) {
 	p := NewParser()
 
 	text := `## TRIED: Caching with Redis

@@ -15,15 +15,30 @@ func (s *Store) SaveIndex(idx *index.Index) error {
 	}
 	defer tx.Rollback()
 
-	// Delete existing data for this project hash
-	if _, err := tx.Exec("DELETE FROM symbols WHERE project_hash = ?", idx.ProjectHash); err != nil {
+	if err := s.clearIndexData(tx, idx.ProjectHash); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("DELETE FROM dependencies WHERE project_hash = ?", idx.ProjectHash); err != nil {
+	if err := s.insertSymbols(tx, idx); err != nil {
+		return err
+	}
+	if err := s.insertDependencies(tx, idx); err != nil {
 		return err
 	}
 
-	// Insert symbols
+	return tx.Commit()
+}
+
+func (s *Store) clearIndexData(tx *sql.Tx, projectHash string) error {
+	if _, err := tx.Exec("DELETE FROM symbols WHERE project_hash = ?", projectHash); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM dependencies WHERE project_hash = ?", projectHash); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) insertSymbols(tx *sql.Tx, idx *index.Index) error {
 	symbolStmt, err := tx.Prepare(`
 		INSERT INTO symbols (project_hash, symbol_name, kind, file_path, line_number, package, receiver, exported)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -50,8 +65,10 @@ func (s *Store) SaveIndex(idx *index.Index) error {
 			}
 		}
 	}
+	return nil
+}
 
-	// Insert dependencies
+func (s *Store) insertDependencies(tx *sql.Tx, idx *index.Index) error {
 	depStmt, err := tx.Prepare(`
 		INSERT INTO dependencies (project_hash, from_file, to_file, dep_type, import_path, is_internal)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -76,32 +93,47 @@ func (s *Store) SaveIndex(idx *index.Index) error {
 			}
 		}
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 // LoadIndex loads an Index from the database by project hash.
 // Returns nil if no index exists for the given hash.
 func (s *Store) LoadIndex(projectHash string) (*index.Index, error) {
-	// Check if we have any data for this hash
-	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM symbols WHERE project_hash = ?", projectHash).Scan(&count)
+	hasData, err := s.indexExists(projectHash)
 	if err != nil {
 		return nil, err
 	}
-	if count == 0 {
+	if !hasData {
 		return nil, nil
 	}
 
 	idx := index.NewIndex("", projectHash, "")
 
-	// Load symbols
+	if err := s.loadIndexSymbols(idx, projectHash); err != nil {
+		return nil, err
+	}
+	if err := s.loadIndexDependencies(idx, projectHash); err != nil {
+		return nil, err
+	}
+
+	return idx, nil
+}
+
+func (s *Store) indexExists(projectHash string) (bool, error) {
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM symbols WHERE project_hash = ?", projectHash).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *Store) loadIndexSymbols(idx *index.Index, projectHash string) error {
 	rows, err := s.db.Query(`
 		SELECT symbol_name, kind, file_path, line_number, package, receiver, exported
 		FROM symbols WHERE project_hash = ?
 	`, projectHash)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 
@@ -110,7 +142,7 @@ func (s *Store) LoadIndex(projectHash string) (*index.Index, error) {
 		var kind string
 		var pkg, receiver sql.NullString
 		if err := rows.Scan(&sym.Name, &kind, &sym.FilePath, &sym.LineNumber, &pkg, &receiver, &sym.Exported); err != nil {
-			return nil, err
+			return err
 		}
 		sym.Kind = index.SymbolKind(kind)
 		if pkg.Valid {
@@ -121,17 +153,16 @@ func (s *Store) LoadIndex(projectHash string) (*index.Index, error) {
 		}
 		idx.AddSymbol(sym)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
+	return rows.Err()
+}
 
-	// Load dependencies
+func (s *Store) loadIndexDependencies(idx *index.Index, projectHash string) error {
 	depRows, err := s.db.Query(`
 		SELECT from_file, to_file, dep_type, import_path, is_internal
 		FROM dependencies WHERE project_hash = ?
 	`, projectHash)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer depRows.Close()
 
@@ -140,7 +171,7 @@ func (s *Store) LoadIndex(projectHash string) (*index.Index, error) {
 		var depType string
 		var importPath sql.NullString
 		if err := depRows.Scan(&dep.FromFile, &dep.ToFile, &depType, &importPath, &dep.IsInternal); err != nil {
-			return nil, err
+			return err
 		}
 		dep.DepType = index.DepType(depType)
 		if importPath.Valid {
@@ -148,11 +179,7 @@ func (s *Store) LoadIndex(projectHash string) (*index.Index, error) {
 		}
 		idx.AddDependency(dep)
 	}
-	if err := depRows.Err(); err != nil {
-		return nil, err
-	}
-
-	return idx, nil
+	return depRows.Err()
 }
 
 // LookupSymbol queries the database for a symbol by name.

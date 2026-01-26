@@ -21,20 +21,24 @@ func ExtractSymbols(filePath, relativePath string) ([]Symbol, error) {
 
 	var symbols []Symbol
 	pkgName := file.Name.Name
+	symbols = append(symbols, extractSymbolsFromFile(file, fset, relativePath, pkgName)...)
 
+	return symbols, nil
+}
+
+func extractSymbolsFromFile(file *ast.File, fset *token.FileSet, filePath, pkgName string) []Symbol {
+	var symbols []Symbol
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			sym := extractFuncSymbol(d, fset, relativePath, pkgName)
+			sym := extractFuncSymbol(d, fset, filePath, pkgName)
 			symbols = append(symbols, sym)
-
 		case *ast.GenDecl:
-			syms := extractGenDeclSymbols(d, fset, relativePath, pkgName)
+			syms := extractGenDeclSymbols(d, fset, filePath, pkgName)
 			symbols = append(symbols, syms...)
 		}
 	}
-
-	return symbols, nil
+	return symbols
 }
 
 // extractFuncSymbol extracts a Symbol from a function or method declaration.
@@ -63,53 +67,64 @@ func extractGenDeclSymbols(gd *ast.GenDecl, fset *token.FileSet, filePath, pkgNa
 	var symbols []Symbol
 
 	for _, spec := range gd.Specs {
-		switch s := spec.(type) {
-		case *ast.TypeSpec:
-			sym := Symbol{
-				Name:       s.Name.Name,
-				FilePath:   filePath,
-				LineNumber: fset.Position(s.Pos()).Line,
-				Package:    pkgName,
-				Exported:   isExported(s.Name.Name),
-			}
-
-			// Determine the specific type kind
-			switch s.Type.(type) {
-			case *ast.StructType:
-				sym.Kind = SymbolKindStruct
-			case *ast.InterfaceType:
-				sym.Kind = SymbolKindInterface
-			default:
-				sym.Kind = SymbolKindType
-			}
-
-			symbols = append(symbols, sym)
-
-		case *ast.ValueSpec:
-			// Handle const and var declarations
-			kind := SymbolKindVar
-			if gd.Tok == token.CONST {
-				kind = SymbolKindConst
-			}
-
-			for _, name := range s.Names {
-				// Skip blank identifiers
-				if name.Name == "_" {
-					continue
-				}
-				sym := Symbol{
-					Name:       name.Name,
-					Kind:       kind,
-					FilePath:   filePath,
-					LineNumber: fset.Position(name.Pos()).Line,
-					Package:    pkgName,
-					Exported:   isExported(name.Name),
-				}
-				symbols = append(symbols, sym)
-			}
-		}
+		symbols = append(symbols, extractSpecSymbols(spec, gd, fset, filePath, pkgName)...)
 	}
 
+	return symbols
+}
+
+func extractSpecSymbols(spec ast.Spec, gd *ast.GenDecl, fset *token.FileSet, filePath, pkgName string) []Symbol {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		return []Symbol{extractTypeSymbol(s, fset, filePath, pkgName)}
+	case *ast.ValueSpec:
+		return extractValueSymbols(s, gd, fset, filePath, pkgName)
+	default:
+		return nil
+	}
+}
+
+func extractTypeSymbol(spec *ast.TypeSpec, fset *token.FileSet, filePath, pkgName string) Symbol {
+	sym := Symbol{
+		Name:       spec.Name.Name,
+		FilePath:   filePath,
+		LineNumber: fset.Position(spec.Pos()).Line,
+		Package:    pkgName,
+		Exported:   isExported(spec.Name.Name),
+	}
+
+	switch spec.Type.(type) {
+	case *ast.StructType:
+		sym.Kind = SymbolKindStruct
+	case *ast.InterfaceType:
+		sym.Kind = SymbolKindInterface
+	default:
+		sym.Kind = SymbolKindType
+	}
+
+	return sym
+}
+
+func extractValueSymbols(spec *ast.ValueSpec, gd *ast.GenDecl, fset *token.FileSet, filePath, pkgName string) []Symbol {
+	kind := SymbolKindVar
+	if gd.Tok == token.CONST {
+		kind = SymbolKindConst
+	}
+
+	var symbols []Symbol
+	for _, name := range spec.Names {
+		if name.Name == "_" {
+			continue
+		}
+		symbols = append(symbols, Symbol{
+			Name:       name.Name,
+			Kind:       kind,
+			FilePath:   filePath,
+			LineNumber: fset.Position(name.Pos()).Line,
+			Package:    pkgName,
+			Exported:   isExported(name.Name),
+		})
+	}
 	return symbols
 }
 
@@ -163,28 +178,20 @@ func ExtractSymbolsFromDir(dirPath, relativeDir string) ([]Symbol, error) {
 			continue
 		}
 
-		for fileName, file := range pkg.Files {
-			// Skip test files
-			if strings.HasSuffix(fileName, "_test.go") {
-				continue
-			}
-
-			relativePath := filepath.Join(relativeDir, filepath.Base(fileName))
-			pkgName := file.Name.Name
-
-			for _, decl := range file.Decls {
-				switch d := decl.(type) {
-				case *ast.FuncDecl:
-					sym := extractFuncSymbol(d, fset, relativePath, pkgName)
-					symbols = append(symbols, sym)
-
-				case *ast.GenDecl:
-					syms := extractGenDeclSymbols(d, fset, relativePath, pkgName)
-					symbols = append(symbols, syms...)
-				}
-			}
-		}
+		symbols = appendPackageSymbols(symbols, pkg, fset, relativeDir)
 	}
 
 	return symbols, nil
+}
+
+func appendPackageSymbols(symbols []Symbol, pkg *ast.Package, fset *token.FileSet, relativeDir string) []Symbol {
+	for fileName, file := range pkg.Files {
+		if strings.HasSuffix(fileName, testFileSuffix) {
+			continue
+		}
+		relativePath := filepath.Join(relativeDir, filepath.Base(fileName))
+		pkgName := file.Name.Name
+		symbols = append(symbols, extractSymbolsFromFile(file, fset, relativePath, pkgName)...)
+	}
+	return symbols
 }
