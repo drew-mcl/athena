@@ -46,6 +46,7 @@ const (
 const (
 	inputHeightMin = 1
 	inputHeightMax = 3
+	ticketLabel    = "  Ticket: "
 )
 
 // Dashboard level tabs (global view)
@@ -53,6 +54,9 @@ var dashboardTabs = []Tab{TabProjects, TabWorktrees, TabJobs, TabTasks, TabQuest
 
 // Project level tabs (drill-in view)
 var projectTabs = []Tab{TabWorktrees, TabAgents, TabTasks, TabNotes}
+
+var promoteProviderIDs = []string{"claude", "gemini", "codex"}
+var promoteProviderLabels = []string{"Claude Code (Opus)", "Gemini Auto", "Codex 5.2"}
 
 // Model is the main dashboard model
 type Model struct {
@@ -495,7 +499,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.detailMode = true
 					return m, nil
 				}
-			case TabAgents:
+			case TabAgents, TabAdmin:
 				if m.selected < len(m.agents) {
 					// Show agent detail at dashboard level
 					m.detailAgent = m.agents[m.selected]
@@ -505,13 +509,6 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case TabNotes:
 				// Notes don't drill down
 				return m, nil
-			case TabAdmin:
-				// Admin shows agents - open agent detail
-				if m.selected < len(m.agents) {
-					m.detailAgent = m.agents[m.selected]
-					m.detailMode = true
-					return m, nil
-				}
 			}
 			if project != "" {
 				m.selectedProject = project
@@ -882,21 +879,33 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Calculate max scroll (approximate, since we don't have the rendered content here easily without re-rendering)
-	// For now, we allow scrolling freely, the renderer will clamp.
-	// Ideally we'd store line count in Model or re-render to check bounds.
-	// Let's assume unlimited scroll down for now, and rely on visual feedback.
-	
-	switch msg.String() {
-	case "esc", "q", "enter":
-		m.detailMode = false
-		m.detailScroll = 0
-		m.detailJob = nil
-		m.detailAgent = nil
-		m.detailWorktree = nil
-		return m, nil
+	key := msg.String()
+	if shouldExitDetail(key) {
+		return m.exitDetailMode(), nil
+	}
 
-	// Scrolling
+	if updated, handled := m.handleDetailScroll(key); handled {
+		return updated, nil
+	}
+
+	return m.handleDetailAgentAction(key)
+}
+
+func shouldExitDetail(key string) bool {
+	return key == "esc" || key == "q" || key == "enter"
+}
+
+func (m Model) exitDetailMode() Model {
+	m.detailMode = false
+	m.detailScroll = 0
+	m.detailJob = nil
+	m.detailAgent = nil
+	m.detailWorktree = nil
+	return m
+}
+
+func (m Model) handleDetailScroll(key string) (Model, bool) {
+	switch key {
 	case "j", "down":
 		m.detailScroll++
 	case "k", "up":
@@ -908,40 +917,37 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.detailScroll = 10000 // Hack to go to bottom, renderer will clamp
 	case "ctrl+d":
-		// Half page down
 		m.detailScroll += m.height / 2
 	case "ctrl+u":
-		// Half page up
 		if m.detailScroll > m.height/2 {
 			m.detailScroll -= m.height / 2
 		} else {
 			m.detailScroll = 0
 		}
+	default:
+		return m, false
+	}
+	return m, true
+}
 
-	// Actions available in agent detail
+func (m Model) handleDetailAgentAction(key string) (tea.Model, tea.Cmd) {
+	if m.detailAgent == nil {
+		return m, nil
+	}
+	switch key {
 	case "L":
-		if m.detailAgent != nil {
-			return m, m.fetchLogs(m.detailAgent.ID)
-		}
+		return m, m.fetchLogs(m.detailAgent.ID)
 	case "a":
-		if m.detailAgent != nil {
-			m.term.AttachToAgent(m.detailAgent.WorktreePath, m.detailAgent.ID)
-		}
+		m.term.AttachToAgent(m.detailAgent.WorktreePath, m.detailAgent.ID)
 	case "e":
-		if m.detailAgent != nil {
-			m.term.OpenNvim(m.detailAgent.WorktreePath, true)
-		}
+		m.term.OpenNvim(m.detailAgent.WorktreePath, true)
 	case "s":
-		if m.detailAgent != nil {
-			m.term.OpenShell(m.detailAgent.WorktreePath)
-		}
+		m.term.OpenShell(m.detailAgent.WorktreePath)
 	case "x":
-		if m.detailAgent != nil {
-			agentID := m.detailAgent.ID
-			m.detailMode = false
-			m.detailAgent = nil
-			return m, m.killAgent(agentID)
-		}
+		agentID := m.detailAgent.ID
+		m.detailMode = false
+		m.detailAgent = nil
+		return m, m.killAgent(agentID)
 	}
 	return m, nil
 }
@@ -1378,28 +1384,12 @@ func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) createWorktreeCmd(project, ticketID, description string, workflow config.WorkflowMode) tea.Cmd {
 	return func() tea.Msg {
-		// Find the main repo path for this project
-		var mainRepoPath string
-		for _, wt := range m.worktrees {
-			if wt.Project == project && wt.IsMain {
-				mainRepoPath = wt.Path
-				break
-			}
-		}
-		if mainRepoPath == "" {
-			// Use first worktree for this project as fallback
-			for _, wt := range m.worktrees {
-				if wt.Project == project {
-					mainRepoPath = wt.Path
-					break
-				}
-			}
-		}
-		if mainRepoPath == "" {
-			return errMsg(fmt.Errorf("no worktree found for project %s", project))
+		mainRepoPath, err := m.resolveMainRepoPath(project)
+		if err != nil {
+			return errMsg(err)
 		}
 
-		_, err := m.client.CreateWorktree(control.CreateWorktreeRequest{
+		_, err = m.client.CreateWorktree(control.CreateWorktreeRequest{
 			MainRepoPath: mainRepoPath,
 			TicketID:     ticketID,
 			Description:  description,
@@ -1412,70 +1402,45 @@ func (m Model) createWorktreeCmd(project, ticketID, description string, workflow
 	}
 }
 
+func (m Model) resolveMainRepoPath(project string) (string, error) {
+	if path := m.findProjectRepo(project, true); path != "" {
+		return path, nil
+	}
+	if path := m.findProjectRepo(project, false); path != "" {
+		return path, nil
+	}
+	return "", fmt.Errorf("no worktree found for project %s", project)
+}
+
+func (m Model) findProjectRepo(project string, mainOnly bool) string {
+	for _, wt := range m.worktrees {
+		if wt.Project != project {
+			continue
+		}
+		if mainOnly && !wt.IsMain {
+			continue
+		}
+		return wt.Path
+	}
+	return ""
+}
+
 func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		// Cancel promotion
-		m.promoteMode = false
-		m.promoteNoteID = ""
-		m.promoteNoteText = ""
-		m.promoteStep = 0
+		m = m.resetPromoteState()
 		return m, nil
 
 	case "enter":
-		if m.promoteStep == 0 {
-			// Project selected, move to Agent selection
-			if len(m.projects) == 0 {
-				return m, m.showStatus("No projects available")
-			}
-			m.promoteStep = 1
-			return m, nil
-		} else if m.promoteStep == 1 {
-			// Agent selected, execute promotion
-			project := m.projects[m.promoteProjectIdx]
-			noteID := m.promoteNoteID
-			noteText := m.promoteNoteText
-
-			// Map index to provider ID
-			var provider string
-			switch m.promoteAgentIdx {
-			case 0:
-				provider = "claude"
-			case 1:
-				provider = "gemini"
-			case 2:
-				provider = "codex"
-			default:
-				provider = "claude"
-			}
-
-			m.promoteMode = false
-			return m, m.promoteNoteCmd(project, noteID, noteText, provider)
-		}
+		return m.handlePromoteEnter()
 
 	case "j", "down":
-		if m.promoteStep == 0 {
-			if m.promoteProjectIdx < len(m.projects)-1 {
-				m.promoteProjectIdx++
-			}
-		} else {
-			// Agent selection (hardcoded list for now)
-			if m.promoteAgentIdx < 2 { // 3 providers: 0, 1, 2
-				m.promoteAgentIdx++
-			}
-		}
+		m = m.promoteMove(1)
 		return m, nil
 
 	case "k", "up":
-		if m.promoteStep == 0 {
-			if m.promoteProjectIdx > 0 {
-				m.promoteProjectIdx--
-			}
-		} else {
-			if m.promoteAgentIdx > 0 {
-				m.promoteAgentIdx--
-			}
-		}
+		m = m.promoteMove(-1)
 		return m, nil
 
 	case "backspace", "delete", "h", "left":
@@ -1489,30 +1454,72 @@ func (m Model) handlePromoteNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) resetPromoteState() Model {
+	m.promoteMode = false
+	m.promoteNoteID = ""
+	m.promoteNoteText = ""
+	m.promoteStep = 0
+	return m
+}
+
+func (m Model) handlePromoteEnter() (tea.Model, tea.Cmd) {
+	if m.promoteStep == 0 {
+		// Project selected, move to Agent selection
+		if len(m.projects) == 0 {
+			return m, m.showStatus("No projects available")
+		}
+		m.promoteStep = 1
+		return m, nil
+	}
+	if m.promoteStep == 1 {
+		// Agent selected, execute promotion
+		project := m.projects[m.promoteProjectIdx]
+		provider := promoteProviderID(m.promoteAgentIdx)
+
+		m.promoteMode = false
+		return m, m.promoteNoteCmd(project, m.promoteNoteID, m.promoteNoteText, provider)
+	}
+	return m, nil
+}
+
+func (m Model) promoteMove(delta int) Model {
+	if m.promoteStep == 0 {
+		m.promoteProjectIdx = clampIndex(m.promoteProjectIdx+delta, len(m.projects))
+		return m
+	}
+	m.promoteAgentIdx = clampIndex(m.promoteAgentIdx+delta, len(promoteProviderIDs))
+	return m
+}
+
+func promoteProviderID(index int) string {
+	if index < 0 || index >= len(promoteProviderIDs) {
+		return promoteProviderIDs[0]
+	}
+	return promoteProviderIDs[index]
+}
+
+func clampIndex(index, size int) int {
+	if size <= 0 {
+		return 0
+	}
+	if index < 0 {
+		return 0
+	}
+	if index >= size {
+		return size - 1
+	}
+	return index
+}
+
 func (m Model) promoteNoteCmd(project, noteID, noteText, provider string) tea.Cmd {
 	return func() tea.Msg {
-		// Find the main repo path for this project
-		var mainRepoPath string
-		for _, wt := range m.worktrees {
-			if wt.Project == project && wt.IsMain {
-				mainRepoPath = wt.Path
-				break
-			}
-		}
-		if mainRepoPath == "" {
-			for _, wt := range m.worktrees {
-				if wt.Project == project {
-					mainRepoPath = wt.Path
-					break
-				}
-			}
-		}
-		if mainRepoPath == "" {
-			return errMsg(fmt.Errorf("no worktree found for project %s", project))
+		mainRepoPath, err := m.resolveMainRepoPath(project)
+		if err != nil {
+			return errMsg(err)
 		}
 
 		// Create worktree with note as description
-		_, err := m.client.CreateWorktree(control.CreateWorktreeRequest{
+		_, err = m.client.CreateWorktree(control.CreateWorktreeRequest{
 			MainRepoPath: mainRepoPath,
 			TicketID:     "", // No ticket for promoted notes
 			Description:  noteText,
@@ -1641,41 +1648,11 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	var content, footer string
-
-	// Detail overlays
-	if m.detailMode {
-		if m.detailJob != nil {
-			content, footer = m.renderJobDetail()
-		} else if m.detailAgent != nil {
-			content, footer = m.renderAgentDetail()
-		} else if m.detailWorktree != nil {
-			content, footer = m.renderWorktreeDetail()
-		}
-	} else if m.logsMode { // Logs overlay
-		content, footer = m.renderLogs()
-	} else if m.planMode { // Plan viewer overlay
-		content, footer = m.renderPlanView()
-	} else if m.contextMode { // Context viewer overlay
-		// Context view still returns single string? Let's check.
-		// It wasn't in the list of refactored methods.
-		// We should probably refactor it too or handle it specially.
-		// For now, let's assume it returns string and has footer embedded?
-		// Checking renderContextView implementation... it calls PinFooterToBottom.
-		// So it returns full page.
+	if m.contextMode {
 		return m.renderContextView()
-	} else if m.worktreeMode { // Worktree creation wizard
-		content, footer = m.renderWorktreeWizard()
-	} else if m.promoteMode { // Note promotion wizard
-		content, footer = m.renderPromoteWizard()
-	} else {
-		// Main dashboard
-		if m.level == LevelDashboard {
-			content, footer = m.renderDashboard()
-		} else {
-			content, footer = m.renderProjectDetail()
-		}
 	}
+
+	content, footer := m.renderCurrentView()
 
 	// Combine content and footer
 	fullView := layout.PinFooterToBottom(content, footer, m.height)
@@ -1686,6 +1663,45 @@ func (m Model) View() string {
 	}
 
 	return fullView
+}
+
+func (m Model) renderCurrentView() (string, string) {
+	if m.detailMode {
+		return m.renderDetailOverlay()
+	}
+	if m.logsMode {
+		return m.renderLogs()
+	}
+	if m.planMode {
+		return m.renderPlanView()
+	}
+	if m.worktreeMode {
+		return m.renderWorktreeWizard()
+	}
+	if m.promoteMode {
+		return m.renderPromoteWizard()
+	}
+	return m.renderMainView()
+}
+
+func (m Model) renderDetailOverlay() (string, string) {
+	switch {
+	case m.detailJob != nil:
+		return m.renderJobDetail()
+	case m.detailAgent != nil:
+		return m.renderAgentDetail()
+	case m.detailWorktree != nil:
+		return m.renderWorktreeDetail()
+	default:
+		return "", ""
+	}
+}
+
+func (m Model) renderMainView() (string, string) {
+	if m.level == LevelDashboard {
+		return m.renderDashboard()
+	}
+	return m.renderProjectDetail()
 }
 
 func (m Model) renderDashboard() (string, string) {
@@ -1907,25 +1923,25 @@ func (m Model) renderDetailHeader() string {
 }
 
 // applyScroll applies scroll offset to content, returning the visible window.
-func (m Model) applyScroll(content string, footer string) (string, string) {
+func (m Model) applyScroll(content, footer string) (string, string) {
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
-	
+
 	// Calculate available height for content
 	footerLines := strings.Count(footer, "\n") + 1
-	contentHeight := max(1, m.height - footerLines)
+	contentHeight := max(1, m.height-footerLines)
 
 	// Clamp scroll
-	maxScroll := max(0, totalLines - contentHeight)
+	maxScroll := max(0, totalLines-contentHeight)
 	if m.detailScroll > maxScroll {
 		m.detailScroll = maxScroll
 	}
-	
+
 	start := m.detailScroll
-	end := min(start + contentHeight, totalLines)
-	
+	end := min(start+contentHeight, totalLines)
+
 	visibleLines := lines[start:end]
-	
+
 	// Add scroll indicator if needed
 	if totalLines > contentHeight {
 		// We might overwrite the last line or append to footer?
@@ -1934,7 +1950,7 @@ func (m Model) applyScroll(content string, footer string) (string, string) {
 		scrollInd := fmt.Sprintf(" %d%%", percent)
 		footer = strings.TrimRight(footer, " ") + tui.StyleMuted.Render(scrollInd)
 	}
-	
+
 	return strings.Join(visibleLines, "\n"), footer
 }
 
@@ -1942,7 +1958,18 @@ func (m Model) renderJobDetail() (string, string) {
 	var content strings.Builder
 	job := m.detailJob
 
-	// Header
+	m.renderJobHeader(&content, job)
+	m.renderJobTask(&content, job)
+	if job.Type == "question" {
+		m.renderJobAnswer(&content, job)
+	} else {
+		m.renderJobFeatureDetails(&content, job)
+	}
+
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  Esc/q:close"))
+}
+
+func (m Model) renderJobHeader(content *strings.Builder, job *control.JobInfo) {
 	icon := tui.Logo()
 	typeLabel := "Job"
 	if job.Type == "question" {
@@ -1957,12 +1984,12 @@ func (m Model) renderJobDetail() (string, string) {
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
+}
 
-	// Task/Question
+func (m Model) renderJobTask(content *strings.Builder, job *control.JobInfo) {
 	content.WriteString(tui.StyleMuted.Render("  Task: "))
 	content.WriteString("\n")
 
-	// Wrap task in a box for better readability
 	taskBox := tui.StyleInputBox.
 		Width(m.width-6).
 		Padding(0, 1).
@@ -1970,43 +1997,51 @@ func (m Model) renderJobDetail() (string, string) {
 
 	content.WriteString("  " + taskBox)
 	content.WriteString("\n\n")
+}
 
-	// Answer (for question jobs)
-	if job.Type == "question" {
-		content.WriteString(tui.StyleMuted.Render("  Answer:\n"))
-		if job.Answer != "" {
-			// Word wrap the answer
-			lines := wrapText(job.Answer, m.width-4)
-			for _, line := range lines {
-				content.WriteString("  " + line + "\n")
-			}
-		} else if job.Status == "pending" || job.Status == "executing" {
-			content.WriteString(tui.StyleMuted.Render("  Processing...\n"))
-		} else {
-			content.WriteString(tui.StyleMuted.Render("  No answer yet.\n"))
+func (m Model) renderJobAnswer(content *strings.Builder, job *control.JobInfo) {
+	content.WriteString(tui.StyleMuted.Render("  Answer:\n"))
+	if job.Answer != "" {
+		lines := wrapText(job.Answer, m.width-4)
+		for _, line := range lines {
+			content.WriteString("  " + line + "\n")
 		}
-	} else {
-		// For feature jobs show more info
-		if job.AgentID != "" {
-			content.WriteString(tui.StyleMuted.Render("  Agent: "))
-			content.WriteString(shortID(job.AgentID, 8))
-			content.WriteString("\n")
-		}
-		if job.WorktreePath != "" {
-			content.WriteString(tui.StyleMuted.Render("  Worktree: "))
-			content.WriteString(job.WorktreePath)
-			content.WriteString("\n")
-		}
+		return
 	}
+	if job.Status == "pending" || job.Status == "executing" {
+		content.WriteString(tui.StyleMuted.Render("  Processing...\n"))
+		return
+	}
+	content.WriteString(tui.StyleMuted.Render("  No answer yet.\n"))
+}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  Esc/q:close"))
+func (m Model) renderJobFeatureDetails(content *strings.Builder, job *control.JobInfo) {
+	if job.AgentID != "" {
+		content.WriteString(tui.StyleMuted.Render("  Agent: "))
+		content.WriteString(shortID(job.AgentID, 8))
+		content.WriteString("\n")
+	}
+	if job.WorktreePath != "" {
+		content.WriteString(tui.StyleMuted.Render("  Worktree: "))
+		content.WriteString(job.WorktreePath)
+		content.WriteString("\n")
+	}
 }
 
 func (m Model) renderAgentDetail() (string, string) {
 	var content strings.Builder
 	agent := m.detailAgent
 
-	// Header with icon and status
+	m.renderAgentDetailHeader(&content, agent)
+	m.renderAgentDetailInfo(&content, agent)
+	m.renderAgentSummary(&content, agent)
+	m.renderAgentMetrics(&content, agent)
+	m.renderAgentPrompt(&content, agent)
+
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
+}
+
+func (m Model) renderAgentDetailHeader(content *strings.Builder, agent *control.AgentInfo) {
 	icon := tui.StatusStyle(agent.Status).Render(tui.StatusIcons[agent.Status])
 	content.WriteString(icon + " ")
 	content.WriteString(tui.StyleLogo.Render("Agent"))
@@ -2015,8 +2050,9 @@ func (m Model) renderAgentDetail() (string, string) {
 	content.WriteString("\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
+}
 
-	// Key info
+func (m Model) renderAgentDetailInfo(content *strings.Builder, agent *control.AgentInfo) {
 	content.WriteString(tui.StyleMuted.Render("  ID:        "))
 	content.WriteString(agent.ID)
 	content.WriteString("\n")
@@ -2030,13 +2066,7 @@ func (m Model) renderAgentDetail() (string, string) {
 	content.WriteString("\n")
 
 	content.WriteString(tui.StyleMuted.Render("  Harness:   "))
-	// TODO: Get actual provider from backend when available.
-	// For now, Claude Code is the default implementation.
-	harness := "Claude Code"
-	if agent.ClaudeSessionID != "" {
-		harness = "Claude Code (Opus)"
-	}
-	content.WriteString(tui.StyleAccent.Render(harness))
+	content.WriteString(tui.StyleAccent.Render(agentHarnessLabel(agent)))
 	content.WriteString("\n")
 
 	content.WriteString(tui.StyleMuted.Render("  Worktree:  "))
@@ -2057,74 +2087,104 @@ func (m Model) renderAgentDetail() (string, string) {
 	content.WriteString(tui.StyleMuted.Render("  Restarts:  "))
 	content.WriteString(fmt.Sprintf("%d", agent.RestartCount))
 	content.WriteString("\n")
+}
 
-	// Worktree Summary (Full)
-	var summary string
+func agentHarnessLabel(agent *control.AgentInfo) string {
+	// Provider metadata is not exposed yet; default to Claude Code for now.
+	if agent.ClaudeSessionID != "" {
+		return "Claude Code (Opus)"
+	}
+	return "Claude Code"
+}
+
+func (m Model) renderAgentSummary(content *strings.Builder, agent *control.AgentInfo) {
+	summary := ""
 	for _, wt := range m.worktrees {
-		if wt.Path == agent.WorktreePath {
-			summary = wt.Summary
-			if summary == "" && wt.Description != "" {
-				summary = wt.Description
-			}
-			break
+		if wt.Path != agent.WorktreePath {
+			continue
 		}
-	}
-	if summary != "" {
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("  Summary:"))
-		content.WriteString("\n")
-		// Wrap the summary nicely
-		summaryLines := wrapText(summary, m.width-6)
-		for _, line := range summaryLines {
-			content.WriteString("    " + line + "\n")
+		summary = wt.Summary
+		if summary == "" && wt.Description != "" {
+			summary = wt.Description
 		}
+		break
 	}
+	if summary == "" {
+		return
+	}
+	content.WriteString("\n")
+	content.WriteString(tui.StyleMuted.Render("  Summary:"))
+	content.WriteString("\n")
+	summaryLines := wrapText(summary, m.width-6)
+	for _, line := range summaryLines {
+		content.WriteString("    " + line + "\n")
+	}
+}
 
-	// Usage metrics - Visual Panel
+func (m Model) renderAgentMetrics(content *strings.Builder, agent *control.AgentInfo) {
 	content.WriteString("\n")
 	content.WriteString(m.renderMetricsPanel(agent.Metrics))
 
-	// File activity (if any changes made)
-	if agent.Metrics != nil && (agent.Metrics.FilesRead > 0 || agent.Metrics.FilesWritten > 0 || agent.Metrics.LinesChanged > 0) {
-		content.WriteString("  ")
-		content.WriteString(renderFileActivity(agent.Metrics))
-		content.WriteString("\n")
+	if agent.Metrics == nil {
+		return
 	}
-
-	// Prompt/Task
-	if agent.Prompt != "" {
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("  Task:\n"))
-
-		// Render markdown for better formatting, indented
-		renderedTask := m.renderMarkdown(agent.Prompt)
-		for _, line := range strings.Split(renderedTask, "\n") {
-			content.WriteString("    " + line + "\n")
-		}
+	if agent.Metrics.FilesRead == 0 && agent.Metrics.FilesWritten == 0 && agent.Metrics.LinesChanged == 0 {
+		return
 	}
+	content.WriteString("  ")
+	content.WriteString(renderFileActivity(agent.Metrics))
+	content.WriteString("\n")
+}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
+func (m Model) renderAgentPrompt(content *strings.Builder, agent *control.AgentInfo) {
+	if agent.Prompt == "" {
+		return
+	}
+	content.WriteString("\n")
+	content.WriteString(tui.StyleMuted.Render("  Task:\n"))
+
+	renderedTask := m.renderMarkdown(agent.Prompt)
+	for _, line := range strings.Split(renderedTask, "\n") {
+		content.WriteString("    " + line + "\n")
+	}
 }
 
 func (m Model) renderWorktreeDetail() (string, string) {
 	var content strings.Builder
 	wt := m.detailWorktree
 
-	// Determine status
+	statusText, statusStyle, activeAgentCount := m.worktreeDetailStatus(wt)
+	m.renderWorktreeDetailHeader(&content, wt, statusText, statusStyle)
+	m.renderWorktreeDetailSummary(&content, wt)
+	m.renderWorktreeDetailGit(&content, wt)
+	m.renderWorktreeDetailAgents(&content, wt, activeAgentCount)
+	m.renderWorktreeDetailTasks(&content, wt)
+	m.renderWorktreeDetailPath(&content, wt)
+
+	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  [a]ttach [e]nvim [s]hell [p]lan [c]ontext [L]ogs [n]ew agent  Esc:close"))
+}
+
+func (m Model) worktreeDetailStatus(wt *control.WorktreeInfo) (string, lipgloss.Style, int) {
 	statusText := "IDLE"
 	statusStyle := tui.StyleMuted
 	activeAgentCount := 0
 
 	for _, a := range m.agents {
-		if a.WorktreePath == wt.Path {
-			activeAgentCount++
-			if a.Status == "running" || a.Status == "executing" {
-				statusText = "RUNNING"
-				statusStyle = tui.StyleSuccess
-			} else if a.Status == "planning" && statusText != "RUNNING" {
+		if a.WorktreePath != wt.Path {
+			continue
+		}
+		activeAgentCount++
+		switch a.Status {
+		case "running", "executing":
+			statusText = "RUNNING"
+			statusStyle = tui.StyleSuccess
+		case "planning":
+			if statusText != "RUNNING" {
 				statusText = "PLANNING"
 				statusStyle = tui.StyleInfo
-			} else if a.Status == "awaiting" && statusText == "IDLE" {
+			}
+		case "awaiting":
+			if statusText == "IDLE" {
 				statusText = "AWAITING"
 				statusStyle = tui.StyleWarning
 			}
@@ -2132,18 +2192,22 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	}
 
 	if activeAgentCount == 0 {
-		if wt.WTStatus == "merged" {
+		switch wt.WTStatus {
+		case "merged":
 			statusText = "MERGED"
 			statusStyle = tui.StyleNeutral
-		} else if wt.WTStatus == "stale" {
+		case "stale":
 			statusText = "STALE"
 			statusStyle = tui.StyleWarning
 		}
 	}
 
-	// Header line: branch name + status pill (right-aligned)
+	return statusText, statusStyle, activeAgentCount
+}
+
+func (m Model) renderWorktreeDetailHeader(content *strings.Builder, wt *control.WorktreeInfo, statusText string, statusStyle lipgloss.Style) {
 	branchStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorFg)
-	statusPill := tui.StyleMuted.Render("[ ") + statusStyle.Render(fmt.Sprintf("%-9s", statusText)) + tui.StyleMuted.Render(" ]")
+	statusPill := formatStatusPill(statusText, statusStyle)
 
 	headerLeft := branchStyle.Render(wt.Branch)
 	if wt.TicketID != "" {
@@ -2158,21 +2222,24 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	content.WriteString("  " + headerLeft + strings.Repeat(" ", headerPadding) + statusPill + "\n")
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
+}
 
-	// Summary section
+func (m Model) renderWorktreeDetailSummary(content *strings.Builder, wt *control.WorktreeInfo) {
 	desc := wt.Summary
 	if desc == "" {
 		desc = wt.Description
 	}
-	if desc != "" {
-		content.WriteString(tui.StyleMuted.Render("  Summary:\n"))
-		for _, line := range wrapText(desc, m.width-8) {
-			content.WriteString("    " + line + "\n")
-		}
-		content.WriteString("\n")
+	if desc == "" {
+		return
 	}
+	content.WriteString(tui.StyleMuted.Render("  Summary:\n"))
+	for _, line := range wrapText(desc, m.width-8) {
+		content.WriteString("    " + line + "\n")
+	}
+	content.WriteString("\n")
+}
 
-	// Git info line
+func (m Model) renderWorktreeDetailGit(content *strings.Builder, wt *control.WorktreeInfo) {
 	gitStatus := wt.Status
 	if strings.Contains(gitStatus, "dirty") {
 		gitStatus = tui.StyleWarning.Render("dirty")
@@ -2182,12 +2249,11 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	content.WriteString(tui.StyleMuted.Render("  Git: "))
 	content.WriteString(wt.Project + " | " + gitStatus)
 	content.WriteString("\n\n")
-
-	// Divider
 	content.WriteString(tui.Divider(m.width))
 	content.WriteString("\n\n")
+}
 
-	// AGENTS section
+func (m Model) renderWorktreeDetailAgents(content *strings.Builder, wt *control.WorktreeInfo, activeAgentCount int) {
 	agentLabel := "AGENTS"
 	if activeAgentCount > 0 {
 		agentLabel += fmt.Sprintf("  %s", tui.StyleAccent.Render(fmt.Sprintf("%d active", activeAgentCount)))
@@ -2197,10 +2263,11 @@ func (m Model) renderWorktreeDetail() (string, string) {
 
 	foundAgents := false
 	for _, a := range m.agents {
-		if a.WorktreePath == wt.Path {
-			foundAgents = true
-			m.renderWorktreeAgent(&content, a)
+		if a.WorktreePath != wt.Path {
+			continue
 		}
+		foundAgents = true
+		m.renderWorktreeAgent(content, a)
 	}
 
 	if !foundAgents {
@@ -2208,41 +2275,47 @@ func (m Model) renderWorktreeDetail() (string, string) {
 		content.WriteString("\n")
 	}
 	content.WriteString("\n")
+}
 
-	// TASKS section - find tasks matching this worktree path
+func (m Model) renderWorktreeDetailTasks(content *strings.Builder, wt *control.WorktreeInfo) {
 	tasks := m.worktreeTasks(wt.Path)
-	if len(tasks) > 0 {
-		content.WriteString(tui.Divider(m.width))
-		content.WriteString("\n\n")
-
-		// Count by status
-		pending, inProgress, completed := 0, 0, 0
-		for _, t := range tasks {
-			switch t.Status {
-			case "pending":
-				pending++
-			case "in_progress":
-				inProgress++
-			case "completed":
-				completed++
-			}
-		}
-
-		taskLabel := fmt.Sprintf("TASKS  %s", tui.StyleMuted.Render(fmt.Sprintf("%d/%d complete", completed, len(tasks))))
-		content.WriteString(tui.StyleHeader.Render("  " + taskLabel))
-		content.WriteString("\n\n")
-
-		for _, t := range tasks {
-			m.renderWorktreeTask(&content, t)
-		}
-		content.WriteString("\n")
+	if len(tasks) == 0 {
+		return
 	}
+	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n\n")
 
-	// Path at bottom
+	_, _, completed := countTaskStatuses(tasks)
+	taskLabel := fmt.Sprintf("TASKS  %s", tui.StyleMuted.Render(fmt.Sprintf("%d/%d complete", completed, len(tasks))))
+	content.WriteString(tui.StyleHeader.Render("  " + taskLabel))
+	content.WriteString("\n\n")
+
+	for _, t := range tasks {
+		m.renderWorktreeTask(content, t)
+	}
+	content.WriteString("\n")
+}
+
+func countTaskStatuses(tasks []*control.TaskInfo) (int, int, int) {
+	pending := 0
+	inProgress := 0
+	completed := 0
+	for _, t := range tasks {
+		switch t.Status {
+		case "pending":
+			pending++
+		case "in_progress":
+			inProgress++
+		case "completed":
+			completed++
+		}
+	}
+	return pending, inProgress, completed
+}
+
+func (m Model) renderWorktreeDetailPath(content *strings.Builder, wt *control.WorktreeInfo) {
 	content.WriteString(tui.StyleMuted.Render("  Path: " + wt.Path))
 	content.WriteString("\n")
-
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  [a]ttach [e]nvim [s]hell [p]lan [c]ontext [L]ogs [n]ew agent  Esc:close"))
 }
 
 // renderWorktreeAgent renders a single agent line in worktree detail.
@@ -2571,111 +2644,10 @@ func (m Model) renderPlanView() (string, string) {
 func (m Model) renderWorktreeWizard() (string, string) {
 	var content strings.Builder
 
-	// Header
-	icon := tui.Logo()
-	content.WriteString(icon + " " + tui.StyleLogo.Render("New Worktree"))
-	content.WriteString("\n")
-	content.WriteString(tui.Divider(m.width))
+	m.renderWizardHeader(&content, "New Worktree")
+	content.WriteString(renderStepIndicator([]string{"Ticket", "Description", "Project", "Workflow"}, m.worktreeStep))
 	content.WriteString("\n\n")
-
-	// Step indicator
-	steps := []string{"Ticket", "Description", "Project", "Workflow"}
-	var stepIndicator []string
-	for i, step := range steps {
-		if i < m.worktreeStep {
-			stepIndicator = append(stepIndicator, tui.StyleSuccessMsg.Render("✓ "+step))
-		} else if i == m.worktreeStep {
-			stepIndicator = append(stepIndicator, tui.StyleAccent.Render("→ "+step))
-		} else {
-			stepIndicator = append(stepIndicator, tui.StyleMuted.Render("○ "+step))
-		}
-	}
-	content.WriteString("  " + strings.Join(stepIndicator, "  "))
-	content.WriteString("\n\n")
-
-	// Content based on step
-	switch m.worktreeStep {
-	case 0: // Ticket ID
-		content.WriteString(tui.StyleMuted.Render("  Enter a ticket ID (e.g., ENG-123) or press Tab/Enter to skip:"))
-		content.WriteString("\n\n")
-		content.WriteString("  ")
-		content.WriteString(m.textInput.View())
-		content.WriteString("\n")
-
-	case 1: // Description
-		if m.worktreeTicketID != "" {
-			content.WriteString(tui.StyleMuted.Render("  Ticket: "))
-			content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
-			content.WriteString("\n\n")
-		}
-		content.WriteString(tui.StyleMuted.Render("  Enter a brief description for this worktree:"))
-		content.WriteString("\n\n")
-		content.WriteString("  ")
-		content.WriteString(m.textInput.View())
-		content.WriteString("\n")
-
-	case 2: // Project selection
-		if m.worktreeTicketID != "" {
-			content.WriteString(tui.StyleMuted.Render("  Ticket: "))
-			content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
-			content.WriteString("\n")
-		}
-		if m.worktreeDesc != "" {
-			content.WriteString(tui.StyleMuted.Render("  Description: "))
-			content.WriteString(m.worktreeDesc)
-			content.WriteString("\n")
-		}
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("  Select project (j/k to move, Enter to confirm):"))
-		content.WriteString("\n\n")
-
-		for i, project := range m.projects {
-			if i == m.worktreeProjectIdx {
-				content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
-				content.WriteString(tui.StyleSelected.Render(project))
-			} else {
-				content.WriteString("    ")
-				content.WriteString(project)
-			}
-			content.WriteString("\n")
-		}
-
-	case 3: // Workflow selection
-		if m.worktreeTicketID != "" {
-			content.WriteString(tui.StyleMuted.Render("  Ticket: "))
-			content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
-			content.WriteString("\n")
-		}
-		content.WriteString(tui.StyleMuted.Render("  Project: "))
-		content.WriteString(tui.StyleAccent.Render(m.projects[m.worktreeProjectIdx]))
-		content.WriteString("\n\n")
-
-		content.WriteString(tui.StyleMuted.Render("  Select workflow mode (j/k to cycle, Enter to confirm):"))
-		content.WriteString("\n\n")
-
-		// Display current selection with explanation
-		mode := m.worktreeWorkflow
-		var desc string
-		var style lipgloss.Style
-
-		switch mode {
-		case config.WorkflowModeAutomatic:
-			desc = "Agent works autonomously until complete."
-			style = tui.StyleSuccess
-		case config.WorkflowModeApprove:
-			desc = "Agent asks for approval before executing changes."
-			style = tui.StyleWarning
-		case config.WorkflowModeManual:
-			desc = "User drives the agent manually."
-			style = tui.StyleMuted
-		}
-
-		content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
-		content.WriteString(style.Bold(true).Render(string(mode)))
-		content.WriteString("\n")
-		content.WriteString(tui.StyleMuted.Render("    " + desc))
-		content.WriteString("\n")
-	}
+	m.renderWorktreeWizardStep(&content)
 
 	return content.String(), tui.StyleHelp.Render("  Enter to continue · Esc to cancel")
 }
@@ -2683,26 +2655,8 @@ func (m Model) renderWorktreeWizard() (string, string) {
 func (m Model) renderPromoteWizard() (string, string) {
 	var content strings.Builder
 
-	// Header
-	icon := tui.Logo()
-	content.WriteString(icon + " " + tui.StyleLogo.Render("Promote to Feature"))
-	content.WriteString("\n")
-	content.WriteString(tui.Divider(m.width))
-	content.WriteString("\n\n")
-
-	// Step Indicator
-	steps := []string{"Project", "Agent"}
-	var stepIndicator []string
-	for i, step := range steps {
-		if i < m.promoteStep {
-			stepIndicator = append(stepIndicator, tui.StyleSuccessMsg.Render("✓ "+step))
-		} else if i == m.promoteStep {
-			stepIndicator = append(stepIndicator, tui.StyleAccent.Render("→ "+step))
-		} else {
-			stepIndicator = append(stepIndicator, tui.StyleMuted.Render("○ "+step))
-		}
-	}
-	content.WriteString("  " + strings.Join(stepIndicator, "  "))
+	m.renderWizardHeader(&content, "Promote to Feature")
+	content.WriteString(renderStepIndicator([]string{"Project", "Agent"}, m.promoteStep))
 	content.WriteString("\n\n")
 
 	// Show note content (always visible but muted)
@@ -2735,9 +2689,7 @@ func (m Model) renderPromoteWizard() (string, string) {
 		content.WriteString(tui.StyleMuted.Render("  Select Agent Harness (j/k to move, Enter to confirm):"))
 		content.WriteString("\n\n")
 
-		providers := []string{"Claude Code (Opus)", "Gemini Auto", "Codex 5.2"}
-
-		for i, provider := range providers {
+		for i, provider := range promoteProviderLabels {
 			if i == m.promoteAgentIdx {
 				content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
 				content.WriteString(tui.StyleSelected.Render(provider))
@@ -2750,6 +2702,123 @@ func (m Model) renderPromoteWizard() (string, string) {
 	}
 
 	return content.String(), tui.StyleHelp.Render("  Enter to continue · Backspace to go back · Esc to cancel")
+}
+
+func (m Model) renderWizardHeader(content *strings.Builder, title string) {
+	icon := tui.Logo()
+	content.WriteString(icon + " " + tui.StyleLogo.Render(title))
+	content.WriteString("\n")
+	content.WriteString(tui.Divider(m.width))
+	content.WriteString("\n\n")
+}
+
+func renderStepIndicator(steps []string, current int) string {
+	var stepIndicator []string
+	for i, step := range steps {
+		if i < current {
+			stepIndicator = append(stepIndicator, tui.StyleSuccessMsg.Render("✓ "+step))
+		} else if i == current {
+			stepIndicator = append(stepIndicator, tui.StyleAccent.Render("→ "+step))
+		} else {
+			stepIndicator = append(stepIndicator, tui.StyleMuted.Render("○ "+step))
+		}
+	}
+	return "  " + strings.Join(stepIndicator, "  ")
+}
+
+func (m Model) renderWorktreeWizardStep(content *strings.Builder) {
+	switch m.worktreeStep {
+	case 0:
+		m.renderWorktreeWizardTicket(content)
+	case 1:
+		m.renderWorktreeWizardDescription(content)
+	case 2:
+		m.renderWorktreeWizardProject(content)
+	case 3:
+		m.renderWorktreeWizardWorkflow(content)
+	}
+}
+
+func (m Model) renderWorktreeWizardTicket(content *strings.Builder) {
+	content.WriteString(tui.StyleMuted.Render("  Enter a ticket ID (e.g., ENG-123) or press Tab/Enter to skip:"))
+	content.WriteString("\n\n")
+	content.WriteString("  ")
+	content.WriteString(m.textInput.View())
+	content.WriteString("\n")
+}
+
+func (m Model) renderWorktreeWizardDescription(content *strings.Builder) {
+	if m.worktreeTicketID != "" {
+		content.WriteString(tui.StyleMuted.Render(ticketLabel))
+		content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
+		content.WriteString("\n\n")
+	}
+	content.WriteString(tui.StyleMuted.Render("  Enter a brief description for this worktree:"))
+	content.WriteString("\n\n")
+	content.WriteString("  ")
+	content.WriteString(m.textInput.View())
+	content.WriteString("\n")
+}
+
+func (m Model) renderWorktreeWizardProject(content *strings.Builder) {
+	if m.worktreeTicketID != "" {
+		content.WriteString(tui.StyleMuted.Render(ticketLabel))
+		content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
+		content.WriteString("\n")
+	}
+	if m.worktreeDesc != "" {
+		content.WriteString(tui.StyleMuted.Render("  Description: "))
+		content.WriteString(m.worktreeDesc)
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
+	content.WriteString(tui.StyleMuted.Render("  Select project (j/k to move, Enter to confirm):"))
+	content.WriteString("\n\n")
+
+	for i, project := range m.projects {
+		if i == m.worktreeProjectIdx {
+			content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
+			content.WriteString(tui.StyleSelected.Render(project))
+		} else {
+			content.WriteString("    ")
+			content.WriteString(project)
+		}
+		content.WriteString("\n")
+	}
+}
+
+func (m Model) renderWorktreeWizardWorkflow(content *strings.Builder) {
+	if m.worktreeTicketID != "" {
+		content.WriteString(tui.StyleMuted.Render(ticketLabel))
+		content.WriteString(tui.StyleAccent.Render(m.worktreeTicketID))
+		content.WriteString("\n")
+	}
+	content.WriteString(tui.StyleMuted.Render("  Project: "))
+	content.WriteString(tui.StyleAccent.Render(m.projects[m.worktreeProjectIdx]))
+	content.WriteString("\n\n")
+
+	content.WriteString(tui.StyleMuted.Render("  Select workflow mode (j/k to cycle, Enter to confirm):"))
+	content.WriteString("\n\n")
+
+	desc, style := workflowModeDescription(m.worktreeWorkflow)
+	content.WriteString(tui.StyleSelectedIndicator.Render("  → "))
+	content.WriteString(style.Bold(true).Render(string(m.worktreeWorkflow)))
+	content.WriteString("\n")
+	content.WriteString(tui.StyleMuted.Render("    " + desc))
+	content.WriteString("\n")
+}
+
+func workflowModeDescription(mode config.WorkflowMode) (string, lipgloss.Style) {
+	switch mode {
+	case config.WorkflowModeAutomatic:
+		return "Agent works autonomously until complete.", tui.StyleSuccess
+	case config.WorkflowModeApprove:
+		return "Agent asks for approval before executing changes.", tui.StyleWarning
+	case config.WorkflowModeManual:
+		return "User drives the agent manually.", tui.StyleMuted
+	default:
+		return "", tui.StyleMuted
+	}
 }
 
 func wrapText(text string, width int) []string {
@@ -3369,76 +3438,103 @@ func (m Model) fetchData() tea.Msg {
 	var wg sync.WaitGroup
 	var errs []error
 
+	m.fetchWorktrees(&res, &wg, &mu, &errs)
+	m.fetchAgents(&res, &wg, &mu, &errs)
+	m.fetchJobs(&res, &wg, &mu, &errs)
+	m.fetchNotes(&res, &wg, &mu, &errs)
+	m.fetchChangelog(&res, &wg, &mu, &errs)
+	m.fetchTaskListsAndTasks(&res, &wg, &mu)
+
+	wg.Wait()
+
+	if len(errs) > 0 {
+		res.err = errors.Join(errs...)
+	}
+
+	return res
+}
+
+func (m Model) fetchWorktrees(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex, errs *[]error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		wts, err := m.client.ListWorktrees()
 		mu.Lock()
+		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("list worktrees: %w", err))
+			*errs = append(*errs, fmt.Errorf("list worktrees: %w", err))
 			res.worktrees = m.worktrees
-		} else {
-			res.worktrees = wts
+			return
 		}
-		mu.Unlock()
+		res.worktrees = wts
 	}()
+}
 
+func (m Model) fetchAgents(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex, errs *[]error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		agents, err := m.client.ListAgents()
 		mu.Lock()
+		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("list agents: %w", err))
+			*errs = append(*errs, fmt.Errorf("list agents: %w", err))
 			res.agents = m.agents
-		} else {
-			res.agents = agents
+			return
 		}
-		mu.Unlock()
+		res.agents = agents
 	}()
+}
 
+func (m Model) fetchJobs(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex, errs *[]error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		jobs, err := m.client.ListJobs()
 		mu.Lock()
+		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("list jobs: %w", err))
+			*errs = append(*errs, fmt.Errorf("list jobs: %w", err))
 			res.jobs = m.jobs
-		} else {
-			res.jobs = jobs
+			return
 		}
-		mu.Unlock()
+		res.jobs = jobs
 	}()
+}
 
+func (m Model) fetchNotes(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex, errs *[]error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		notes, err := m.client.ListNotes()
 		mu.Lock()
+		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("list notes: %w", err))
+			*errs = append(*errs, fmt.Errorf("list notes: %w", err))
 			res.notes = m.notes
-		} else {
-			res.notes = notes
+			return
 		}
-		mu.Unlock()
+		res.notes = notes
 	}()
+}
 
+func (m Model) fetchChangelog(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex, errs *[]error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		changelog, err := m.client.ListChangelog("", 100)
 		mu.Lock()
+		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("list changelog: %w", err))
+			*errs = append(*errs, fmt.Errorf("list changelog: %w", err))
 			res.changelog = m.changelog
-		} else {
-			res.changelog = changelog
+			return
 		}
-		mu.Unlock()
+		res.changelog = changelog
 	}()
+}
 
+func (m Model) fetchTaskListsAndTasks(res *fetchDataResultMsg, wg *sync.WaitGroup, mu *sync.Mutex) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -3451,34 +3547,30 @@ func (m Model) fetchData() tea.Msg {
 		}
 		mu.Unlock()
 
-		// Fetch tasks from selected list or first list
-		var listID string
+		listID := m.resolveTaskListID(res, mu)
+		if listID == "" {
+			return
+		}
+
+		tasks, err := m.client.ListTasks(listID, "")
 		mu.Lock()
-		listID = m.selectedTaskList
-		if listID == "" && len(res.taskLists) > 0 {
-			listID = res.taskLists[0].ID
+		defer mu.Unlock()
+		if err != nil {
+			res.claudeTasks = m.claudeTasks
+			return
 		}
-		mu.Unlock()
-
-		if listID != "" {
-			tasks, err := m.client.ListTasks(listID, "")
-			mu.Lock()
-			if err != nil {
-				res.claudeTasks = m.claudeTasks
-			} else {
-				res.claudeTasks = tasks
-			}
-			mu.Unlock()
-		}
+		res.claudeTasks = tasks
 	}()
+}
 
-	wg.Wait()
-
-	if len(errs) > 0 {
-		res.err = errors.Join(errs...)
+func (m Model) resolveTaskListID(res *fetchDataResultMsg, mu *sync.Mutex) string {
+	mu.Lock()
+	defer mu.Unlock()
+	listID := m.selectedTaskList
+	if listID == "" && len(res.taskLists) > 0 {
+		listID = res.taskLists[0].ID
 	}
-
-	return res
+	return listID
 }
 
 func (m Model) listenForEvents() tea.Cmd {
