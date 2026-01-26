@@ -197,20 +197,12 @@ func FindRelatedFiles(idx *Index, filePath string, depth int) []string {
 		return nil
 	}
 
-	visited := make(map[string]bool)
-	visited[filePath] = true
-
-	// Get directory for the file
 	fileDir := filepath.Dir(filePath)
+	visited := map[string]bool{fileDir: true}
 
 	var related []string
 
-	// BFS to find related files
-	type queueItem struct {
-		dir   string
-		depth int
-	}
-	queue := []queueItem{{fileDir, 0}}
+	queue := []queueItem{{dir: fileDir, depth: 0}}
 
 	for len(queue) > 0 {
 		current := queue[0]
@@ -220,60 +212,61 @@ func FindRelatedFiles(idx *Index, filePath string, depth int) []string {
 			continue
 		}
 
-		// Find dependencies of files in this directory
-		for file, deps := range idx.Deps {
-			if filepath.Dir(file) != current.dir {
-				continue
-			}
-
-			for _, dep := range deps {
-				if !dep.IsInternal || dep.ToFile == "" {
-					continue
-				}
-
-				targetDir := dep.ToFile
-				if visited[targetDir] {
-					continue
-				}
-				visited[targetDir] = true
-
-				// Add all files in the target directory
-				for targetFile := range idx.FileSymbols {
-					if filepath.Dir(targetFile) == targetDir {
-						related = append(related, targetFile)
-					}
-				}
-
-				queue = append(queue, queueItem{targetDir, current.depth + 1})
-			}
-		}
-
-		// Find files that depend on this directory
-		for targetDir, dependentFiles := range idx.Dependents {
-			if targetDir != current.dir {
-				continue
-			}
-
-			for _, dependent := range dependentFiles {
-				depDir := filepath.Dir(dependent)
-				if visited[depDir] {
-					continue
-				}
-				visited[depDir] = true
-
-				// Add all files in the dependent directory
-				for depFile := range idx.FileSymbols {
-					if filepath.Dir(depFile) == depDir {
-						related = append(related, depFile)
-					}
-				}
-
-				queue = append(queue, queueItem{depDir, current.depth + 1})
-			}
-		}
+		enqueueDependencies(idx, current, visited, &related, &queue)
+		enqueueDependents(idx, current, visited, &related, &queue)
 	}
 
 	return related
+}
+
+type queueItem struct {
+	dir   string
+	depth int
+}
+
+func enqueueDependencies(idx *Index, current queueItem, visited map[string]bool, related *[]string, queue *[]queueItem) {
+	for file, deps := range idx.Deps {
+		if filepath.Dir(file) != current.dir {
+			continue
+		}
+		for _, dep := range deps {
+			if !dep.IsInternal || dep.ToFile == "" {
+				continue
+			}
+			targetDir := dep.ToFile
+			if visited[targetDir] {
+				continue
+			}
+			visited[targetDir] = true
+			appendFilesFromDir(idx.FileSymbols, targetDir, related)
+			*queue = append(*queue, queueItem{dir: targetDir, depth: current.depth + 1})
+		}
+	}
+}
+
+func enqueueDependents(idx *Index, current queueItem, visited map[string]bool, related *[]string, queue *[]queueItem) {
+	for targetDir, dependentFiles := range idx.Dependents {
+		if targetDir != current.dir {
+			continue
+		}
+		for _, dependent := range dependentFiles {
+			depDir := filepath.Dir(dependent)
+			if visited[depDir] {
+				continue
+			}
+			visited[depDir] = true
+			appendFilesFromDir(idx.FileSymbols, depDir, related)
+			*queue = append(*queue, queueItem{dir: depDir, depth: current.depth + 1})
+		}
+	}
+}
+
+func appendFilesFromDir(fileSymbols map[string][]Symbol, dir string, related *[]string) {
+	for targetFile := range fileSymbols {
+		if filepath.Dir(targetFile) == dir {
+			*related = append(*related, targetFile)
+		}
+	}
 }
 
 // SearchSymbols searches for symbols matching a pattern.

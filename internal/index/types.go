@@ -45,13 +45,13 @@ type Dependency struct {
 
 // Index holds the complete code index for a project.
 type Index struct {
-	ProjectPath string              // Root path of the project
-	ProjectHash string              // Hash identifying this version of the index
-	ModulePath  string              // Go module path (e.g., "github.com/drewfead/athena")
-	Symbols     map[string][]Symbol // Map of symbol name to locations (multiple files can define same name)
-	FileSymbols map[string][]Symbol // Map of file path to symbols defined in that file
+	ProjectPath string                  // Root path of the project
+	ProjectHash string                  // Hash identifying this version of the index
+	ModulePath  string                  // Go module path (e.g., "github.com/drewfead/athena")
+	Symbols     map[string][]Symbol     // Map of symbol name to locations (multiple files can define same name)
+	FileSymbols map[string][]Symbol     // Map of file path to symbols defined in that file
 	Deps        map[string][]Dependency // Map of file path to its dependencies
-	Dependents  map[string][]string // Map of file path to files that depend on it
+	Dependents  map[string][]string     // Map of file path to files that depend on it
 }
 
 // NewIndex creates an empty Index for a project.
@@ -130,46 +130,47 @@ func (idx *Index) GetDependencyDistance(fromFile, toFile string) int {
 		return 0
 	}
 
-	// BFS to find shortest path
-	visited := make(map[string]bool)
-	type queueItem struct {
-		file  string
-		depth int
-	}
-	queue := []queueItem{{fromFile, 0}}
-	visited[fromFile] = true
+	visited := map[string]bool{fromFile: true}
+	queue := []dependencyQueueItem{{file: fromFile, depth: 0}}
+	return idx.bfsDependencyDistance(queue, visited, toFile)
+}
 
+type dependencyQueueItem struct {
+	file  string
+	depth int
+}
+
+func (idx *Index) bfsDependencyDistance(queue []dependencyQueueItem, visited map[string]bool, target string) int {
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
-		// Check both directions: dependencies and dependents
-		var neighbors []string
-		for _, dep := range idx.Deps[current.file] {
-			if dep.IsInternal && dep.ToFile != "" {
-				neighbors = append(neighbors, dep.ToFile)
-			}
-		}
-		neighbors = append(neighbors, idx.Dependents[current.file]...)
-
-		for _, neighbor := range neighbors {
-			if neighbor == toFile {
-				return current.depth + 1
-			}
-
-			if !visited[neighbor] {
-				visited[neighbor] = true
-				queue = append(queue, queueItem{neighbor, current.depth + 1})
-			}
-		}
-
-		// Limit search depth to avoid infinite traversal
 		if current.depth > 10 {
 			break
 		}
-	}
 
+		for _, neighbor := range idx.dependencyNeighbors(current.file) {
+			if neighbor == target {
+				return current.depth + 1
+			}
+			if visited[neighbor] {
+				continue
+			}
+			visited[neighbor] = true
+			queue = append(queue, dependencyQueueItem{file: neighbor, depth: current.depth + 1})
+		}
+	}
 	return -1
+}
+
+func (idx *Index) dependencyNeighbors(file string) []string {
+	var neighbors []string
+	for _, dep := range idx.Deps[file] {
+		if dep.IsInternal && dep.ToFile != "" {
+			neighbors = append(neighbors, dep.ToFile)
+		}
+	}
+	return append(neighbors, idx.Dependents[file]...)
 }
 
 // Stats returns statistics about the index.

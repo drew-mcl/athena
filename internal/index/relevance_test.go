@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+const (
+	projectAgentSpawnerPath = "/project/internal/agent/spawner.go"
+	projectDaemonPath       = "/project/internal/daemon/daemon.go"
+	projectStorePath        = "/project/internal/store/sqlite.go"
+)
+
 func TestExtractKeywords(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -119,12 +125,12 @@ func TestComputeSizePenalty(t *testing.T) {
 		maxPenalty float64
 	}{
 		{0, 0},
-		{1024, 0},           // 1KB - no penalty
-		{5 * 1024, 0.01},    // 5KB - minimal penalty
-		{10 * 1024, 0.20},   // 10KB - small penalty
-		{50 * 1024, 0.55},   // 50KB - medium penalty
-		{100 * 1024, 0.75},  // 100KB - large penalty
-		{500 * 1024, 1.0},   // 500KB - max penalty
+		{1024, 0},          // 1KB - no penalty
+		{5 * 1024, 0.01},   // 5KB - minimal penalty
+		{10 * 1024, 0.20},  // 10KB - small penalty
+		{50 * 1024, 0.55},  // 50KB - medium penalty
+		{100 * 1024, 0.75}, // 100KB - large penalty
+		{500 * 1024, 1.0},  // 500KB - max penalty
 	}
 
 	for _, tt := range tests {
@@ -146,29 +152,29 @@ func TestScoreFilesWithIndex(t *testing.T) {
 	idx.AddSymbol(Symbol{
 		Name:     "SpawnAgent",
 		Kind:     SymbolKindFunc,
-		FilePath: "/project/internal/agent/spawner.go",
+		FilePath: projectAgentSpawnerPath,
 	})
 	idx.AddSymbol(Symbol{
 		Name:     "Daemon",
 		Kind:     SymbolKindStruct,
-		FilePath: "/project/internal/daemon/daemon.go",
+		FilePath: projectDaemonPath,
 	})
 	idx.AddSymbol(Symbol{
 		Name:     "Store",
 		Kind:     SymbolKindStruct,
-		FilePath: "/project/internal/store/sqlite.go",
+		FilePath: projectStorePath,
 	})
 
 	// Add some dependencies
 	idx.AddDependency(Dependency{
-		FromFile:   "/project/internal/daemon/daemon.go",
-		ToFile:     "/project/internal/agent/spawner.go",
+		FromFile:   projectDaemonPath,
+		ToFile:     projectAgentSpawnerPath,
 		DepType:    DepTypeImport,
 		IsInternal: true,
 	})
 	idx.AddDependency(Dependency{
-		FromFile:   "/project/internal/daemon/daemon.go",
-		ToFile:     "/project/internal/store/sqlite.go",
+		FromFile:   projectDaemonPath,
+		ToFile:     projectStorePath,
 		DepType:    DepTypeImport,
 		IsInternal: true,
 	})
@@ -182,7 +188,7 @@ func TestScoreFilesWithIndex(t *testing.T) {
 	}
 
 	// Test dependency distance
-	dist := idx.GetDependencyDistance("/project/internal/daemon/daemon.go", "/project/internal/agent/spawner.go")
+	dist := idx.GetDependencyDistance(projectDaemonPath, projectAgentSpawnerPath)
 	if dist != 1 {
 		t.Errorf("expected distance 1, got %d", dist)
 	}
@@ -266,7 +272,7 @@ func TestDependencyDistance(t *testing.T) {
 		{"/a.go", "/a.go", 0},
 		{"/a.go", "/b.go", 1},
 		{"/a.go", "/c.go", 2},
-		{"/c.go", "/a.go", 2}, // Reverse direction also works
+		{"/c.go", "/a.go", 2},  // Reverse direction also works
 		{"/a.go", "/d.go", -1}, // No path
 	}
 

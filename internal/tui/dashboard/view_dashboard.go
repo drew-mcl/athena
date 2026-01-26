@@ -67,58 +67,18 @@ func (m Model) renderProjects() string {
 }
 
 func (m Model) renderProjectCard(project string, selected bool) string {
-	// Count worktrees for this project
-	wtCount := 0
-	var lastActivity time.Time
-	for _, wt := range m.worktrees {
-		if wt.Project == project {
-			wtCount++
-		}
-	}
-
-	// Count agents for this project
-	agentCount := 0
-	runningCount := 0
-	awaitingCount := 0
-	for _, a := range m.agents {
-		if a.Project == project {
-			agentCount++
-			switch a.Status {
-			case "running", "planning", "executing":
-				runningCount++
-			case "awaiting":
-				awaitingCount++
-			}
-			// Check agent's last activity time
-			if a.LastActivityTime != "" {
-				if t, err := time.Parse(time.RFC3339, a.LastActivityTime); err == nil && t.After(lastActivity) {
-					lastActivity = t
-				}
-			}
-		}
-	}
-
-	// Determine status
-	status := "idle"
-	if awaitingCount > 0 {
-		status = "attention"
-	} else if runningCount > 0 {
-		status = "healthy"
-	}
-
-	// Format last active
-	lastActiveStr := ""
-	if !lastActivity.IsZero() {
-		lastActiveStr = formatDuration(time.Since(lastActivity)) + " ago"
-	}
+	wtCount := m.projectWorktreeCount(project)
+	agentSummary := m.projectAgentSummary(project)
+	status := projectStatus(agentSummary)
+	lastActiveStr := formatProjectLastActive(agentSummary.lastActivity)
 
 	// Use the ProjectCard component
 	card := &components.ProjectCard{
 		Name:       project,
 		Worktrees:  wtCount,
-		Agents:     agentCount,
-		Running:    runningCount,
-		Awaiting:   awaitingCount,
+		Agents:     agentSummary.agentCount,
+		Running:    agentSummary.runningCount,
+		Awaiting:   agentSummary.awaitingCount,
 		CacheRate:  0, // Not readily available
 		LastActive: lastActiveStr,
 		Status:     status,
@@ -219,47 +179,17 @@ func (m Model) renderAllWorktrees() string {
 }
 
 func (m Model) renderWorktreeCard(wt *control.WorktreeInfo, selected bool) string {
-	// Determine status based on worktree lifecycle and agent
-	status := "IDLE"
-	agentCount := 0
-
-	// Check agent status first (most specific)
-	for _, a := range m.agents {
-		if a.WorktreePath == wt.Path {
-			agentCount++
-			if a.Status == "running" || a.Status == "executing" {
-				status = "RUNNING"
-			} else if a.Status == "planning" {
-				status = "RUNNING"
-			} else if a.Status == "awaiting" {
-				status = "ATTENTION"
-			}
-		}
-	}
-
-	// Fallback to worktree status if no active agent
+	status, agentCount := m.worktreeAgentStatus(wt)
 	if agentCount == 0 {
-		if wt.WTStatus == "merged" {
-			status = "MERGED"
-		} else if wt.WTStatus == "stale" {
-			status = "ATTENTION"
-		}
+		status = worktreeLifecycleStatus(wt.WTStatus, status)
 	}
 
-	// Git status
 	gitStatus := "clean"
-	if strings.Contains(wt.Status, "dirty") || strings.Contains(wt.Status, "M") {
+	if isDirtyGitStatus(wt.Status) {
 		gitStatus = "dirty"
 	}
 
-	// Summary
-	summary := wt.Summary
-	if summary == "" && wt.Description != "" {
-		summary = wt.Description
-	}
-	if summary == "" {
-		summary = "No description"
-	}
+	summary := worktreeSummary(wt, "No description")
 
 	// Last active (not readily available, leave empty)
 	lastActive := ""
@@ -280,81 +210,15 @@ func (m Model) renderWorktreeCard(wt *control.WorktreeInfo, selected bool) strin
 }
 
 func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.Table, selected bool) string {
-	// Determine status based on worktree lifecycle and agent
-	statusText := "IDLE"
-	statusStyle := tui.StyleMuted
-
-	// Check agent status first (most specific)
-	agentActive := false
-	if wt.AgentID != "" {
-		for _, a := range m.agents {
-			if a.ID == wt.AgentID {
-				agentActive = true
-				statusText = strings.ToUpper(a.Status)
-				if a.Status == "running" || a.Status == "executing" {
-					statusStyle = tui.StylePillActive
-				} else if a.Status == "planning" {
-					statusStyle = tui.StylePillReview
-				} else {
-					statusStyle = tui.StatusStyle(a.Status)
-				}
-				break
-			}
-		}
-	}
-
-	// Fallback to worktree status if no active agent overrides it
+	statusText, statusStyle, agentActive := m.worktreeAgentPillStatus(wt)
 	if !agentActive {
-		if wt.WTStatus == "merged" {
-			statusText = "MERGED"
-			statusStyle = tui.StyleNeutral
-		} else if wt.WTStatus == "stale" {
-			statusText = "STALE"
-			statusStyle = tui.StylePillStale
-		} else if wt.WTStatus == "active" {
-			statusText = "ACTIVE"
-			statusStyle = tui.StylePillActive
-		}
+		statusText, statusStyle = worktreeLifecyclePillStatus(wt.WTStatus, statusText, statusStyle)
 	}
+	status := formatStatusPill(statusText, statusStyle)
 
-	// Format as fixed-width pill: [ STATUS    ]
-	// Truncate if too long (unlikely with standard statuses)
-	if len(statusText) > 9 {
-		statusText = statusText[:9]
-	}
-	paddedStatus := fmt.Sprintf("%-9s", statusText)
-	status := tui.StyleMuted.Render("[ ") + statusStyle.Render(paddedStatus) + tui.StyleMuted.Render(" ]")
-
-	// Summary - use description as fallback if no plan summary
-	summary := wt.Summary
-	if summary == "" && wt.Description != "" {
-		summary = wt.Description
-	}
-	if summary == "" {
-		summary = tui.StyleMuted.Render("—")
-	}
-
-	// Git status coloring
-	gitStatus := wt.Status
-	if strings.Contains(gitStatus, "dirty") || strings.Contains(gitStatus, "M") {
-		gitStatus = tui.StyleWarning.Render(gitStatus)
-	} else if strings.Contains(gitStatus, "clean") {
-		gitStatus = tui.StyleSuccess.Render(gitStatus)
-	} else {
-		gitStatus = tui.StyleMuted.Render(gitStatus)
-	}
-
-	// Count agents
-	count := 0
-	for _, a := range m.agents {
-		if a.WorktreePath == wt.Path {
-			count++
-		}
-	}
-	agentCount := tui.StyleMuted.Render("-")
-	if count > 0 {
-		agentCount = tui.StyleInfo.Render(fmt.Sprintf("%d", count)) // Cyan color
-	}
+	summary := worktreeSummary(wt, tui.StyleMuted.Render("—"))
+	gitStatus := renderGitStatus(wt.Status)
+	agentCount := renderWorktreeAgentCount(m.worktreeAgentCount(wt))
 
 	// Columns: BRANCH, SUMMARY, AGENTS, STATUS, GIT
 	values := []string{
@@ -373,6 +237,188 @@ func (m Model) renderGlobalWorktreeRow(wt *control.WorktreeInfo, table *layout.T
 	}
 
 	return row
+}
+
+type projectAgentSummary struct {
+	agentCount    int
+	runningCount  int
+	awaitingCount int
+	lastActivity  time.Time
+}
+
+func (m Model) projectWorktreeCount(project string) int {
+	count := 0
+	for _, wt := range m.worktrees {
+		if wt.Project == project {
+			count++
+		}
+	}
+	return count
+}
+
+func (m Model) projectAgentSummary(project string) projectAgentSummary {
+	summary := projectAgentSummary{}
+	for _, a := range m.agents {
+		if a.Project != project {
+			continue
+		}
+		summary.agentCount++
+		switch a.Status {
+		case "running", "planning", "executing":
+			summary.runningCount++
+		case "awaiting":
+			summary.awaitingCount++
+		}
+		if a.LastActivityTime == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, a.LastActivityTime); err == nil && t.After(summary.lastActivity) {
+			summary.lastActivity = t
+		}
+	}
+	return summary
+}
+
+func projectStatus(summary projectAgentSummary) string {
+	if summary.awaitingCount > 0 {
+		return "attention"
+	}
+	if summary.runningCount > 0 {
+		return "healthy"
+	}
+	return "idle"
+}
+
+func formatProjectLastActive(lastActivity time.Time) string {
+	if lastActivity.IsZero() {
+		return ""
+	}
+	return formatDuration(time.Since(lastActivity)) + " ago"
+}
+
+func (m Model) worktreeAgentStatus(wt *control.WorktreeInfo) (string, int) {
+	status := "IDLE"
+	agentCount := 0
+	for _, a := range m.agents {
+		if a.WorktreePath != wt.Path {
+			continue
+		}
+		agentCount++
+		if agentStatus := statusFromAgent(a.Status); agentStatus != "" {
+			status = agentStatus
+		}
+	}
+	return status, agentCount
+}
+
+func statusFromAgent(status string) string {
+	switch status {
+	case "running", "executing", "planning":
+		return "RUNNING"
+	case "awaiting":
+		return "ATTENTION"
+	default:
+		return ""
+	}
+}
+
+func worktreeLifecycleStatus(wtStatus, fallback string) string {
+	switch wtStatus {
+	case "merged":
+		return "MERGED"
+	case "stale":
+		return "ATTENTION"
+	default:
+		return fallback
+	}
+}
+
+func worktreeSummary(wt *control.WorktreeInfo, emptyValue string) string {
+	summary := wt.Summary
+	if summary == "" && wt.Description != "" {
+		summary = wt.Description
+	}
+	if summary == "" {
+		summary = emptyValue
+	}
+	return summary
+}
+
+func isDirtyGitStatus(status string) bool {
+	return strings.Contains(status, "dirty") || strings.Contains(status, "M")
+}
+
+func renderGitStatus(status string) string {
+	if strings.Contains(status, "dirty") || strings.Contains(status, "M") {
+		return tui.StyleWarning.Render(status)
+	}
+	if strings.Contains(status, "clean") {
+		return tui.StyleSuccess.Render(status)
+	}
+	return tui.StyleMuted.Render(status)
+}
+
+func (m Model) worktreeAgentPillStatus(wt *control.WorktreeInfo) (string, lipgloss.Style, bool) {
+	if wt.AgentID == "" {
+		return "IDLE", tui.StyleMuted, false
+	}
+	for _, a := range m.agents {
+		if a.ID != wt.AgentID {
+			continue
+		}
+		statusText := strings.ToUpper(a.Status)
+		return statusText, statusStyleForAgent(a.Status), true
+	}
+	return "IDLE", tui.StyleMuted, false
+}
+
+func statusStyleForAgent(status string) lipgloss.Style {
+	switch status {
+	case "running", "executing":
+		return tui.StylePillActive
+	case "planning":
+		return tui.StylePillReview
+	default:
+		return tui.StatusStyle(status)
+	}
+}
+
+func worktreeLifecyclePillStatus(wtStatus, statusText string, statusStyle lipgloss.Style) (string, lipgloss.Style) {
+	switch wtStatus {
+	case "merged":
+		return "MERGED", tui.StyleNeutral
+	case "stale":
+		return "STALE", tui.StylePillStale
+	case "active":
+		return "ACTIVE", tui.StylePillActive
+	default:
+		return statusText, statusStyle
+	}
+}
+
+func formatStatusPill(statusText string, statusStyle lipgloss.Style) string {
+	if len(statusText) > 9 {
+		statusText = statusText[:9]
+	}
+	paddedStatus := fmt.Sprintf("%-9s", statusText)
+	return tui.StyleMuted.Render("[ ") + statusStyle.Render(paddedStatus) + tui.StyleMuted.Render(" ]")
+}
+
+func (m Model) worktreeAgentCount(wt *control.WorktreeInfo) int {
+	count := 0
+	for _, a := range m.agents {
+		if a.WorktreePath == wt.Path {
+			count++
+		}
+	}
+	return count
+}
+
+func renderWorktreeAgentCount(count int) string {
+	if count > 0 {
+		return tui.StyleInfo.Render(fmt.Sprintf("%d", count))
+	}
+	return tui.StyleMuted.Render("-")
 }
 
 func (m Model) renderAllJobs() string {

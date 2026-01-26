@@ -43,15 +43,15 @@ func (r *GeminiRunner) Start(ctx context.Context, spec RunSpec) (Session, error)
 func (r *GeminiRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, error) {
 	// Convert ResumeSpec to RunSpec
 	runSpec := RunSpec{
-		SessionID:       spec.SessionID,
-		WorkDir:         spec.WorkDir,
-		Model:           spec.Model,
-		PermissionMode:  spec.PermissionMode,
-		AllowedTools:    spec.AllowedTools,
-		SystemPrompt:    spec.SystemPrompt,
-		MaxBudgetUSD:    spec.MaxBudgetUSD,
-		Plan:            spec.Plan,
-		LogFile:         spec.LogFile,
+		SessionID:      spec.SessionID,
+		WorkDir:        spec.WorkDir,
+		Model:          spec.Model,
+		PermissionMode: spec.PermissionMode,
+		AllowedTools:   spec.AllowedTools,
+		SystemPrompt:   spec.SystemPrompt,
+		MaxBudgetUSD:   spec.MaxBudgetUSD,
+		Plan:           spec.Plan,
+		LogFile:        spec.LogFile,
 	}
 	return newGeminiSession(ctx, runSpec, &spec)
 }
@@ -106,7 +106,7 @@ func newGeminiSession(ctx context.Context, spec RunSpec, resume *ResumeSpec) (*g
 	}
 
 	model := client.GenerativeModel(modelName)
-	
+
 	// Configure tools
 	model.Tools = getTools(spec.AllowedTools)
 
@@ -117,7 +117,7 @@ func newGeminiSession(ctx context.Context, spec RunSpec, resume *ResumeSpec) (*g
 	}
 
 	cs := model.StartChat()
-	
+
 	// Setup history persistence directory
 	home, _ := os.UserHomeDir()
 	historyDir := filepath.Join(home, ".local", "share", "athena", "gemini", "sessions")
@@ -147,7 +147,7 @@ func newGeminiSession(ctx context.Context, spec RunSpec, resume *ResumeSpec) (*g
 		if err := s.loadHistory(); err != nil {
 			// Log warning but continue?
 			// For now, fail to ensure we don't start with empty context unexpectedly
-			// fmt.Printf("failed to load history: %v\n", err) 
+			// fmt.Printf("failed to load history: %v\n", err)
 		}
 	}
 
@@ -235,7 +235,7 @@ func (s *geminiSession) runLoop() {
 func (s *geminiSession) handleInput(msg any) {
 	// Parse input message
 	var content string
-	
+
 	switch v := msg.(type) {
 	case string:
 		content = v
@@ -262,7 +262,7 @@ func (s *geminiSession) handleInput(msg any) {
 
 	// Process response (and handle tool calls recursively)
 	s.processResponse(resp)
-	
+
 	// Save history after turn
 	_ = s.saveHistory()
 }
@@ -272,78 +272,100 @@ func (s *geminiSession) processResponse(resp *genai.GenerateContentResponse) {
 		return
 	}
 
-	// Track usage
-	var eventUsage *EventUsage
-	if resp.UsageMetadata != nil {
-		s.modelUsage.InputTokens += int(resp.UsageMetadata.PromptTokenCount)
-		s.modelUsage.OutputTokens += int(resp.UsageMetadata.CandidatesTokenCount)
-		
-		eventUsage = &EventUsage{
-			InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
-		}
-	}
+	eventUsage := s.updateUsage(resp)
 
 	for _, cand := range resp.Candidates {
 		if cand.Content != nil {
-			for _, part := range cand.Content.Parts {
-				switch p := part.(type) {
-				case genai.Text:
-					s.events <- Event{
-						Type:      "assistant",
-						Content:   string(p),
-						SessionID: s.id,
-						Timestamp: time.Now(),
-						Usage:     eventUsage,
-					}
-					eventUsage = nil // Only attach to first event
+			eventUsage = s.processCandidateParts(cand.Content.Parts, eventUsage)
+		}
+	}
+}
 
-				case genai.FunctionCall:
-					// Emit tool use event
-					argsJSON, _ := json.Marshal(p.Args)
-					s.events <- Event{
-						Type:      "tool_use",
-						Name:      p.Name,
-						Input:     argsJSON,
-						SessionID: s.id,
-						Timestamp: time.Now(),
-					}
+func (s *geminiSession) updateUsage(resp *genai.GenerateContentResponse) *EventUsage {
+	if resp.UsageMetadata == nil {
+		return nil
+	}
+	s.modelUsage.InputTokens += int(resp.UsageMetadata.PromptTokenCount)
+	s.modelUsage.OutputTokens += int(resp.UsageMetadata.CandidatesTokenCount)
 
-					// Execute tool
-					result, err := s.executeTool(p.Name, p.Args)
-					
-					// Emit tool result event
-					resultStr := fmt.Sprintf("%v", result)
-					if err != nil {
-						resultStr = fmt.Sprintf("Error: %v", err)
-					}
-					
-					s.events <- Event{
-						Type:      "tool_result",
-						Name:      p.Name,
-						Content:   resultStr,
-						SessionID: s.id,
-						Timestamp: time.Now(),
-					}
+	return &EventUsage{
+		InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
+		OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+	}
+}
 
-					// Send result back to model
-					nextResp, err := s.chat.SendMessage(s.ctx, genai.FunctionResponse{
-						Name: p.Name,
-						Response: map[string]any{
-							"result": result,
-						},
-					})
-					if err != nil {
-						s.errors <- fmt.Errorf("failed to send tool response: %w", err)
-						return
-					}
-					
-					// Recursive call to handle model's response to the tool output
-					s.processResponse(nextResp)
-				}
+func (s *geminiSession) processCandidateParts(parts []genai.Part, eventUsage *EventUsage) *EventUsage {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case genai.Text:
+			eventUsage = s.emitAssistantText(string(p), eventUsage)
+		case genai.FunctionCall:
+			if err := s.handleFunctionCall(p); err != nil {
+				s.errors <- err
+				return nil
 			}
 		}
 	}
+	return eventUsage
+}
+
+func (s *geminiSession) emitAssistantText(text string, eventUsage *EventUsage) *EventUsage {
+	s.events <- Event{
+		Type:      "assistant",
+		Content:   text,
+		SessionID: s.id,
+		Timestamp: time.Now(),
+		Usage:     eventUsage,
+	}
+	return nil
+}
+
+func (s *geminiSession) handleFunctionCall(call genai.FunctionCall) error {
+	s.emitToolUse(call)
+	result, err := s.executeTool(call.Name, call.Args)
+	s.emitToolResult(call.Name, result, err)
+
+	nextResp, err := s.sendToolResponse(call.Name, result)
+	if err != nil {
+		return fmt.Errorf("failed to send tool response: %w", err)
+	}
+	s.processResponse(nextResp)
+	return nil
+}
+
+func (s *geminiSession) emitToolUse(call genai.FunctionCall) {
+	argsJSON, _ := json.Marshal(call.Args)
+	s.events <- Event{
+		Type:      "tool_use",
+		Name:      call.Name,
+		Input:     argsJSON,
+		SessionID: s.id,
+		Timestamp: time.Now(),
+	}
+}
+
+func (s *geminiSession) emitToolResult(name string, result any, err error) {
+	resultStr := fmt.Sprintf("%v", result)
+	if err != nil {
+		resultStr = fmt.Sprintf("Error: %v", err)
+	}
+
+	s.events <- Event{
+		Type:      "tool_result",
+		Name:      name,
+		Content:   resultStr,
+		SessionID: s.id,
+		Timestamp: time.Now(),
+	}
+}
+
+func (s *geminiSession) sendToolResponse(name string, result any) (*genai.GenerateContentResponse, error) {
+	return s.chat.SendMessage(s.ctx, genai.FunctionResponse{
+		Name: name,
+		Response: map[string]any{
+			"result": result,
+		},
+	})
 }
 
 // Tool Implementation
@@ -412,93 +434,120 @@ func getTools(allowed []string) []*genai.Tool {
 func (s *geminiSession) executeTool(name string, args map[string]any) (any, error) {
 	switch name {
 	case "read_file":
-		path, ok := args["path"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid path argument")
-		}
-		safe, err := s.safePath(path)
-		if err != nil {
-			return nil, err
-		}
-		data, err := os.ReadFile(safe)
-		if err != nil {
-			return nil, err
-		}
-		return string(data), nil
-
+		return s.toolReadFile(args)
 	case "write_file":
-		path, ok := args["path"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid path argument")
-		}
-		content, ok := args["content"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid content argument")
-		}
-		safe, err := s.safePath(path)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(safe, []byte(content), 0644); err != nil {
-			return nil, err
-		}
-		return "success", nil
-
+		return s.toolWriteFile(args)
 	case "list_files":
-		path, _ := args["path"].(string)
-		if path == "" {
-			path = "."
-		}
-		safe, err := s.safePath(path)
-		if err != nil {
-			return nil, err
-		}
-		entries, err := os.ReadDir(safe)
-		if err != nil {
-			return nil, err
-		}
-		var files []string
-		for _, e := range entries {
-			prefix := ""
-			if e.IsDir() {
-				prefix = "/"
-			}
-			files = append(files, e.Name()+prefix)
-		}
-		return strings.Join(files, "\n"), nil
-
+		return s.toolListFiles(args)
 	case "run_command":
-		cmd, ok := args["command"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid command")
-		}
-		var cmdArgs []string
-		if args["args"] != nil {
-			// Handle args interface slice
-			if rawArgs, ok := args["args"].([]any); ok {
-				for _, a := range rawArgs {
-					cmdArgs = append(cmdArgs, fmt.Sprint(a))
-				}
-			}
-		}
-
-		// Allowlist for safety
-		allowed := map[string]bool{"ls": true, "grep": true, "cat": true, "find": true}
-		if !allowed[cmd] {
-			return nil, fmt.Errorf("command not allowed: %s", cmd)
-		}
-
-		c := exec.CommandContext(s.ctx, cmd, cmdArgs...)
-		c.Dir = s.workDir
-		out, err := c.CombinedOutput()
-		if err != nil {
-			return fmt.Sprintf("Error: %v\nOutput: %s", err, out), nil
-		}
-		return string(out), nil
-
+		return s.toolRunCommand(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (s *geminiSession) toolReadFile(args map[string]any) (any, error) {
+	path, err := requiredStringArg(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	safe, err := s.safePath(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(safe)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
+
+func (s *geminiSession) toolWriteFile(args map[string]any) (any, error) {
+	path, err := requiredStringArg(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	content, err := requiredStringArg(args, "content")
+	if err != nil {
+		return nil, err
+	}
+	safe, err := s.safePath(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(safe, []byte(content), 0644); err != nil {
+		return nil, err
+	}
+	return "success", nil
+}
+
+func (s *geminiSession) toolListFiles(args map[string]any) (any, error) {
+	path := optionalStringArg(args, "path", ".")
+	safe, err := s.safePath(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(safe)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, e := range entries {
+		prefix := ""
+		if e.IsDir() {
+			prefix = "/"
+		}
+		files = append(files, e.Name()+prefix)
+	}
+	return strings.Join(files, "\n"), nil
+}
+
+var allowedCommands = map[string]bool{"ls": true, "grep": true, "cat": true, "find": true}
+
+func (s *geminiSession) toolRunCommand(args map[string]any) (any, error) {
+	cmd, err := requiredStringArg(args, "command")
+	if err != nil {
+		return nil, err
+	}
+	cmdArgs := parseArgs(args["args"])
+	if !allowedCommands[cmd] {
+		return nil, fmt.Errorf("command not allowed: %s", cmd)
+	}
+
+	c := exec.CommandContext(s.ctx, cmd, cmdArgs...)
+	c.Dir = s.workDir
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("Error: %v\nOutput: %s", err, out), nil
+	}
+	return string(out), nil
+}
+
+func requiredStringArg(args map[string]any, key string) (string, error) {
+	value, ok := args[key].(string)
+	if !ok || value == "" {
+		return "", fmt.Errorf("invalid %s argument", key)
+	}
+	return value, nil
+}
+
+func optionalStringArg(args map[string]any, key, fallback string) string {
+	if value, ok := args[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+func parseArgs(raw any) []string {
+	rawArgs, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	args := make([]string, 0, len(rawArgs))
+	for _, a := range rawArgs {
+		args = append(args, fmt.Sprint(a))
+	}
+	return args
 }
 
 func (s *geminiSession) safePath(p string) (string, error) {
@@ -506,7 +555,7 @@ func (s *geminiSession) safePath(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	target := filepath.Join(absWork, p)
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
@@ -527,11 +576,11 @@ type serializableContent struct {
 }
 
 type serializablePart struct {
-	Type             string                   `json:"type"` // "text", "blob", "function_call", "function_response"
-	Text             string                   `json:"text,omitempty"`
-	Blob             *genai.Blob              `json:"blob,omitempty"`
-	FunctionCall     *genai.FunctionCall      `json:"function_call,omitempty"`
-	FunctionResponse *genai.FunctionResponse  `json:"function_response,omitempty"`
+	Type             string                  `json:"type"` // "text", "blob", "function_call", "function_response"
+	Text             string                  `json:"text,omitempty"`
+	Blob             *genai.Blob             `json:"blob,omitempty"`
+	FunctionCall     *genai.FunctionCall     `json:"function_call,omitempty"`
+	FunctionResponse *genai.FunctionResponse `json:"function_response,omitempty"`
 }
 
 func (s *geminiSession) saveHistory() error {
@@ -585,36 +634,56 @@ func (s *geminiSession) loadHistory() error {
 		return err
 	}
 
-	var stored []serializableContent
-	if err := json.Unmarshal(data, &stored); err != nil {
-		return fmt.Errorf("failed to unmarshal history: %w", err)
+	history, err := decodeHistory(data)
+	if err != nil {
+		return err
 	}
-
-	var history []*genai.Content
-	for _, sc := range stored {
-		c := &genai.Content{Role: sc.Role}
-		for _, sp := range sc.Parts {
-			switch sp.Type {
-			case "text":
-				c.Parts = append(c.Parts, genai.Text(sp.Text))
-			case "blob":
-				if sp.Blob != nil {
-					c.Parts = append(c.Parts, *sp.Blob)
-				}
-			case "function_call":
-				if sp.FunctionCall != nil {
-					c.Parts = append(c.Parts, *sp.FunctionCall)
-				}
-			case "function_response":
-				if sp.FunctionResponse != nil {
-					c.Parts = append(c.Parts, *sp.FunctionResponse)
-				}
-			}
-		}
-		history = append(history, c)
-	}
-
 	s.chat.History = history
 	return nil
 }
 
+func decodeHistory(data []byte) ([]*genai.Content, error) {
+	var stored []serializableContent
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal history: %w", err)
+	}
+	return buildHistory(stored), nil
+}
+
+func buildHistory(stored []serializableContent) []*genai.Content {
+	history := make([]*genai.Content, 0, len(stored))
+	for _, sc := range stored {
+		history = append(history, buildContent(sc))
+	}
+	return history
+}
+
+func buildContent(sc serializableContent) *genai.Content {
+	c := &genai.Content{Role: sc.Role}
+	for _, sp := range sc.Parts {
+		if part, ok := buildPart(sp); ok {
+			c.Parts = append(c.Parts, part)
+		}
+	}
+	return c
+}
+
+func buildPart(sp serializablePart) (genai.Part, bool) {
+	switch sp.Type {
+	case "text":
+		return genai.Text(sp.Text), true
+	case "blob":
+		if sp.Blob != nil {
+			return *sp.Blob, true
+		}
+	case "function_call":
+		if sp.FunctionCall != nil {
+			return *sp.FunctionCall, true
+		}
+	case "function_response":
+		if sp.FunctionResponse != nil {
+			return *sp.FunctionResponse, true
+		}
+	}
+	return nil, false
+}

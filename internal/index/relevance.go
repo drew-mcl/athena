@@ -122,7 +122,7 @@ func (s *Scorer) scoreFile(filePath, projectPath string, keywords []string) Scor
 	sizePenalty := s.computeSizePenalty(signals.FileSize)
 
 	// 4. Recently changed (placeholder - would need git integration)
-	signals.RecentlyChanged = false // TODO: Check git log
+	signals.RecentlyChanged = false // Placeholder until git metadata is wired in.
 
 	// Compute final score using the formula:
 	// score = (pathMatch * 0.3) + (symbolMatch * 0.5) + (depBonus * 0.2) - (sizePenalty * 0.1)
@@ -188,7 +188,7 @@ func (s *Scorer) computePathScore(path string, keywords []string) float64 {
 
 // computeSymbolScore scores how well file symbols match the keywords.
 func (s *Scorer) computeSymbolScore(filePath string, keywords []string) float64 {
-	if s.index == nil {
+	if s.index == nil || len(keywords) == 0 {
 		return 0
 	}
 
@@ -197,46 +197,46 @@ func (s *Scorer) computeSymbolScore(filePath string, keywords []string) float64 
 		return 0
 	}
 
-	var matchCount int
-	for _, kw := range keywords {
-		kwLower := strings.ToLower(kw)
-
-		for _, sym := range symbols {
-			symLower := strings.ToLower(sym.Name)
-
-			// Exact match
-			if symLower == kwLower {
-				matchCount += 2 // Double weight for exact match
-				break
-			}
-
-			// Partial match (keyword appears in symbol name)
-			if strings.Contains(symLower, kwLower) {
-				matchCount++
-				break
-			}
-
-			// CamelCase/snake_case component match
-			parts := splitIdentifier(sym.Name)
-			for _, part := range parts {
-				if strings.ToLower(part) == kwLower {
-					matchCount++
-					break
-				}
-			}
-		}
-	}
-
-	if len(keywords) == 0 {
-		return 0
-	}
-
-	// Normalize to [0, 1]
-	score := float64(matchCount) / float64(len(keywords)*2) // *2 because max match is 2
+	matchCount := countSymbolMatches(symbols, keywords)
+	score := float64(matchCount) / float64(len(keywords)*2)
 	if score > 1 {
 		score = 1
 	}
 	return score
+}
+
+func countSymbolMatches(symbols []Symbol, keywords []string) int {
+	matchCount := 0
+	for _, keyword := range keywords {
+		matchCount += scoreKeywordAgainstSymbols(keyword, symbols)
+	}
+	return matchCount
+}
+
+func scoreKeywordAgainstSymbols(keyword string, symbols []Symbol) int {
+	kwLower := strings.ToLower(keyword)
+	for _, sym := range symbols {
+		symLower := strings.ToLower(sym.Name)
+		if symLower == kwLower {
+			return 2
+		}
+		if strings.Contains(symLower, kwLower) {
+			return 1
+		}
+		if identifierPartMatch(sym.Name, kwLower) {
+			return 1
+		}
+	}
+	return 0
+}
+
+func identifierPartMatch(symbolName, keywordLower string) bool {
+	for _, part := range splitIdentifier(symbolName) {
+		if strings.ToLower(part) == keywordLower {
+			return true
+		}
+	}
+	return false
 }
 
 // computeSizePenalty returns a penalty score based on file size.
@@ -281,53 +281,65 @@ func (s *Scorer) applyDependencyBoost(scored []ScoredFile, projectPath string) {
 		return
 	}
 
-	// Find the highest scoring files (top 3)
-	topFiles := make([]string, 0, 3)
-	for i := 0; i < len(scored) && i < 3; i++ {
-		if scored[i].Score > 0.3 { // Only consider files with decent scores
-			topFiles = append(topFiles, scored[i].Path)
-		}
-	}
-
+	topFiles := topScoringFiles(scored, 3, 0.3)
 	if len(topFiles) == 0 {
 		return
 	}
 
-	// For each file, compute minimum hops to any top file
 	for i := range scored {
-		minHops := -1
-		for _, topFile := range topFiles {
-			if scored[i].Path == topFile {
-				minHops = 0
-				break
-			}
-			hops := s.index.GetDependencyDistance(scored[i].Path, topFile)
-			if hops >= 0 && (minHops < 0 || hops < minHops) {
-				minHops = hops
-			}
-		}
+		s.applyBoost(&scored[i], topFiles)
+	}
+}
 
-		scored[i].Signals.DependencyHops = minHops
-
-		// Apply boost: 1.0 / (1 + hops)
-		if minHops >= 0 {
-			depBonus := 1.0 / float64(1+minHops)
-			scored[i].Score += depBonus * 0.2 // Weight by 0.2 as per formula
-
-			if scored[i].Signals.DependencyHops <= 2 {
-				if scored[i].Reason != "" && scored[i].Reason != "low relevance" {
-					scored[i].Reason += "; close to relevant files"
-				} else {
-					scored[i].Reason = "close to relevant files"
-				}
-			}
-		}
-
-		// Clamp score
-		if scored[i].Score > 1 {
-			scored[i].Score = 1
+func topScoringFiles(scored []ScoredFile, limit int, minScore float64) []string {
+	topFiles := make([]string, 0, limit)
+	for i := 0; i < len(scored) && i < limit; i++ {
+		if scored[i].Score > minScore {
+			topFiles = append(topFiles, scored[i].Path)
 		}
 	}
+	return topFiles
+}
+
+func (s *Scorer) applyBoost(file *ScoredFile, topFiles []string) {
+	minHops := s.minDependencyHops(file.Path, topFiles)
+	file.Signals.DependencyHops = minHops
+	if minHops < 0 {
+		return
+	}
+
+	depBonus := 1.0 / float64(1+minHops)
+	file.Score += depBonus * 0.2
+
+	if minHops <= 2 {
+		updateDependencyReason(file)
+	}
+
+	if file.Score > 1 {
+		file.Score = 1
+	}
+}
+
+func (s *Scorer) minDependencyHops(path string, topFiles []string) int {
+	minHops := -1
+	for _, topFile := range topFiles {
+		if path == topFile {
+			return 0
+		}
+		hops := s.index.GetDependencyDistance(path, topFile)
+		if hops >= 0 && (minHops < 0 || hops < minHops) {
+			minHops = hops
+		}
+	}
+	return minHops
+}
+
+func updateDependencyReason(file *ScoredFile) {
+	if file.Reason != "" && file.Reason != "low relevance" {
+		file.Reason += "; close to relevant files"
+		return
+	}
+	file.Reason = "close to relevant files"
 }
 
 // findGoFiles returns all .go files in the project directory.
@@ -349,7 +361,7 @@ func (s *Scorer) findGoFiles(projectPath string) []string {
 		}
 
 		// Only include .go files (excluding test files for context)
-		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, testFileSuffix) {
 			files = append(files, path)
 		}
 

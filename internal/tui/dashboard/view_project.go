@@ -12,6 +12,11 @@ import (
 	"github.com/drewfead/athena/internal/tui/layout"
 )
 
+const (
+	scrollMoreUp   = "   ▲ %d more"
+	scrollMoreDown = "   ▼ %d more"
+)
+
 func (m Model) renderWorktrees() string {
 	wts := m.projectWorktrees()
 	var b strings.Builder
@@ -36,7 +41,7 @@ func (m Model) renderWorktrees() string {
 
 	// Scroll indicator top
 	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf(scrollMoreUp, scroll.Offset)))
 		b.WriteString("\n")
 	}
 
@@ -56,7 +61,7 @@ func (m Model) renderWorktrees() string {
 	// Scroll indicator bottom
 	if scroll.HasMore {
 		remaining := len(wts) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
+		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf(scrollMoreDown, remaining)))
 		b.WriteString("\n")
 	}
 
@@ -181,18 +186,7 @@ func (m Model) renderAgentCardLine1(agent *control.AgentInfo) string {
 	var sb strings.Builder
 
 	// Status indicator - special handling for planner with plan ready
-	var statusChar string
-	if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "draft" {
-		statusChar = tui.StyleWarning.Render("!")
-	} else if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus == "approved" {
-		statusChar = tui.StyleInfo.Render(">")
-	} else {
-		statusChar = tui.StatusIcons[agent.Status]
-		if statusChar == "" {
-			statusChar = "-"
-		}
-		statusChar = tui.StatusStyle(agent.Status).Render(statusChar)
-	}
+	statusChar := agentStatusIndicator(agent)
 	sb.WriteString(statusChar)
 	sb.WriteString(" ")
 
@@ -205,36 +199,8 @@ func (m Model) renderAgentCardLine1(agent *control.AgentInfo) string {
 	sb.WriteString(tui.StyleMuted.Render(wtName))
 
 	// Status pill
-	statusText := strings.ToUpper(agent.Status)
-	if agent.Archetype == "planner" && agent.Status == "completed" {
-		if agent.PlanStatus == "draft" {
-			statusText = "PLAN READY"
-		} else if agent.PlanStatus == "approved" {
-			statusText = "APPROVED"
-		}
-	}
-
-	var statusStyle lipgloss.Style
-	switch agent.Status {
-	case "running", "executing":
-		statusStyle = tui.StyleSuccess
-	case "planning":
-		statusStyle = tui.StyleInfo
-	case "awaiting":
-		statusStyle = tui.StyleWarning
-	case "crashed":
-		statusStyle = tui.StyleDanger
-	case "completed":
-		if agent.PlanStatus == "draft" {
-			statusStyle = tui.StyleWarning
-		} else if agent.PlanStatus == "approved" {
-			statusStyle = tui.StyleInfo
-		} else {
-			statusStyle = tui.StyleMuted
-		}
-	default:
-		statusStyle = tui.StyleMuted
-	}
+	statusText := agentStatusText(agent)
+	statusStyle := agentStatusStyle(agent)
 
 	sb.WriteString("  ")
 	sb.WriteString(tui.StyleMuted.Render("[ "))
@@ -242,6 +208,62 @@ func (m Model) renderAgentCardLine1(agent *control.AgentInfo) string {
 	sb.WriteString(tui.StyleMuted.Render(" ]"))
 
 	return sb.String()
+}
+
+func agentStatusIndicator(agent *control.AgentInfo) string {
+	if agent.Archetype == "planner" && agent.Status == "completed" {
+		switch agent.PlanStatus {
+		case "draft":
+			return tui.StyleWarning.Render("!")
+		case "approved":
+			return tui.StyleInfo.Render(">")
+		}
+	}
+	statusChar := tui.StatusIcons[agent.Status]
+	if statusChar == "" {
+		statusChar = "-"
+	}
+	return tui.StatusStyle(agent.Status).Render(statusChar)
+}
+
+func agentStatusText(agent *control.AgentInfo) string {
+	if agent.Archetype == "planner" && agent.Status == "completed" {
+		switch agent.PlanStatus {
+		case "draft":
+			return "PLAN READY"
+		case "approved":
+			return "APPROVED"
+		}
+	}
+	return strings.ToUpper(agent.Status)
+}
+
+func agentStatusStyle(agent *control.AgentInfo) lipgloss.Style {
+	switch agent.Status {
+	case "running", "executing":
+		return tui.StyleSuccess
+	case "planning":
+		return tui.StyleInfo
+	case "awaiting":
+		return tui.StyleWarning
+	case "crashed":
+		return tui.StyleDanger
+	case "completed":
+		return plannerCompletedStyle(agent.PlanStatus)
+	default:
+		return tui.StyleMuted
+	}
+}
+
+func plannerCompletedStyle(planStatus string) lipgloss.Style {
+	switch planStatus {
+	case "draft":
+		return tui.StyleWarning
+	case "approved":
+		return tui.StyleInfo
+	default:
+		return tui.StyleMuted
+	}
 }
 
 func (m Model) renderAgentCardLine2(agent *control.AgentInfo) string {
@@ -494,10 +516,10 @@ func (m Model) renderNotes() string {
 			return m.renderNoteRow(notes[index], noteTable, selected)
 		},
 		ScrollUpRenderer: func(offset int) string {
-			return fmt.Sprintf("   ▲ %d more", offset)
+			return fmt.Sprintf(scrollMoreUp, offset)
 		},
 		ScrollDownRenderer: func(remaining int) string {
-			return fmt.Sprintf("   ▼ %d more", remaining)
+			return fmt.Sprintf(scrollMoreDown, remaining)
 		},
 	})
 }
@@ -544,10 +566,10 @@ func (m Model) renderTasks() string {
 			return m.renderTaskRow(tasks[index], taskTable, selected)
 		},
 		ScrollUpRenderer: func(offset int) string {
-			return fmt.Sprintf("   ▲ %d more", offset)
+			return fmt.Sprintf(scrollMoreUp, offset)
 		},
 		ScrollDownRenderer: func(remaining int) string {
-			return fmt.Sprintf("   ▼ %d more", remaining)
+			return fmt.Sprintf(scrollMoreDown, remaining)
 		},
 	})
 }

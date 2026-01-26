@@ -1,12 +1,15 @@
 package index
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+const testFileSuffix = "_test.go"
 
 // ExtractDependencies parses a Go file and extracts all import dependencies.
 // filePath should be the absolute path to the file.
@@ -23,24 +26,7 @@ func ExtractDependencies(filePath, relativePath, modulePath string) ([]Dependenc
 
 	for _, imp := range file.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
-
-		dep := Dependency{
-			FromFile:   relativePath,
-			DepType:    DepTypeImport,
-			ImportPath: importPath,
-			IsInternal: strings.HasPrefix(importPath, modulePath),
-		}
-
-		// For internal imports, try to determine the target file path
-		if dep.IsInternal {
-			// Convert import path to relative directory path
-			// e.g., "github.com/drewfead/athena/internal/store" -> "internal/store"
-			relImportPath := strings.TrimPrefix(importPath, modulePath)
-			relImportPath = strings.TrimPrefix(relImportPath, "/")
-			dep.ToFile = relImportPath // Store as directory path
-		}
-
-		deps = append(deps, dep)
+		deps = append(deps, buildDependency(relativePath, modulePath, importPath))
 	}
 
 	return deps, nil
@@ -62,38 +48,49 @@ func ExtractDependenciesFromDir(dirPath, relativeDir, modulePath string) ([]Depe
 		if strings.HasSuffix(pkg.Name, "_test") {
 			continue
 		}
-
-		for fileName, file := range pkg.Files {
-			// Skip test files
-			if strings.HasSuffix(fileName, "_test.go") {
-				continue
-			}
-
-			relativePath := filepath.Join(relativeDir, filepath.Base(fileName))
-
-			for _, imp := range file.Imports {
-				importPath := strings.Trim(imp.Path.Value, `"`)
-
-				dep := Dependency{
-					FromFile:   relativePath,
-					DepType:    DepTypeImport,
-					ImportPath: importPath,
-					IsInternal: strings.HasPrefix(importPath, modulePath),
-				}
-
-				// For internal imports, determine the target directory path
-				if dep.IsInternal {
-					relImportPath := strings.TrimPrefix(importPath, modulePath)
-					relImportPath = strings.TrimPrefix(relImportPath, "/")
-					dep.ToFile = relImportPath
-				}
-
-				deps = append(deps, dep)
-			}
-		}
+		deps = appendPackageDependencies(deps, pkg, relativeDir, modulePath)
 	}
 
 	return deps, nil
+}
+
+func appendPackageDependencies(deps []Dependency, pkg *ast.Package, relativeDir, modulePath string) []Dependency {
+	for fileName, file := range pkg.Files {
+		if strings.HasSuffix(fileName, testFileSuffix) {
+			continue
+		}
+		relativePath := filepath.Join(relativeDir, filepath.Base(fileName))
+		deps = appendFileDependencies(deps, file, relativePath, modulePath)
+	}
+	return deps
+}
+
+func appendFileDependencies(deps []Dependency, file *ast.File, relativePath, modulePath string) []Dependency {
+	for _, imp := range file.Imports {
+		importPath := strings.Trim(imp.Path.Value, `"`)
+		deps = append(deps, buildDependency(relativePath, modulePath, importPath))
+	}
+	return deps
+}
+
+func buildDependency(relativePath, modulePath, importPath string) Dependency {
+	dep := Dependency{
+		FromFile:   relativePath,
+		DepType:    DepTypeImport,
+		ImportPath: importPath,
+		IsInternal: strings.HasPrefix(importPath, modulePath),
+	}
+
+	if dep.IsInternal {
+		dep.ToFile = internalImportTarget(importPath, modulePath)
+	}
+
+	return dep
+}
+
+func internalImportTarget(importPath, modulePath string) string {
+	relImportPath := strings.TrimPrefix(importPath, modulePath)
+	return strings.TrimPrefix(relImportPath, "/")
 }
 
 // ResolveModulePath reads the go.mod file to determine the module path.
@@ -124,32 +121,35 @@ func BuildDependencyGraph(deps []Dependency) map[string][]string {
 	graph := make(map[string][]string)
 
 	for _, dep := range deps {
-		if dep.IsInternal && dep.ToFile != "" {
-			// Get the directory of the source file
-			sourceDir := filepath.Dir(dep.FromFile)
-			targetDir := dep.ToFile
-
-			// Skip self-references
-			if sourceDir == targetDir {
-				continue
-			}
-
-			// Add edge: sourceDir depends on targetDir
-			existing := graph[sourceDir]
-			found := false
-			for _, e := range existing {
-				if e == targetDir {
-					found = true
-					break
-				}
-			}
-			if !found {
-				graph[sourceDir] = append(existing, targetDir)
-			}
+		sourceDir, targetDir, ok := dependencyDirs(dep)
+		if !ok {
+			continue
 		}
+		graph[sourceDir] = appendUnique(graph[sourceDir], targetDir)
 	}
 
 	return graph
+}
+
+func dependencyDirs(dep Dependency) (string, string, bool) {
+	if !dep.IsInternal || dep.ToFile == "" {
+		return "", "", false
+	}
+	sourceDir := filepath.Dir(dep.FromFile)
+	targetDir := dep.ToFile
+	if sourceDir == targetDir {
+		return "", "", false
+	}
+	return sourceDir, targetDir, true
+}
+
+func appendUnique(values []string, target string) []string {
+	for _, value := range values {
+		if value == target {
+			return values
+		}
+	}
+	return append(values, target)
 }
 
 // FindPackageFiles returns all non-test Go files in a directory.
@@ -165,7 +165,7 @@ func FindPackageFiles(dirPath string) ([]string, error) {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, testFileSuffix) {
 			files = append(files, filepath.Join(dirPath, name))
 		}
 	}
@@ -193,7 +193,7 @@ func WalkGoFiles(root string) ([]string, error) {
 
 		// Only include non-test Go files
 		name := info.Name()
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, testFileSuffix) {
 			files = append(files, path)
 		}
 
@@ -223,7 +223,7 @@ func WalkGoPackages(root string) ([]string, error) {
 
 		// Only consider non-test Go files
 		name := info.Name()
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, testFileSuffix) {
 			pkgDirs[filepath.Dir(path)] = true
 		}
 
@@ -246,11 +246,15 @@ func WalkGoPackages(root string) ([]string, error) {
 // TopologicalSort performs a topological sort on the dependency graph.
 // Returns packages in order such that dependencies come before dependents.
 func TopologicalSort(graph map[string][]string) ([]string, error) {
-	// Calculate in-degree for each node
+	inDegree, allNodes := buildInDegree(graph)
+	ensureInDegreeEntries(inDegree, allNodes)
+	queue := initialQueue(inDegree)
+	return processQueue(queue, graph, inDegree), nil
+}
+
+func buildInDegree(graph map[string][]string) (map[string]int, map[string]bool) {
 	inDegree := make(map[string]int)
 	allNodes := make(map[string]bool)
-
-	// Initialize all nodes
 	for node, deps := range graph {
 		allNodes[node] = true
 		if _, ok := inDegree[node]; !ok {
@@ -261,31 +265,34 @@ func TopologicalSort(graph map[string][]string) ([]string, error) {
 			inDegree[dep]++
 		}
 	}
+	return inDegree, allNodes
+}
 
-	// Ensure all nodes have an in-degree entry
+func ensureInDegreeEntries(inDegree map[string]int, allNodes map[string]bool) {
 	for node := range allNodes {
 		if _, ok := inDegree[node]; !ok {
 			inDegree[node] = 0
 		}
 	}
+}
 
-	// Queue of nodes with in-degree 0
+func initialQueue(inDegree map[string]int) []string {
 	var queue []string
 	for node, degree := range inDegree {
 		if degree == 0 {
 			queue = append(queue, node)
 		}
 	}
+	return queue
+}
 
+func processQueue(queue []string, graph map[string][]string, inDegree map[string]int) []string {
 	var sorted []string
-
 	for len(queue) > 0 {
-		// Pop from queue
 		node := queue[0]
 		queue = queue[1:]
 		sorted = append(sorted, node)
 
-		// Reduce in-degree of dependent nodes
 		for _, dep := range graph[node] {
 			inDegree[dep]--
 			if inDegree[dep] == 0 {
@@ -293,6 +300,5 @@ func TopologicalSort(graph map[string][]string) ([]string, error) {
 			}
 		}
 	}
-
-	return sorted, nil
+	return sorted
 }
