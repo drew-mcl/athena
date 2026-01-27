@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -34,68 +35,31 @@ type adminSummary struct {
 func (m Model) renderAdmin() string {
 	var b strings.Builder
 
-	contentHeight := layout.ContentHeight(m.height)
 	summary := summarizeAdmin(m.agents)
 	summaryBlock := m.renderAdminSummary(summary)
-	summaryHeight := lipgloss.Height(summaryBlock)
 
 	b.WriteString(summaryBlock)
 	b.WriteString("\n\n")
 
-	b.WriteString(tui.StyleAccent.Render("Agent Activity"))
+	b.WriteString(tui.StyleAccent.Render("Agent States"))
 	b.WriteString("\n")
 
-	table := layout.NewTable([]layout.Column{
-		{Header: "AGENT", MinWidth: 8, MaxWidth: 10, Flex: 0},
-		{Header: "PROJECT", MinWidth: 10, MaxWidth: 16, Flex: 1},
-		{Header: "STATUS", MinWidth: 8, MaxWidth: 10, Flex: 0},
-		{Header: "ACTIVITY", MinWidth: 18, MaxWidth: 40, Flex: 2},
-		{Header: "WORKTREE", MinWidth: 14, MaxWidth: 28, Flex: 1},
-		{Header: "TOKENS", MinWidth: 8, MaxWidth: 10, Flex: 0},
-		{Header: "DUR", MinWidth: 6, MaxWidth: 8, Flex: 0},
-		{Header: "RST", MinWidth: 3, MaxWidth: 5, Flex: 0},
-	})
-	table.SetWidth(m.width)
-	table.SetVisibleColumns(adminVisibleColumns(m.width))
+	b.WriteString(m.renderAdminAgentStates())
+	b.WriteString("\n\n")
 
-	b.WriteString(table.RenderHeader())
+	b.WriteString(tui.StyleAccent.Render("Worktree States"))
 	b.WriteString("\n")
+	b.WriteString(m.renderAdminWorktreeStates())
+	b.WriteString("\n\n")
 
-	agents := make([]*control.AgentInfo, len(m.agents))
-	copy(agents, m.agents)
-	sort.Slice(agents, func(i, j int) bool {
-		return adminSortTime(agents[i]).After(adminSortTime(agents[j]))
-	})
+	b.WriteString(tui.StyleAccent.Render("Recent Activity"))
+	b.WriteString("\n")
+	b.WriteString(m.renderAdminRecentActivity())
+	b.WriteString("\n\n")
 
-	if len(agents) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No agents yet."))
-		return b.String()
-	}
-
-	overhead := summaryHeight + 3
-	availableRows := max(contentHeight-overhead, 1)
-
-	scroll := layout.CalculateScrollWindow(len(agents), m.selected, availableRows)
-
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▲ %d more", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	end := min(scroll.Offset+scroll.VisibleRows, len(agents))
-
-	for i := scroll.Offset; i < end; i++ {
-		agent := agents[i]
-		row := m.renderAdminAgentRow(agent, table, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	if scroll.HasMore {
-		remaining := len(agents) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ▼ %d more", remaining)))
-		b.WriteString("\n")
-	}
+	b.WriteString(tui.StyleAccent.Render("Queues"))
+	b.WriteString("\n")
+	b.WriteString(m.renderAdminQueueStates())
 
 	return b.String()
 }
@@ -180,6 +144,362 @@ func (m Model) renderAdminSummary(summary adminSummary) string {
 	}
 
 	return strings.Join(rows, "\n")
+}
+
+type adminStateRow struct {
+	label string
+	style lipgloss.Style
+	count int
+	last  time.Time
+}
+
+type adminCountRow struct {
+	label  string
+	style  lipgloss.Style
+	count  int
+	detail string
+}
+
+func (m Model) renderAdminAgentStates() string {
+	table := layout.NewTable([]layout.Column{
+		{Header: "STATE", MinWidth: 10, MaxWidth: 0, Flex: 1},
+		{Header: "COUNT", MinWidth: 5, MaxWidth: 6, Flex: 0},
+		{Header: "LAST", MinWidth: 8, MaxWidth: 12, Flex: 0},
+	})
+	table.SetWidth(m.width)
+
+	rows := adminAgentStateRows(m.agents)
+
+	var b strings.Builder
+	b.WriteString(table.RenderHeader())
+	b.WriteString("\n")
+
+	if len(rows) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No agents yet."))
+		return b.String()
+	}
+
+	for _, row := range rows {
+		last := "-"
+		if !row.last.IsZero() {
+			last = fmt.Sprintf("%s ago", formatDuration(time.Since(row.last)))
+		}
+		values := []string{
+			row.style.Render(strings.ToUpper(row.label)),
+			fmt.Sprintf("%d", row.count),
+			tui.StyleMuted.Render(last),
+		}
+		b.WriteString(table.RenderRowStyled(values, false))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+func adminAgentStateRows(agents []*control.AgentInfo) []adminStateRow {
+	order := []string{"running", "planning", "executing", "awaiting", "completed", "crashed", "terminated", "stopped"}
+	rows := make(map[string]*adminStateRow, len(order))
+	for _, state := range order {
+		rows[state] = &adminStateRow{label: state, style: statusStyleForAgent(state)}
+	}
+
+	for _, agent := range agents {
+		state := agent.Status
+		row := rows[state]
+		if row == nil {
+			row = &adminStateRow{label: state, style: statusStyleForAgent(state)}
+			rows[state] = row
+			order = append(order, state)
+		}
+		row.count++
+		last := adminSortTime(agent)
+		if last.After(row.last) {
+			row.last = last
+		}
+	}
+
+	var result []adminStateRow
+	for _, state := range order {
+		row := rows[state]
+		if row != nil && row.count > 0 {
+			result = append(result, *row)
+		}
+	}
+	return result
+}
+
+func (m Model) renderAdminWorktreeStates() string {
+	table := layout.NewTable([]layout.Column{
+		{Header: "STATE", MinWidth: 12, MaxWidth: 0, Flex: 1},
+		{Header: "COUNT", MinWidth: 5, MaxWidth: 6, Flex: 0},
+	})
+	table.SetWidth(m.width)
+
+	rows := m.adminWorktreeStateRows()
+	return renderAdminCountTable(table, rows, "   No worktrees yet.")
+}
+
+func (m Model) renderAdminRecentActivity() string {
+	table := layout.NewTable([]layout.Column{
+		{Header: "AGENT", MinWidth: 6, MaxWidth: 8, Flex: 0},
+		{Header: "STATE", MinWidth: 8, MaxWidth: 10, Flex: 0},
+		{Header: "TYPE", MinWidth: 6, MaxWidth: 8, Flex: 0},
+		{Header: "WORKTREE", MinWidth: 10, MaxWidth: 0, Flex: 1},
+		{Header: "LAST", MinWidth: 8, MaxWidth: 12, Flex: 0},
+		{Header: "ACTIVITY", MinWidth: 12, MaxWidth: 0, Flex: 2},
+	})
+	table.SetWidth(m.width)
+
+	rows := adminRecentActivityRows(m.agents)
+
+	var b strings.Builder
+	b.WriteString(table.RenderHeader())
+	b.WriteString("\n")
+
+	if len(rows) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render("   No recent activity yet."))
+		return b.String()
+	}
+
+	for _, row := range rows {
+		last := "-"
+		if !row.last.IsZero() {
+			last = fmt.Sprintf("%s ago", formatDuration(time.Since(row.last)))
+		}
+		values := []string{
+			shortID(row.agentID, 8),
+			tui.StatusStyle(row.status).Render(strings.ToUpper(row.status)),
+			agentTypeLabel(row.archetype),
+			row.worktree,
+			tui.StyleMuted.Render(last),
+			row.activity,
+		}
+		b.WriteString(table.RenderRowStyled(values, false))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) adminWorktreeStateRows() []adminCountRow {
+	total := len(m.worktrees)
+	if total == 0 {
+		return nil
+	}
+
+	merged := 0
+	stale := 0
+	dirty := 0
+	withAgents := 0
+	for _, wt := range m.worktrees {
+		switch wt.WTStatus {
+		case "merged":
+			merged++
+		case "stale":
+			stale++
+		}
+		if isDirtyGitStatus(wt.Status) {
+			dirty++
+		}
+		if m.worktreeAgentCount(wt) > 0 {
+			withAgents++
+		}
+	}
+
+	active := total - merged - stale
+	if active < 0 {
+		active = 0
+	}
+	clean := total - dirty
+	if clean < 0 {
+		clean = 0
+	}
+
+	return []adminCountRow{
+		{label: "total", style: tui.StyleAccent, count: total},
+		{label: "active", style: tui.StyleSuccess, count: active},
+		{label: "with agents", style: tui.StyleInfo, count: withAgents},
+		{label: "dirty", style: tui.StyleWarning, count: dirty},
+		{label: "clean", style: tui.StyleMuted, count: clean},
+		{label: "merged", style: tui.StyleNeutral, count: merged},
+		{label: "stale", style: tui.StyleWarning, count: stale},
+	}
+}
+
+func (m Model) renderAdminQueueStates() string {
+	table := layout.NewTable([]layout.Column{
+		{Header: "ITEM", MinWidth: 10, MaxWidth: 0, Flex: 1},
+		{Header: "COUNT", MinWidth: 5, MaxWidth: 6, Flex: 0},
+		{Header: "DETAIL", MinWidth: 10, MaxWidth: 0, Flex: 1},
+	})
+	table.SetWidth(m.width)
+
+	rows := m.adminQueueRows()
+	return renderAdminCountTable(table, rows, "   No queue data yet.")
+}
+
+func (m Model) adminQueueRows() []adminCountRow {
+	jobsTotal := 0
+	jobsActive := 0
+	for _, j := range m.jobs {
+		if j.Type == "question" {
+			continue
+		}
+		jobsTotal++
+		if j.Status != "completed" {
+			jobsActive++
+		}
+	}
+
+	questions := m.questions()
+	answered := 0
+	for _, q := range questions {
+		if q.Answer != "" || q.Status == "completed" {
+			answered++
+		}
+	}
+	questionTotal := len(questions)
+	questionPending := questionTotal - answered
+
+	pending, inProgress, completed := countTaskStatuses(m.claudeTasks)
+
+	openNotes := 0
+	for _, note := range m.notes {
+		if !note.Done {
+			openNotes++
+		}
+	}
+
+	return []adminCountRow{
+		{
+			label:  "jobs",
+			style:  tui.StyleAccent,
+			count:  jobsTotal,
+			detail: fmt.Sprintf("%d active", jobsActive),
+		},
+		{
+			label:  "questions",
+			style:  tui.StyleInfo,
+			count:  questionTotal,
+			detail: fmt.Sprintf("%d pending", questionPending),
+		},
+		{
+			label:  "tasks",
+			style:  tui.StyleAccent,
+			count:  len(m.claudeTasks),
+			detail: fmt.Sprintf("%d pending, %d in progress, %d done", pending, inProgress, completed),
+		},
+		{
+			label:  "notes",
+			style:  tui.StyleMuted,
+			count:  openNotes,
+			detail: fmt.Sprintf("%d total", len(m.notes)),
+		},
+	}
+}
+
+type adminRecentRow struct {
+	status    string
+	archetype string
+	project   string
+	worktree  string
+	last      time.Time
+	activity  string
+	agentID   string
+}
+
+func adminRecentActivityRows(agents []*control.AgentInfo) []adminRecentRow {
+	if len(agents) == 0 {
+		return nil
+	}
+
+	rows := make([]adminRecentRow, 0, len(agents))
+	for _, agent := range agents {
+		project := agent.ProjectName
+		if project == "" {
+			project = agent.Project
+		}
+		if project == "" {
+			project = "-"
+		}
+
+		activity := adminActivitySummary(agent)
+		if activity == "" {
+			activity = "-"
+		}
+
+		worktree := "-"
+		if agent.WorktreePath != "" {
+			worktree = filepath.Base(agent.WorktreePath)
+		}
+
+		rows = append(rows, adminRecentRow{
+			status:    agent.Status,
+			archetype: agent.Archetype,
+			project:   project,
+			worktree:  worktree,
+			last:      adminSortTime(agent),
+			activity:  activity,
+			agentID:   agent.ID,
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].last.After(rows[j].last)
+	})
+
+	limit := 8
+	if len(rows) < limit {
+		limit = len(rows)
+	}
+
+	return rows[:limit]
+}
+
+func adminActivitySummary(agent *control.AgentInfo) string {
+	if agent.LastActivity != "" {
+		return agent.LastActivity
+	}
+	if agent.LastEventType != "" {
+		return agent.LastEventType
+	}
+	if agent.Archetype == "planner" && agent.Status == "completed" && agent.PlanStatus != "" {
+		return "plan " + agent.PlanStatus
+	}
+	if agent.Status != "" {
+		return agent.Status
+	}
+	return ""
+}
+
+func renderAdminCountTable(table *layout.Table, rows []adminCountRow, emptyMessage string) string {
+	var b strings.Builder
+	b.WriteString(table.RenderHeader())
+	b.WriteString("\n")
+
+	if len(rows) == 0 {
+		b.WriteString(tui.StyleEmptyState.Render(emptyMessage))
+		return b.String()
+	}
+
+	for _, row := range rows {
+		label := strings.ToUpper(row.label)
+		detail := row.detail
+		if detail != "" {
+			detail = tui.StyleMuted.Render(detail)
+		}
+		values := []string{
+			row.style.Render(label),
+			fmt.Sprintf("%d", row.count),
+		}
+		if len(table.Columns) > 2 {
+			values = append(values, detail)
+		}
+		b.WriteString(table.RenderRowStyled(values, false))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 func (m Model) renderAdminAgentRow(agent *control.AgentInfo, table *layout.Table, selected bool) string {

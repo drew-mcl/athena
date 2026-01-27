@@ -94,6 +94,8 @@ type Model struct {
 	detailScroll   int  // scroll offset for detail view
 	detailJob      *control.JobInfo
 	detailAgent    *control.AgentInfo
+	detailRenderedPrompt string // cached rendered prompt
+	detailRenderedPlan   string // cached rendered plan for detail view
 	detailWorktree *control.WorktreeInfo // showing worktree detail
 	logsMode       bool                  // showing agent logs
 	logsAgentID    string
@@ -207,12 +209,23 @@ type (
 	cleanupResultMsg struct {
 		path string
 	}
+	abandonResultMsg struct {
+		path string
+	}
 	contextResultMsg struct {
 		worktreePath string
 		projectName  string
 		blackboard   []*control.BlackboardEntryInfo
 		summary      *control.BlackboardSummaryInfo
 		preview      string
+	}
+	markdownRenderedMsg struct {
+		target  string // "plan" or "agent:<id>"
+		content string
+	}
+	detailPlanResultMsg struct {
+		agentID string
+		content string
 	}
 	clearStatusMsg struct{}
 	clearErrMsg    struct{} // Auto-clears error after timeout
@@ -375,6 +388,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planResultMsg:
 		return m.handlePlanResult(msg)
 
+	case markdownRenderedMsg:
+		return m.handleMarkdownRendered(msg)
+
+	case detailPlanResultMsg:
+		return m.handleDetailPlanResult(msg)
+
 	case contextResultMsg:
 		return m.handleContextResult(msg)
 
@@ -485,11 +504,9 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					project = m.worktrees[m.selected].Project
 				}
 			case TabJobs:
-				if m.selected < len(m.jobs) {
-					// Show job detail at dashboard level
-					m.detailJob = m.jobs[m.selected]
-					m.detailMode = true
-					return m, nil
+				if m.selected < len(m.agents) {
+					// Show agent detail at dashboard level
+					return m.viewAgent(m.agents[m.selected])
 				}
 			case TabQuestions:
 				// Show question detail (questions are jobs with type "question")
@@ -502,9 +519,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case TabAgents, TabAdmin:
 				if m.selected < len(m.agents) {
 					// Show agent detail at dashboard level
-					m.detailAgent = m.agents[m.selected]
-					m.detailMode = true
-					return m, nil
+					return m.viewAgent(m.agents[m.selected])
 				}
 			case TabNotes:
 				// Notes don't drill down
@@ -529,9 +544,7 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case TabAgents:
 				agents := m.projectAgents()
 				if m.selected < len(agents) {
-					m.detailAgent = agents[m.selected]
-					m.detailMode = true
-					return m, nil
+					return m.viewAgent(agents[m.selected])
 				}
 			case TabTasks:
 				tasks := m.projectTasks()
@@ -822,6 +835,20 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.showStatus("Can only cleanup merged worktrees (merge first)")
 		}
 		return m, m.doCleanup(wt)
+
+	case "D":
+		// Abandon worktree (worktrees tab only)
+		if m.tab != TabWorktrees {
+			return m, m.showStatus("Abandon only available on worktrees tab")
+		}
+		wt := m.getSelectedWorktree()
+		if wt == nil {
+			return m, m.showStatus("No worktree selected")
+		}
+		if wt.IsMain {
+			return m, m.showStatus("Cannot abandon main worktree")
+		}
+		return m, m.doAbandon(wt)
 	}
 
 	return m, nil
@@ -1011,7 +1038,7 @@ func (m Model) handlePlanMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	halfPage := max(1, m.planViewportHeight()/2)
 
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", "Q", "backspace":
 		m.planMode = false
 		m.planContent = ""
 		m.planRendered = ""
@@ -1165,16 +1192,14 @@ func (m Model) renderContextView() string {
 		endIdx := min(m.contextScroll+viewportHeight, totalLines)
 		startIdx := m.contextScroll
 
-		for i := startIdx; i < endIdx; i++ {
-			content.WriteString(lines[i])
-			content.WriteString("\n")
-		}
+		viewportLines := lines[startIdx:endIdx]
+		content.WriteString(strings.Join(viewportLines, "\n"))
 
 		// Scroll indicator
 		if totalLines > viewportHeight {
+			content.WriteString("\n")
 			position := fmt.Sprintf(" [%d-%d of %d lines]", startIdx+1, endIdx, totalLines)
 			content.WriteString(tui.StyleMuted.Render(position))
-			content.WriteString("\n")
 		}
 	} else {
 		// No preview but we have blackboard entries - render manually
@@ -1276,6 +1301,27 @@ func (m Model) renderMarkdown(content string) string {
 		return content // fallback to raw
 	}
 	return out
+}
+
+func (m Model) renderMarkdownCmd(target, content string) tea.Cmd {
+	width := m.width - 4
+	if width < 40 {
+		width = 40
+	}
+	return func() tea.Msg {
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			return markdownRenderedMsg{target: target, content: content}
+		}
+		out, err := r.Render(content)
+		if err != nil {
+			return markdownRenderedMsg{target: target, content: content}
+		}
+		return markdownRenderedMsg{target: target, content: out}
+	}
 }
 
 func (m Model) handleWorktreeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1525,6 +1571,7 @@ func (m Model) promoteNoteCmd(project, noteID, noteText, provider string) tea.Cm
 			Description:  noteText,
 			WorkflowMode: string(m.workflowMode),
 			Provider:     provider,
+			SourceNoteID: noteID, // Track source note for abandon rollback
 		})
 		if err != nil {
 			return errMsg(err)
@@ -2031,14 +2078,46 @@ func (m Model) renderJobFeatureDetails(content *strings.Builder, job *control.Jo
 }
 
 func (m Model) renderAgentDetail() (string, string) {
-	var content strings.Builder
 	agent := m.detailAgent
 
-	m.renderAgentDetailHeader(&content, agent)
-	m.renderAgentDetailInfo(&content, agent)
+	// 1. Build Header (Fixed)
+	var header strings.Builder
+	m.renderAgentDetailHeader(&header, agent)
+	m.renderAgentDetailInfo(&header, agent)
+	headerStr := header.String()
+
+	// 2. Build Content (Scrollable)
+	var content strings.Builder
 	m.renderAgentSummary(&content, agent)
 	m.renderAgentMetrics(&content, agent)
+	m.renderAgentPlan(&content, agent)
 	m.renderAgentPrompt(&content, agent)
+	contentStr := content.String()
+
+	// 3. Footer (Fixed)
+	footer := tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close")
+
+	// 4. Calculate Viewport
+	headerLines := strings.Count(headerStr, "\n")
+	footerLines := strings.Count(footer, "\n") + 1
+
+	// Available height for scrollable content
+	// We subtract header and footer height from total height
+	viewportHeight := max(1, m.height-headerLines-footerLines)
+
+	// 5. Slice Content
+	lines := strings.Split(contentStr, "\n")
+	totalLines := len(lines)
+
+	// Handle scrolling (clamping for display)
+	maxScroll := max(0, totalLines-viewportHeight)
+	scroll := m.detailScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+
+	start := scroll
+	end := min(start+viewportHeight, totalLines)
 
 	return m.applyScroll(content.String(), m.wrapHelpText("j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
 }
@@ -2091,6 +2170,12 @@ func (m Model) renderAgentDetailInfo(content *strings.Builder, agent *control.Ag
 	content.WriteString(tui.StyleMuted.Render("  Restarts:  "))
 	content.WriteString(fmt.Sprintf("%d", agent.RestartCount))
 	content.WriteString("\n")
+
+	if agent.Archetype == "planner" {
+		content.WriteString(tui.StyleMuted.Render("  Plan Status: "))
+		content.WriteString(tui.StatusStyle(agent.PlanStatus).Render(agent.PlanStatus))
+		content.WriteString("\n")
+	}
 }
 
 func agentHarnessLabel(agent *control.AgentInfo) string {
@@ -2147,8 +2232,27 @@ func (m Model) renderAgentPrompt(content *strings.Builder, agent *control.AgentI
 	content.WriteString("\n")
 	content.WriteString(tui.StyleMuted.Render("  Task:\n"))
 
-	renderedTask := m.renderMarkdown(agent.Prompt)
+	var renderedTask string
+	if m.detailAgent != nil && agent.ID == m.detailAgent.ID && m.detailRenderedPrompt != "" {
+		renderedTask = m.detailRenderedPrompt
+	} else {
+		renderedTask = m.renderMarkdown(agent.Prompt)
+	}
+
 	for _, line := range strings.Split(renderedTask, "\n") {
+		content.WriteString("    " + line + "\n")
+	}
+}
+
+func (m Model) renderAgentPlan(content *strings.Builder, agent *control.AgentInfo) {
+	if m.detailRenderedPlan == "" {
+		return
+	}
+	content.WriteString("\n")
+	content.WriteString(tui.StyleMuted.Render("  Implementation Plan:"))
+	content.WriteString("\n")
+
+	for _, line := range strings.Split(m.detailRenderedPlan, "\n") {
 		content.WriteString("    " + line + "\n")
 	}
 }
@@ -2659,16 +2763,14 @@ func (m Model) renderPlanView() (string, string) {
 		endIdx := min(m.planScroll+viewportHeight, totalLines)
 		startIdx := m.planScroll
 
-		for i := startIdx; i < endIdx; i++ {
-			content.WriteString(lines[i])
-			content.WriteString("\n")
-		}
+		viewportLines := lines[startIdx:endIdx]
+		content.WriteString(strings.Join(viewportLines, "\n"))
 
 		// Scroll indicator
 		if totalLines > viewportHeight {
+			content.WriteString("\n")
 			position := fmt.Sprintf(" [%d-%d of %d lines]", startIdx+1, endIdx, totalLines)
 			content.WriteString(tui.StyleMuted.Render(position))
-			content.WriteString("\n")
 		}
 	}
 
@@ -3218,6 +3320,16 @@ func (m Model) doCleanup(wt *control.WorktreeInfo) tea.Cmd {
 			return errMsg(err)
 		}
 		return cleanupResultMsg{path: wt.Path}
+	}
+}
+
+func (m Model) doAbandon(wt *control.WorktreeInfo) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.AbandonWorktree(wt.Path)
+		if err != nil {
+			return errMsg(err)
+		}
+		return abandonResultMsg{path: wt.Path}
 	}
 }
 
@@ -3885,3 +3997,41 @@ func parseCreatedAt(s string) time.Time {
 	}
 	return t
 }
+
+func (m Model) fetchDetailPlan(agentID, worktreePath string) tea.Cmd {
+	return func() tea.Msg {
+		plan, err := m.client.GetPlan(worktreePath, false)
+		if err != nil {
+			return detailPlanResultMsg{
+				agentID: agentID,
+				content: "",
+			}
+		}
+		return detailPlanResultMsg{
+			agentID: agentID,
+			content: plan.Content,
+		}
+	}
+}
+
+func (m Model) viewAgent(agent *control.AgentInfo) (Model, tea.Cmd) {
+	m.detailAgent = agent
+	m.detailMode = true
+	var cmd tea.Cmd
+
+	if agent.Prompt != "" {
+		m.detailRenderedPrompt = "Rendering..." // Placeholder
+		cmd = tea.Batch(cmd, m.renderMarkdownCmd("agent:"+agent.ID, agent.Prompt))
+	} else {
+		m.detailRenderedPrompt = ""
+	}
+
+	m.detailRenderedPlan = ""
+	if agent.Archetype == "planner" {
+		m.detailRenderedPlan = "Loading plan..."
+		cmd = tea.Batch(cmd, m.fetchDetailPlan(agent.ID, agent.WorktreePath))
+	}
+
+	return m, cmd
+}
+
