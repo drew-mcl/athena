@@ -1,10 +1,13 @@
-# : the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
+# : chat workflow, that i can open a chat in a new window, which produces plans, idea being i keep the chat within the claude code ui itself (auto trust folders) pre feed it with some promt to run through - brainstrom an idea with the goal of being producing a plan, which we'll be able to then view back in athena off the back of the plan intergation task open in another worktree
 
 ## Description
-the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
+chat workflow, that i can open a chat in a new window, which produces plans, idea being i keep the chat within the claude code ui itself (auto trust folders) pre feed it with some promt to run through - brainstrom an idea with the goal of being producing a plan, which we'll be able to then view back in athena off the back of the plan intergation task open in another worktree
 
 ## Tasks
-- [ ] TODO
+- [ ] Set up development environment
+- [ ] Explore codebase structure
+- [ ] Define implementation approach
+- [ ] Create implementation plan
 
 ---
-Ticket:
+Ticket: 
