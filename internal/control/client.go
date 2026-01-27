@@ -736,6 +736,14 @@ type AgentMetrics struct {
 	OutputTokens int   `json:"output_tokens,omitempty"`
 	CacheReads   int   `json:"cache_reads,omitempty"`
 	TotalTokens  int   `json:"total_tokens,omitempty"`
+
+	// Tool breakdown by category
+	ToolReads  int `json:"tool_reads,omitempty"`  // Read, Glob, Grep, LS
+	ToolWrites int `json:"tool_writes,omitempty"` // Write, Edit, NotebookEdit
+	ToolBash   int `json:"tool_bash,omitempty"`   // Bash, KillShell
+	ToolTask   int `json:"tool_task,omitempty"`   // Task (subagents)
+	ToolWeb    int `json:"tool_web,omitempty"`    // WebFetch, WebSearch
+	ToolOther  int `json:"tool_other,omitempty"`  // Everything else
 }
 
 // AgentEventInfo represents an agent event for API responses.

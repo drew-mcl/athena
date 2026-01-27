@@ -1,10 +1,13 @@
-# : the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
+# : adgent page needs context usage bar, keep it consisce, but need to see the info flowing to and fro, we can shorten summary slightly becuase theres not the drill in in entry, we also should show tool use if those metrics are aviable?
 
 ## Description
-the agent page should have a summary line on it, so i can understand what each one is doing, same with worktree. we also need to make sure we utilize more screenspace, i want to see full page similar to notes layout
+adgent page needs context usage bar, keep it consisce, but need to see the info flowing to and fro, we can shorten summary slightly becuase theres not the drill in in entry, we also should show tool use if those metrics are aviable?
 
 ## Tasks
-- [ ] TODO
+- [ ] Set up development environment
+- [ ] Explore codebase structure
+- [ ] Define implementation approach
+- [ ] Create implementation plan
 
 ---
-Ticket:
+Ticket: 

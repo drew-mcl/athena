@@ -390,6 +390,23 @@ func (s *Store) GetAgentMetrics(agentID string) (*AgentMetrics, error) {
 		}
 		metrics.ToolUseCount++
 
+		// Categorize tool by type
+		switch msg.Tool.Name {
+		case "Read", "Glob", "Grep", "LS":
+			metrics.ToolReads++
+		case "Write", "Edit", "NotebookEdit":
+			metrics.ToolWrites++
+		case "Bash", "KillShell":
+			metrics.ToolBash++
+		case "Task":
+			metrics.ToolTask++
+		case "WebFetch", "WebSearch":
+			metrics.ToolWeb++
+		default:
+			metrics.ToolOther++
+		}
+
+		// Track file operations
 		switch msg.Tool.Name {
 		case "Read":
 			// Parse file_path from input

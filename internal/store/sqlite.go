@@ -601,4 +601,12 @@ type AgentMetrics struct {
 	OutputTokens int
 	CacheReads   int
 	TotalTokens  int
+
+	// Tool breakdown by category
+	ToolReads  int // Read, Glob, Grep, LS
+	ToolWrites int // Write, Edit, NotebookEdit
+	ToolBash   int // Bash, KillShell
+	ToolTask   int // Task (subagents)
+	ToolWeb    int // WebFetch, WebSearch
+	ToolOther  int // Everything else
 }
