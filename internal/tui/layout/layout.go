@@ -435,6 +435,7 @@ func PinFooterToBottom(content, footer string, termHeight int) string {
 
 	var b strings.Builder
 	b.WriteString(strings.Join(contentLines, "\n"))
+	b.WriteString("\n")
 	for i := 0; i < paddingNeeded; i++ {
 		b.WriteString("\n")
 	}
