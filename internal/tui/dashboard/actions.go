@@ -35,6 +35,7 @@ var allActions = []Action{
 	{Key: "a", Label: "attach", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Attach requires a worktree or agent selection"},
 	{Key: "A", Label: "approve", Tabs: []Tab{TabAgents}, Levels: nil, Tooltip: "Approve a draft plan from planner agent"},
 	{Key: "c", Label: "cleanup", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Remove merged worktree"},
+	{Key: "D", Label: "abandon", Tabs: []Tab{TabWorktrees}, Levels: nil, Tooltip: "Abandon worktree (force delete with branch)"},
 	{Key: "C", Label: "context", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "View agent context (blackboard + state)"},
 	{Key: "e", Label: "edit", Tabs: []Tab{TabWorktrees, TabAgents}, Levels: nil, Tooltip: "Edit requires a worktree or agent selection"},
 	{Key: "L", Label: "logs", Tabs: []Tab{TabWorktrees, TabAgents, TabTasks}, Levels: nil, Tooltip: "Logs requires a worktree with agent or agent selection"},

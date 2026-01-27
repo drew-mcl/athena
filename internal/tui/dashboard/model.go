@@ -187,6 +187,9 @@ type (
 	cleanupResultMsg struct {
 		path string
 	}
+	abandonResultMsg struct {
+		path string
+	}
 	contextResultMsg struct {
 		worktreePath string
 		projectName  string
@@ -885,6 +888,20 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.showStatus("Can only cleanup merged worktrees (merge first)")
 		}
 		return m, m.doCleanup(wt)
+
+	case "D":
+		// Abandon worktree (worktrees tab only)
+		if m.tab != TabWorktrees {
+			return m, m.showStatus("Abandon only available on worktrees tab")
+		}
+		wt := m.getSelectedWorktree()
+		if wt == nil {
+			return m, m.showStatus("No worktree selected")
+		}
+		if wt.IsMain {
+			return m, m.showStatus("Cannot abandon main worktree")
+		}
+		return m, m.doAbandon(wt)
 	}
 
 	return m, nil
@@ -1550,6 +1567,7 @@ func (m Model) promoteNoteCmd(project, noteID, noteText, provider string) tea.Cm
 			Description:  noteText,
 			WorkflowMode: string(m.workflowMode),
 			Provider:     provider,
+			SourceNoteID: noteID, // Track source note for abandon rollback
 		})
 		if err != nil {
 			return errMsg(err)
@@ -2960,6 +2978,16 @@ func (m Model) doCleanup(wt *control.WorktreeInfo) tea.Cmd {
 			return errMsg(err)
 		}
 		return cleanupResultMsg{path: wt.Path}
+	}
+}
+
+func (m Model) doAbandon(wt *control.WorktreeInfo) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.AbandonWorktree(wt.Path)
+		if err != nil {
+			return errMsg(err)
+		}
+		return abandonResultMsg{path: wt.Path}
 	}
 }
 
