@@ -94,6 +94,7 @@ type Model struct {
 	detailScroll   int  // scroll offset for detail view
 	detailJob      *control.JobInfo
 	detailAgent    *control.AgentInfo
+	detailRenderedPrompt string // cached rendered prompt
 	detailWorktree *control.WorktreeInfo // showing worktree detail
 	logsMode       bool                  // showing agent logs
 	logsAgentID    string

@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -444,19 +443,11 @@ func (m Model) renderAllJobs() string {
 // renderAllAgents renders the global agents view as a table.
 func (m Model) renderAllAgents() string {
 	contentHeight := layout.ContentHeight(m.height)
-
-	// Create a global agent table with project column
-	table := layout.NewTable([]layout.Column{
-		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
-		{Header: "TYPE", MinWidth: 8, MaxWidth: 10, Flex: 0},
-		{Header: "PROJECT", MinWidth: 10, MaxWidth: 20, Flex: 1},
-		{Header: "WORKTREE", MinWidth: 12, MaxWidth: 25, Flex: 1},
-		{Header: "STATUS", MinWidth: 10, MaxWidth: 12, Flex: 0},
-		{Header: "TOKENS", MinWidth: 6, MaxWidth: 8, Flex: 0},
-		{Header: "TOOLS", MinWidth: 5, MaxWidth: 6, Flex: 0},
-		{Header: "AGE", MinWidth: 4, MaxWidth: 8, Flex: 0},
+	table := m.newAgentTable(agentTableConfig{
+		showProject:  true,
+		showWorktree: true,
+		showActivity: true,
 	})
-	table.SetWidth(m.width)
 
 	return layout.RenderTableList(layout.TableListOptions{
 		Table:         table,
@@ -465,7 +456,7 @@ func (m Model) renderAllAgents() string {
 		ContentHeight: contentHeight,
 		EmptyMessage:  "   No agents running. Start work on a worktree to spawn an agent.",
 		RowRenderer: func(index int, selected bool) string {
-			return m.renderGlobalAgentRow(m.agents[index], table, selected)
+			return m.renderAgentTableRow(m.agents[index], table, selected)
 		},
 		ScrollUpRenderer: func(offset int) string {
 			return fmt.Sprintf("   ... %d more above", offset)
@@ -474,68 +465,6 @@ func (m Model) renderAllAgents() string {
 			return fmt.Sprintf("   ... %d more below", remaining)
 		},
 	})
-}
-
-// renderGlobalAgentRow renders a single agent as a table row.
-func (m Model) renderGlobalAgentRow(agent *control.AgentInfo, table *layout.Table, selected bool) string {
-	// Status icon with color
-	icon := tui.StatusIcons[agent.Status]
-	if icon == "" {
-		icon = "-"
-	}
-	styledIcon := tui.StatusStyle(agent.Status).Render(icon)
-
-	// Type (archetype)
-	agentType := agent.Archetype
-
-	// Project
-	project := agent.ProjectName
-	if project == "" {
-		project = agent.Project
-	}
-
-	// Worktree - use friendly name if available
-	worktree := filepath.Base(agent.WorktreePath)
-
-	// Status with color
-	statusText := agent.Status
-	var statusStyle lipgloss.Style
-	switch agent.Status {
-	case "running", "executing":
-		statusStyle = tui.StyleSuccess
-	case "planning":
-		statusStyle = tui.StyleInfo
-	case "awaiting":
-		statusStyle = tui.StyleWarning
-	case "crashed":
-		statusStyle = tui.StyleDanger
-	case "completed":
-		statusStyle = tui.StyleNeutral
-	default:
-		statusStyle = tui.StyleMuted
-	}
-	styledStatus := statusStyle.Render(statusText)
-
-	// Tokens
-	tokens := "-"
-	if agent.Metrics != nil && agent.Metrics.TotalTokens > 0 {
-		tokens = formatCompactNumber(agent.Metrics.TotalTokens)
-	}
-
-	// Tools count
-	tools := "-"
-	if agent.Metrics != nil && agent.Metrics.ToolUseCount > 0 {
-		tools = fmt.Sprintf("%d", agent.Metrics.ToolUseCount)
-	}
-
-	// Age
-	age := "-"
-	if t, err := time.Parse(time.RFC3339, agent.CreatedAt); err == nil {
-		age = formatDuration(time.Since(t))
-	}
-
-	values := []string{styledIcon, agentType, project, worktree, styledStatus, tokens, tools, age}
-	return table.RenderRow(values, selected)
 }
 
 func (m Model) renderGlobalJobRow(job *control.JobInfo, idx int, selected bool) string {
@@ -592,19 +521,24 @@ func (m Model) renderQuestions() string {
 }
 
 func (m Model) renderQuestionRow(job *control.JobInfo, table *layout.Table, selected bool) string {
+	rawAnswer := compactWhitespace(job.Answer)
+
 	// Status icon - use + for answered, * for pending
 	var icon string
-	if job.Status == "completed" || job.Answer != "" {
+	if job.Status == "completed" || rawAnswer != "" {
 		icon = tui.StyleSuccess.Render("+")
 	} else {
 		icon = tui.StyleWarning.Render("*")
 	}
 
 	// Question text
-	question := job.NormalizedInput
+	question := compactWhitespace(job.NormalizedInput)
+	if question == "" {
+		question = "-"
+	}
 
 	// Answer preview (truncation handled by table)
-	answer := job.Answer
+	answer := rawAnswer
 	if answer == "" {
 		if job.Status == "completed" {
 			answer = tui.StyleMuted.Render("(no answer)")
@@ -621,4 +555,15 @@ func (m Model) renderQuestionRow(job *control.JobInfo, table *layout.Table, sele
 
 	values := []string{icon, question, answer, age}
 	return table.RenderRow(values, selected)
+}
+
+func compactWhitespace(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Fields(value)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ")
 }

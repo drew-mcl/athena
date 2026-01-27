@@ -70,71 +70,29 @@ func (m Model) renderWorktrees() string {
 
 func (m Model) renderAgents() string {
 	agents := m.projectAgents()
-	var b strings.Builder
-
 	contentHeight := layout.ContentHeight(m.height)
+	table := m.newAgentTable(agentTableConfig{
+		showProject:  false,
+		showWorktree: true,
+		showActivity: true,
+	})
 
-	if len(agents) == 0 {
-		b.WriteString(tui.StyleEmptyState.Render("   No agents running on this project."))
-		b.WriteString("\n")
-		return b.String()
-	}
-
-	// Count active agents
-	activeCount := 0
-	for _, a := range agents {
-		if a.Status == "running" || a.Status == "planning" || a.Status == "executing" {
-			activeCount++
-		}
-	}
-
-	// Header with count
-	header := "AGENTS"
-	if activeCount > 0 {
-		header += fmt.Sprintf("  %s", tui.StyleAccent.Render(fmt.Sprintf("%d active", activeCount)))
-	} else {
-		header += fmt.Sprintf("  %s", tui.StyleMuted.Render(fmt.Sprintf("%d total", len(agents))))
-	}
-	b.WriteString(tui.StyleHeader.Render("  " + header))
-	b.WriteString("\n\n")
-
-	// Multi-line rows - each agent takes 3 lines + 1 blank
-	rowHeight := 4
-	visibleRows := (contentHeight - 3) / rowHeight
-	if visibleRows < 1 {
-		visibleRows = 1
-	}
-
-	// Calculate scroll window
-	scroll := layout.CalculateScrollWindow(len(agents), m.selected, visibleRows)
-
-	// Scroll indicator top
-	if scroll.HasLess {
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ... %d more above", scroll.Offset)))
-		b.WriteString("\n")
-	}
-
-	// Render visible rows
-	end := scroll.Offset + scroll.VisibleRows
-	if end > len(agents) {
-		end = len(agents)
-	}
-
-	for i := scroll.Offset; i < end; i++ {
-		agent := agents[i]
-		row := m.renderAgentCard(agent, i == m.selected)
-		b.WriteString(row)
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator bottom
-	if scroll.HasMore {
-		remaining := len(agents) - end
-		b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("   ... %d more below", remaining)))
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	return layout.RenderTableList(layout.TableListOptions{
+		Table:         table,
+		TotalItems:    len(agents),
+		Selected:      m.selected,
+		ContentHeight: contentHeight,
+		EmptyMessage:  "   No agents running on this project.",
+		RowRenderer: func(index int, selected bool) string {
+			return m.renderAgentTableRow(agents[index], table, selected)
+		},
+		ScrollUpRenderer: func(offset int) string {
+			return fmt.Sprintf("   ... %d more above", offset)
+		},
+		ScrollDownRenderer: func(remaining int) string {
+			return fmt.Sprintf("   ... %d more below", remaining)
+		},
+	})
 }
 
 // renderAgentCard renders a multi-line agent card for project view.

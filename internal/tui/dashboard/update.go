@@ -41,6 +41,10 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 			m.planRendered = m.renderMarkdown(m.planContent)
 		}
 	}
+
+	if m.detailMode && m.detailAgent != nil && m.detailAgent.Prompt != "" {
+		m.detailRenderedPrompt = m.renderMarkdown(m.detailAgent.Prompt)
+	}
 	return m, nil
 }
 
@@ -54,7 +58,27 @@ func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
 	m.claudeTasks = msg.claudeTasks
 	m.projects = m.extractProjects()
 	m.lastUpdate = time.Now()
-	
+
+	// Update detail view if active
+	if m.detailMode && m.detailAgent != nil {
+		found := false
+		for _, a := range msg.agents {
+			if a.ID == m.detailAgent.ID {
+				if a.Prompt != m.detailAgent.Prompt {
+					m.detailRenderedPrompt = m.renderMarkdown(a.Prompt)
+				}
+				m.detailAgent = a
+				found = true
+				break
+			}
+		}
+		// If agent no longer exists (e.g. deleted), exit detail mode
+		if !found {
+			m.detailMode = false
+			m.detailAgent = nil
+		}
+	}
+
 	var cmd tea.Cmd
 	if msg.err != nil {
 		m.err = msg.err
@@ -95,6 +119,14 @@ func (m Model) handlePlanResult(msg planResultMsg) (Model, tea.Cmd) {
 	if m.planWorktreePath == "" || msg.worktreePath != m.planWorktreePath {
 		return m, nil
 	}
+	m.inputMode = false
+	m.questionMode = false
+	m.noteMode = false
+	m.worktreeMode = false
+	m.promoteMode = false
+	m.detailMode = false
+	m.logsMode = false
+	m.contextMode = false
 	m.planWorktreePath = msg.worktreePath
 	m.planContent = msg.content
 	m.planStatus = msg.status
