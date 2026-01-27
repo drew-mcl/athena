@@ -63,7 +63,13 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Close()
 
-	model := dashboard.New(client, cfg).WithDebugKeys(debugKeys).WithInitialProject(initialProject)
+	// Auto-detect project from current directory if not explicitly specified
+	projectToOpen := initialProject
+	if projectToOpen == "" && !noAutoProject {
+		projectToOpen = detectProjectFromCwd(client)
+	}
+
+	model := dashboard.New(client, cfg).WithDebugKeys(debugKeys).WithInitialProject(projectToOpen)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -268,4 +274,38 @@ func shortenPath(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// detectProjectFromCwd detects the project name from the current working directory
+// by checking if cwd is within any known worktree path.
+func detectProjectFromCwd(client *control.Client) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	// Resolve symlinks for robust matching
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return ""
+	}
+
+	worktrees, err := client.ListWorktrees()
+	if err != nil {
+		return ""
+	}
+
+	// Check if cwd is within any known worktree path
+	for _, wt := range worktrees {
+		wtPath := wt.Path
+		// Resolve symlinks on worktree path too
+		if resolved, err := filepath.EvalSymlinks(wtPath); err == nil {
+			wtPath = resolved
+		}
+
+		if cwd == wtPath || strings.HasPrefix(cwd, wtPath+string(filepath.Separator)) {
+			return wt.Project
+		}
+	}
+	return ""
 }
