@@ -568,16 +568,17 @@ func (s *Store) migrate() error {
 type AgentStatus string
 
 const (
-	AgentStatusPending    AgentStatus = "pending"
-	AgentStatusSpawning   AgentStatus = "spawning"
-	AgentStatusRunning    AgentStatus = "running"
-	AgentStatusPlanning   AgentStatus = "planning"
-	AgentStatusExecuting  AgentStatus = "executing"
-	AgentStatusAwaiting   AgentStatus = "awaiting"
-	AgentStatusCrashed    AgentStatus = "crashed"
-	AgentStatusCompleted  AgentStatus = "completed"
-	AgentStatusTerminated AgentStatus = "terminated"
-	AgentStatusAttached   AgentStatus = "attached"
+	AgentStatusPending     AgentStatus = "pending"
+	AgentStatusSpawning    AgentStatus = "spawning"
+	AgentStatusRunning     AgentStatus = "running"
+	AgentStatusPlanning    AgentStatus = "planning"
+	AgentStatusExecuting   AgentStatus = "executing"
+	AgentStatusAwaiting    AgentStatus = "awaiting"
+	AgentStatusCrashed     AgentStatus = "crashed"
+	AgentStatusCompleted   AgentStatus = "completed"
+	AgentStatusTerminated  AgentStatus = "terminated"
+	AgentStatusAttached    AgentStatus = "attached"
+	AgentStatusInteractive AgentStatus = "interactive" // Interactive chat session
 )
 
 // Agent represents a Claude Code agent instance.

@@ -65,6 +65,25 @@ func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
 	m.lastUpdate = time.Now()
 
 	// Update detail view if active
+	if m.detailMode && m.detailAgent != nil {
+		found := false
+		for _, a := range msg.agents {
+			if a.ID == m.detailAgent.ID {
+				if a.Prompt != m.detailAgent.Prompt {
+					m.detailRenderedPrompt = m.renderMarkdown(a.Prompt)
+				}
+				m.detailAgent = a
+				found = true
+				break
+			}
+		}
+		// If agent no longer exists (e.g. deleted), exit detail mode
+		if !found {
+			m.detailMode = false
+			m.detailAgent = nil
+		}
+	}
+
 	var cmd tea.Cmd
 	if m.detailMode && m.detailAgent != nil {
 		found := false

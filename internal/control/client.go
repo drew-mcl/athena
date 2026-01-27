@@ -1323,3 +1323,34 @@ func (c *Client) BroadcastTask(listID, taskID string) error {
 	}
 	return nil
 }
+
+// SpawnChatRequest is the request to spawn an interactive chat session.
+type SpawnChatRequest struct {
+	WorktreePath string `json:"worktree_path"`
+	Topic        string `json:"topic,omitempty"` // Optional initial topic for brainstorming
+}
+
+// SpawnChatResponse contains the command to run for the interactive session.
+type SpawnChatResponse struct {
+	AgentID   string   `json:"agent_id"`
+	SessionID string   `json:"session_id"`
+	Command   []string `json:"command"` // Command array to execute in terminal
+	WorkDir   string   `json:"work_dir"`
+}
+
+// SpawnChat creates an interactive chat session for brainstorming.
+// The returned command should be executed in a new terminal tab.
+func (c *Client) SpawnChat(req SpawnChatRequest) (*SpawnChatResponse, error) {
+	resp, err := c.Call("spawn_chat", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var result SpawnChatResponse
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &result)
+	return &result, nil
+}

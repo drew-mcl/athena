@@ -384,6 +384,7 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_agent", d.handleGetAgent)
 	d.server.Handle("get_agent_logs", d.handleGetAgentLogs)
 	d.server.Handle("spawn_agent", d.handleSpawnAgent)
+	d.server.Handle("spawn_chat", d.handleSpawnChat)
 	d.server.Handle("kill_agent", d.handleKillAgent)
 	d.server.Handle("list_worktrees", d.handleListWorktrees)
 	d.server.Handle("create_worktree", d.handleCreateWorktree)
