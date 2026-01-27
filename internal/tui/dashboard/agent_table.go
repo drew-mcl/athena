@@ -40,10 +40,10 @@ func agentTableColumns() []layout.Column {
 	return []layout.Column{
 		{Header: "ST", MinWidth: 2, MaxWidth: 2, Flex: 0},
 		{Header: "TYPE", MinWidth: 8, MaxWidth: 12, Flex: 0},
-		{Header: "PROJECT", MinWidth: 8, MaxWidth: 0, Flex: 1},
-		{Header: "WORKTREE", MinWidth: 10, MaxWidth: 0, Flex: 1},
+		{Header: "PROJECT", MinWidth: 8, MaxWidth: 20, Flex: 1},
+		{Header: "WORKTREE", MinWidth: 10, MaxWidth: 22, Flex: 1},
 		{Header: "STATUS", MinWidth: 10, MaxWidth: 12, Flex: 0},
-		{Header: "ACTIVITY", MinWidth: 12, MaxWidth: 0, Flex: 2},
+		{Header: "ACTIVITY", MinWidth: 12, MaxWidth: 40, Flex: 2},
 		{Header: "TOKENS", MinWidth: 6, MaxWidth: 8, Flex: 0},
 		{Header: "TOOLS", MinWidth: 5, MaxWidth: 6, Flex: 0},
 		{Header: "AGE", MinWidth: 4, MaxWidth: 8, Flex: 0},

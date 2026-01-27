@@ -1267,7 +1267,7 @@ func (m Model) renderContextView() string {
 	}
 
 	// Footer
-	footer := "  " + tui.StyleHelp.Render("j/k:scroll  g/G:top/bottom  r:refresh  q:close")
+	footer := m.wrapHelpText("j/k:scroll  g/G:top/bottom  r:refresh  q:close")
 	return layout.PinFooterToBottom(content.String(), footer, m.height)
 }
 
@@ -2013,7 +2013,7 @@ func (m Model) renderJobDetail() (string, string) {
 		m.renderJobFeatureDetails(&content, job)
 	}
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  g/G:top/bottom  Esc/q:close"))
+	return m.applyScroll(content.String(), m.wrapHelpText("j/k:scroll  g/G:top/bottom  Esc/q:close"))
 }
 
 func (m Model) renderJobHeader(content *strings.Builder, job *control.JobInfo) {
@@ -2069,8 +2069,10 @@ func (m Model) renderJobFeatureDetails(content *strings.Builder, job *control.Jo
 		content.WriteString("\n")
 	}
 	if job.WorktreePath != "" {
-		content.WriteString(tui.StyleMuted.Render("  Worktree: "))
-		content.WriteString(job.WorktreePath)
+		label := "  Worktree: "
+		maxLen := max(3, m.width-len(label))
+		content.WriteString(tui.StyleMuted.Render(label))
+		content.WriteString(truncatePathSafe(job.WorktreePath, maxLen))
 		content.WriteString("\n")
 	}
 }
@@ -2117,19 +2119,7 @@ func (m Model) renderAgentDetail() (string, string) {
 	start := scroll
 	end := min(start+viewportHeight, totalLines)
 
-	var visibleContent string
-	if start < totalLines {
-		visibleContent = strings.Join(lines[start:end], "\n")
-	}
-
-	// Add scroll indicator to footer
-	if totalLines > viewportHeight {
-		percent := int(float64(start) / float64(max(1, maxScroll)) * 100)
-		scrollInd := fmt.Sprintf(" %d%%", percent)
-		footer = strings.TrimRight(footer, " ") + tui.StyleMuted.Render(scrollInd)
-	}
-
-	return headerStr + visibleContent, footer
+	return m.applyScroll(content.String(), m.wrapHelpText("j/k:scroll  g/G:top/bottom  [L]ogs [a]ttach [e]nvim [s]hell [x]kill  Esc/q:close"))
 }
 
 func (m Model) renderAgentDetailHeader(content *strings.Builder, agent *control.AgentInfo) {
@@ -2160,8 +2150,10 @@ func (m Model) renderAgentDetailInfo(content *strings.Builder, agent *control.Ag
 	content.WriteString(tui.StyleAccent.Render(agentHarnessLabel(agent)))
 	content.WriteString("\n")
 
-	content.WriteString(tui.StyleMuted.Render("  Worktree:  "))
-	content.WriteString(agent.WorktreePath)
+	label := "  Worktree:  "
+	maxLen := max(3, m.width-len(label))
+	content.WriteString(tui.StyleMuted.Render(label))
+	content.WriteString(truncatePathSafe(agent.WorktreePath, maxLen))
 	content.WriteString("\n")
 
 	if agent.LinearIssueID != "" {
@@ -2277,7 +2269,7 @@ func (m Model) renderWorktreeDetail() (string, string) {
 	m.renderWorktreeDetailTasks(&content, wt)
 	m.renderWorktreeDetailPath(&content, wt)
 
-	return m.applyScroll(content.String(), tui.StyleHelp.Render("  j/k:scroll  [a]ttach [e]nvim [s]hell [p]lan [c]ontext [L]ogs [n]ew agent  Esc:close"))
+	return m.applyScroll(content.String(), m.wrapHelpText("j/k:scroll  [a]ttach [e]nvim [s]hell [p]lan [c]ontext [L]ogs [n]ew agent  Esc/q:close"))
 }
 
 func (m Model) worktreeDetailStatus(wt *control.WorktreeInfo) (string, lipgloss.Style, int) {
@@ -2325,9 +2317,21 @@ func (m Model) renderWorktreeDetailHeader(content *strings.Builder, wt *control.
 	branchStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorFg)
 	statusPill := formatStatusPill(statusText, statusStyle)
 
-	headerLeft := branchStyle.Render(wt.Branch)
+	available := m.width - lipgloss.Width(statusPill) - 4
+	if available < 0 {
+		available = 0
+	}
+
+	headerLeft := branchStyle.Render(truncateText(wt.Branch, available))
 	if wt.TicketID != "" {
-		headerLeft += tui.StyleMuted.Render(" | ") + tui.StyleAccent.Render(wt.TicketID)
+		ticketPart := tui.StyleMuted.Render(" | ") + tui.StyleAccent.Render(wt.TicketID)
+		ticketWidth := lipgloss.Width(ticketPart)
+		branchMax := available - ticketWidth
+		if branchMax < 4 {
+			headerLeft = branchStyle.Render(truncateText(wt.Branch, available))
+		} else {
+			headerLeft = branchStyle.Render(truncateText(wt.Branch, branchMax)) + ticketPart
+		}
 	}
 
 	headerPadding := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(statusPill) - 4
@@ -2375,7 +2379,15 @@ func (m Model) renderWorktreeDetailAgents(content *strings.Builder, wt *control.
 		agentLabel += fmt.Sprintf("  %s", tui.StyleAccent.Render(fmt.Sprintf("%d active", activeAgentCount)))
 	}
 	content.WriteString(tui.StyleHeader.Render("  " + agentLabel))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+
+	table := m.newAgentTable(agentTableConfig{
+		showProject:  false,
+		showWorktree: false,
+		showActivity: true,
+	})
+	content.WriteString(table.RenderHeader())
+	content.WriteString("\n")
 
 	foundAgents := false
 	for _, a := range m.agents {
@@ -2383,11 +2395,12 @@ func (m Model) renderWorktreeDetailAgents(content *strings.Builder, wt *control.
 			continue
 		}
 		foundAgents = true
-		m.renderWorktreeAgent(content, a)
+		content.WriteString(m.renderAgentTableRow(a, table, false))
+		content.WriteString("\n")
 	}
 
 	if !foundAgents {
-		content.WriteString(tui.StyleMuted.Render("    No agents on this worktree."))
+		content.WriteString(tui.StyleMuted.Render("   No agents on this worktree."))
 		content.WriteString("\n")
 	}
 	content.WriteString("\n")
@@ -2430,7 +2443,10 @@ func countTaskStatuses(tasks []*control.TaskInfo) (int, int, int) {
 }
 
 func (m Model) renderWorktreeDetailPath(content *strings.Builder, wt *control.WorktreeInfo) {
-	content.WriteString(tui.StyleMuted.Render("  Path: " + wt.Path))
+	label := "  Path: "
+	maxLen := max(3, m.width-len(label))
+	content.WriteString(tui.StyleMuted.Render(label))
+	content.WriteString(truncatePathSafe(wt.Path, maxLen))
 	content.WriteString("\n")
 }
 
@@ -2477,8 +2493,14 @@ func (m Model) renderWorktreeAgent(b *strings.Builder, a *control.AgentInfo) {
 	b.WriteString("\n")
 
 	// Line 2: activity + age
-	b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("      %s", activity)))
-	b.WriteString(tui.StyleMuted.Render(fmt.Sprintf("  %s ago", age)))
+	ageSuffix := fmt.Sprintf("  %s ago", age)
+	activityMax := m.width - lipgloss.Width("      ") - lipgloss.Width(ageSuffix)
+	if activityMax < 0 {
+		activityMax = 0
+	}
+	activity = truncateText(activity, activityMax)
+	b.WriteString(tui.StyleMuted.Render("      " + activity))
+	b.WriteString(tui.StyleMuted.Render(ageSuffix))
 	b.WriteString("\n")
 }
 
@@ -2506,7 +2528,8 @@ func (m Model) renderWorktreeTask(b *strings.Builder, t *control.TaskInfo) {
 		subjectStyle = lipgloss.NewStyle().Foreground(tui.ColorFgMuted)
 	}
 
-	b.WriteString(fmt.Sprintf("    %s %s", statusChar, subjectStyle.Render(subject)))
+	prefix := fmt.Sprintf("    %s ", statusChar)
+	suffix := ""
 
 	// Status label on right
 	statusLabel := ""
@@ -2521,7 +2544,18 @@ func (m Model) renderWorktreeTask(b *strings.Builder, t *control.TaskInfo) {
 		}
 	}
 	if statusLabel != "" {
-		b.WriteString("  " + statusLabel)
+		suffix = "  " + statusLabel
+	}
+
+	subjectMax := m.width - lipgloss.Width(prefix) - lipgloss.Width(suffix)
+	if subjectMax < 0 {
+		subjectMax = 0
+	}
+	subject = truncateText(subject, subjectMax)
+
+	b.WriteString(prefix + subjectStyle.Render(subject))
+	if suffix != "" {
+		b.WriteString(suffix)
 	}
 	b.WriteString("\n")
 }
@@ -2676,7 +2710,7 @@ func (m Model) renderLogs() (string, string) {
 
 	helpText := "j/k:scroll  g/G:top/bottom  ^d/^u:page  f:follow  r:refresh  q:close"
 
-	return content.String(), "  " + tui.StyleHelp.Render(helpText)
+	return content.String(), m.wrapHelpText(helpText)
 
 }
 
@@ -2752,7 +2786,7 @@ func (m Model) renderPlanView() (string, string) {
 	default:
 		helpText = "j/k:scroll  g/G:top/bottom  r:refresh  q:close"
 	}
-	return content.String(), "  " + tui.StyleHelp.Render(helpText)
+	return content.String(), m.wrapHelpText(helpText)
 }
 
 func (m Model) renderWorktreeWizard() (string, string) {
@@ -2763,7 +2797,7 @@ func (m Model) renderWorktreeWizard() (string, string) {
 	content.WriteString("\n\n")
 	m.renderWorktreeWizardStep(&content)
 
-	return content.String(), tui.StyleHelp.Render("  Enter to continue · Esc to cancel")
+	return content.String(), m.wrapHelpText("Enter to continue · Esc to cancel")
 }
 
 func (m Model) renderPromoteWizard() (string, string) {
@@ -2815,7 +2849,7 @@ func (m Model) renderPromoteWizard() (string, string) {
 		}
 	}
 
-	return content.String(), tui.StyleHelp.Render("  Enter to continue · Backspace to go back · Esc to cancel")
+	return content.String(), m.wrapHelpText("Enter to continue · Backspace to go back · Esc to cancel")
 }
 
 func (m Model) renderWizardHeader(content *strings.Builder, title string) {
@@ -2959,6 +2993,48 @@ func wrapText(text string, width int) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func truncateText(text string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(text) <= maxLen {
+		return text
+	}
+	if maxLen <= 3 {
+		return text[:maxLen]
+	}
+	return text[:maxLen-3] + "..."
+}
+
+func truncatePathSafe(path string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if maxLen < 4 {
+		return truncateText(path, maxLen)
+	}
+	return truncatePath(path, maxLen)
+}
+
+func (m Model) wrapHelpText(help string) string {
+	help = strings.TrimSpace(help)
+	if help == "" {
+		return ""
+	}
+
+	maxWidth := max(1, m.width-2)
+	lines := wrapText(help, maxWidth)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	for i, line := range lines {
+		lines[i] = tui.StyleHelp.Render("  " + line)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // applyInputOverlay renders the input panel as a bottom overlay
