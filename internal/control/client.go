@@ -560,6 +560,21 @@ func (c *Client) CleanupWorktree(worktreePath string, deleteBranch bool) error {
 	return nil
 }
 
+// AbandonWorktree forcibly removes a worktree (even with uncommitted changes),
+// deletes the branch, and restores the source note if one exists.
+func (c *Client) AbandonWorktree(worktreePath string) error {
+	resp, err := c.Call("abandon_worktree", AbandonWorktreeRequest{
+		WorktreePath: worktreePath,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
 // GetBlackboard retrieves all blackboard entries for a worktree.
 func (c *Client) GetBlackboard(worktreePath string) ([]*BlackboardEntryInfo, error) {
 	resp, err := c.Call("get_blackboard", map[string]string{"worktree_path": worktreePath})
@@ -839,13 +854,14 @@ type WorktreeInfo struct {
 	AgentID string `json:"agent_id,omitempty"`
 	Status  string `json:"status"` // Git status (dirty/clean indicators)
 	// New fields for ticket-based workflow
-	TicketID    string `json:"ticket_id,omitempty"`    // External ticket ID (e.g., ENG-123)
-	TicketHash  string `json:"ticket_hash,omitempty"`  // 4-char hash for uniqueness
-	Description string `json:"description,omitempty"`  // Worktree description/purpose
-	ProjectName string `json:"project_name,omitempty"` // Cached from git remote origin
-	WTStatus    string `json:"wt_status,omitempty"`    // Worktree lifecycle: active | published | merged | stale
-	PRURL       string `json:"pr_url,omitempty"`       // GitHub PR URL if published
-	Summary     string `json:"summary,omitempty"`      // Plan summary from frontmatter
+	TicketID     string `json:"ticket_id,omitempty"`      // External ticket ID (e.g., ENG-123)
+	TicketHash   string `json:"ticket_hash,omitempty"`    // 4-char hash for uniqueness
+	Description  string `json:"description,omitempty"`    // Worktree description/purpose
+	ProjectName  string `json:"project_name,omitempty"`   // Cached from git remote origin
+	WTStatus     string `json:"wt_status,omitempty"`      // Worktree lifecycle: active | published | merged | stale
+	PRURL        string `json:"pr_url,omitempty"`         // GitHub PR URL if published
+	Summary      string `json:"summary,omitempty"`        // Plan summary from frontmatter
+	SourceNoteID string `json:"source_note_id,omitempty"` // Note ID if promoted from note
 }
 
 // JobInfo represents job data for API responses.
@@ -952,6 +968,7 @@ type CreateWorktreeRequest struct {
 	Description  string `json:"description"`    // Description of the work
 	WorkflowMode string `json:"workflow_mode"`  // Workflow mode: automatic, approve, or manual
 	Provider     string `json:"provider"`       // AI Provider (claude, gemini, etc.)
+	SourceNoteID string `json:"source_note_id"` // Note ID if promoted from note (for abandon rollback)
 }
 
 // MigrationPlan describes what migration would do.
@@ -1014,6 +1031,11 @@ type MergeLocalResult struct {
 type CleanupWorktreeRequest struct {
 	WorktreePath string `json:"worktree_path"`
 	DeleteBranch bool   `json:"delete_branch"` // Whether to also delete the branch
+}
+
+// AbandonWorktreeRequest is the request to abandon a worktree (force delete, restore note).
+type AbandonWorktreeRequest struct {
+	WorktreePath string `json:"worktree_path"`
 }
 
 // BlackboardEntryInfo represents a blackboard entry for API responses.

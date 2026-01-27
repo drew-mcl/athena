@@ -116,6 +116,7 @@ func (s *Store) migrateWorktreeColumns() error {
 		{"status", "TEXT DEFAULT 'active'"},
 		{"pr_url", "TEXT"},
 		{"workflow_mode", "TEXT DEFAULT 'approve'"},
+		{"source_note_id", "TEXT"}, // ID of the note that created this worktree (for abandon rollback)
 	}
 
 	// Add missing columns
@@ -365,6 +366,7 @@ func (s *Store) migrate() error {
 		status        TEXT DEFAULT 'active',     -- active | published | merged | stale
 		pr_url        TEXT,                      -- GitHub PR URL if published via PR flow
 		workflow_mode TEXT DEFAULT 'approve',    -- automatic | approve | manual
+		source_note_id TEXT,                     -- ID of the note that created this worktree (for abandon rollback)
 
 		FOREIGN KEY (agent_id) REFERENCES agents(id),
 		FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -679,6 +681,7 @@ type Worktree struct {
 	Status       WorktreeStatus // active | published | merged | stale
 	PRURL        *string        // GitHub PR URL if published via PR flow
 	WorkflowMode *string        // automatic | approve | manual
+	SourceNoteID *string        // ID of the note that created this worktree (for abandon rollback)
 }
 
 // AgentEvent represents a logged event from an agent.

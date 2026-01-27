@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/drew-mcl/athena/compare/athena-v0.5.0...athena-v0.6.0) (2026-01-27)
+
+
+### Features
+
+* gemini persistence & context optimization ([#34](https://github.com/drew-mcl/athena/issues/34)) ([7ee8814](https://github.com/drew-mcl/athena/commit/7ee8814ef5fa371345965502e1c4e9ba2376507f))
+* **gemini:** functional Gemini runner with tools ([#32](https://github.com/drew-mcl/athena/issues/32)) ([154d345](https://github.com/drew-mcl/athena/commit/154d3452c62f91924c30dbf5c9fff4fc92ddf836))
+* **tui:** comprehensive UX overhaul with improved layouts and styling ([#35](https://github.com/drew-mcl/athena/issues/35)) ([aed5b38](https://github.com/drew-mcl/athena/commit/aed5b38a46c8b5db85b42f2d20ef48b845a3d520))
+
+
+### Bug Fixes
+
+* **tui:** optimize dashboard plan view and layout ([#37](https://github.com/drew-mcl/athena/issues/37)) ([29a3968](https://github.com/drew-mcl/athena/commit/29a3968a10701998b491dda6cfdbec3b202db092))
+
 ## [0.5.0](https://github.com/drew-mcl/athena/compare/athena-v0.4.0...athena-v0.5.0) (2026-01-25)
 
 
