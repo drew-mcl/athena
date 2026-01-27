@@ -343,3 +343,105 @@ func max(a, b int) int {
 	}
 	return b
 }
+
+func (d *Daemon) handleSpawnChat(params json.RawMessage) (any, error) {
+	var req control.SpawnChatRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Validate worktree exists in database
+	wt, err := d.store.GetWorktree(req.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
+	if wt == nil {
+		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
+	}
+
+	// Reject main worktrees
+	if wt.IsMain {
+		return nil, fmt.Errorf("cannot start chat on main worktree")
+	}
+
+	// Generate IDs
+	agentID := generateID()
+	sessionID := fmt.Sprintf("chat-%s", agentID)
+
+	// Get brainstorm archetype config
+	archetype, ok := d.config.Archetypes["brainstorm"]
+	if !ok {
+		return nil, fmt.Errorf("brainstorm archetype not configured")
+	}
+
+	// Create agent record with interactive status
+	agentRecord := &store.Agent{
+		ID:              agentID,
+		WorktreePath:    req.WorktreePath,
+		ProjectName:     wt.Project,
+		Archetype:       "brainstorm",
+		Status:          store.AgentStatusInteractive,
+		ClaudeSessionID: sessionID,
+	}
+	if req.Topic != "" {
+		agentRecord.Prompt = req.Topic
+	}
+
+	if err := d.store.CreateAgent(agentRecord); err != nil {
+		return nil, fmt.Errorf("failed to create agent record: %w", err)
+	}
+
+	// Associate agent with worktree
+	d.store.AssignAgentToWorktree(req.WorktreePath, agentID)
+
+	// Build Claude command for terminal
+	cmd := []string{"claude"}
+
+	// Add session ID for tracking
+	cmd = append(cmd, "--session-id", sessionID)
+
+	// Add model
+	model := archetype.Model
+	if model == "" {
+		model = "opus"
+	}
+	cmd = append(cmd, "--model", model)
+
+	// Add permission mode
+	if archetype.PermissionMode != "" {
+		cmd = append(cmd, "--permission-mode", archetype.PermissionMode)
+	}
+
+	// Add system prompt
+	if archetype.Prompt != "" {
+		cmd = append(cmd, "--system-prompt", archetype.Prompt)
+	}
+
+	// Add initial topic as the prompt if provided
+	if req.Topic != "" {
+		cmd = append(cmd, "--prompt", fmt.Sprintf("Let's brainstorm: %s", req.Topic))
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "agent_created",
+		Payload: d.agentToInfo(agentRecord),
+	})
+
+	// Emit stream event for visualization
+	d.EmitStreamEvent(control.NewStreamEvent(control.StreamEventAgentCreated, control.StreamSourceDaemon).
+		WithAgent(agentID).
+		WithWorktree(req.WorktreePath).
+		WithPayload(map[string]any{
+			"archetype":    "brainstorm",
+			"project":      wt.Project,
+			"interactive":  true,
+		}))
+
+	return &control.SpawnChatResponse{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		Command:   cmd,
+		WorkDir:   req.WorktreePath,
+	}, nil
+}

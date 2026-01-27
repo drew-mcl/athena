@@ -384,6 +384,7 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_agent", d.handleGetAgent)
 	d.server.Handle("get_agent_logs", d.handleGetAgentLogs)
 	d.server.Handle("spawn_agent", d.handleSpawnAgent)
+	d.server.Handle("spawn_chat", d.handleSpawnChat)
 	d.server.Handle("kill_agent", d.handleKillAgent)
 	d.server.Handle("list_worktrees", d.handleListWorktrees)
 	d.server.Handle("create_worktree", d.handleCreateWorktree)
@@ -408,10 +409,11 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_plan", d.handleGetPlan)
 	d.server.Handle("approve_plan", d.handleApprovePlan)
 	d.server.Handle("spawn_executor", d.handleSpawnExecutor)
-	// Publish/Merge/Cleanup
+	// Publish/Merge/Cleanup/Abandon
 	d.server.Handle("publish_pr", d.handlePublishPR)
 	d.server.Handle("merge_local", d.handleMergeLocal)
 	d.server.Handle("cleanup_worktree", d.handleCleanupWorktree)
+	d.server.Handle("abandon_worktree", d.handleAbandonWorktree)
 	// Context (blackboard + state)
 	d.server.Handle("get_blackboard", d.handleGetBlackboard)
 	d.server.Handle("post_blackboard", d.handlePostBlackboard)
@@ -470,6 +472,9 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 		}
 		if wt.PRURL != nil {
 			info.PRURL = *wt.PRURL
+		}
+		if wt.SourceNoteID != nil {
+			info.SourceNoteID = *wt.SourceNoteID
 		}
 
 		// Get plan summary for this worktree
@@ -883,6 +888,7 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		TicketID:     req.TicketID,
 		Description:  req.Description,
 		WorkflowMode: req.WorkflowMode,
+		SourceNoteID: req.SourceNoteID,
 	}
 
 	path, err := d.migrator.CreateWorktree(opts)
@@ -1353,6 +1359,35 @@ func (d *Daemon) handleCleanupWorktree(params json.RawMessage) (any, error) {
 	// Broadcast event
 	d.server.Broadcast(control.Event{
 		Type: "worktree_cleaned",
+		Payload: map[string]string{
+			"path": req.WorktreePath,
+		},
+	})
+
+	return map[string]bool{"success": true}, nil
+}
+
+func (d *Daemon) handleAbandonWorktree(params json.RawMessage) (any, error) {
+	var req control.AbandonWorktreeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	// Kill any running agent process before abandoning
+	wt, _ := d.store.GetWorktree(req.WorktreePath)
+	if wt != nil && wt.AgentID != nil {
+		if err := d.spawner.Kill(*wt.AgentID); err != nil {
+			logging.Debug("spawner kill returned error (may not be running)", "agent_id", *wt.AgentID, "error", err)
+		}
+	}
+
+	if err := d.publisher.Abandon(req.WorktreePath); err != nil {
+		return nil, err
+	}
+
+	// Broadcast event for TUI updates
+	d.server.Broadcast(control.Event{
+		Type: "worktree_abandoned",
 		Payload: map[string]string{
 			"path": req.WorktreePath,
 		},

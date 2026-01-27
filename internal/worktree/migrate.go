@@ -222,6 +222,7 @@ type CreateWorktreeOptions struct {
 	TicketID     string // Ticket ID (e.g., ENG-123)
 	Description  string // Description of the work
 	WorkflowMode string // automatic | approve | manual
+	SourceNoteID string // Note ID if promoted from note (for abandon rollback)
 }
 
 // CreateWorktree creates a new worktree with the standard naming convention.
@@ -298,6 +299,12 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 	}
 	workflowModePtr := &workflowMode
 
+	// Set source note ID if provided
+	var sourceNoteIDPtr *string
+	if opts.SourceNoteID != "" {
+		sourceNoteIDPtr = &opts.SourceNoteID
+	}
+
 	wt := &store.Worktree{
 		Path:         targetPath,
 		Project:      projectName,
@@ -309,6 +316,7 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 		ProjectName:  projectNamePtr,
 		Status:       store.WorktreeStatusActive,
 		WorkflowMode: workflowModePtr,
+		SourceNoteID: sourceNoteIDPtr,
 	}
 
 	if err := m.store.UpsertWorktree(wt); err != nil {

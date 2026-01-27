@@ -331,6 +331,103 @@ func (p *Publisher) Cleanup(worktreePath string, deleteBranch bool) error {
 	return nil
 }
 
+// Abandon forcibly removes a worktree (even with uncommitted changes),
+// deletes the branch, cleans up database records, and restores the source note
+// if one exists.
+func (p *Publisher) Abandon(worktreePath string) error {
+	// 1. Get worktree to retrieve source_note_id before deletion
+	wt, err := p.store.GetWorktree(worktreePath)
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+	if wt == nil {
+		return fmt.Errorf("worktree not found: %s", worktreePath)
+	}
+	if wt.IsMain {
+		return fmt.Errorf("cannot abandon main worktree")
+	}
+
+	sourceNoteID := wt.SourceNoteID
+
+	// 2. Get branch name and main repo path before removal
+	branch := wt.Branch
+	if branch == "" {
+		branch = getCurrentBranch(worktreePath)
+	}
+
+	mainRepoPath, err := getMainRepoPath(worktreePath)
+	if err != nil {
+		return fmt.Errorf("failed to get main repo path: %w", err)
+	}
+
+	// 3. Clear blackboard entries for this worktree
+	if err := p.store.ClearBlackboard(worktreePath); err != nil {
+		logging.Warn("failed to clear blackboard", "path", worktreePath, "error", err)
+	}
+
+	// 4. Delete plans for this worktree
+	if err := p.store.DeletePlan(worktreePath); err != nil {
+		logging.Warn("failed to delete plan", "path", worktreePath, "error", err)
+	}
+
+	// 5. Kill any running agent (if exists) by cascade deleting
+	if wt.AgentID != nil {
+		if err := p.store.DeleteAgentCascade(*wt.AgentID); err != nil {
+			logging.Warn("failed to delete agent", "agent_id", *wt.AgentID, "error", err)
+		}
+	}
+
+	// 6. Remove worktree from disk (force, even with changes)
+	logging.Info("abandoning worktree", "path", worktreePath)
+	cmd, err := executil.Command("git", "worktree", "remove", worktreePath, "--force")
+	if err != nil {
+		// If command creation fails, try direct removal
+		if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
+			return fmt.Errorf("failed to create git command: %w", err)
+		}
+		logging.Warn("forced directory removal after git command creation failed", "path", worktreePath)
+	} else {
+		cmd.Dir = mainRepoPath
+		output, cmdErr := cmd.CombinedOutput()
+		if cmdErr != nil {
+			// Try to remove the directory directly if git worktree remove fails
+			if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
+				return fmt.Errorf("git worktree remove failed: %w\n%s", cmdErr, string(output))
+			}
+			logging.Warn("forced directory removal after git worktree remove failed", "path", worktreePath)
+		}
+	}
+
+	// 7. Delete the branch (force delete with -D to handle unmerged branches)
+	if branch != "" {
+		logging.Info("deleting branch (force)", "branch", branch)
+		cmd, err = executil.Command("git", "branch", "-D", branch)
+		if err == nil {
+			cmd.Dir = mainRepoPath
+			if forceOutput, forceErr := cmd.CombinedOutput(); forceErr != nil {
+				logging.Warn("failed to delete branch", "branch", branch, "error", string(forceOutput))
+			}
+		}
+	}
+
+	// 8. Delete worktree from database
+	if err := p.store.DeleteWorktree(worktreePath); err != nil {
+		logging.Warn("failed to delete worktree from store", "error", err)
+	}
+
+	// 9. Restore source note to visible if it exists
+	if sourceNoteID != nil && *sourceNoteID != "" {
+		logging.Info("restoring source note", "note_id", *sourceNoteID)
+		if err := p.store.UpdateNoteDone(*sourceNoteID, false); err != nil {
+			logging.Warn("failed to restore source note", "note_id", *sourceNoteID, "error", err)
+		}
+	}
+
+	logging.Info("worktree abandoned successfully", "path", worktreePath)
+
+	return nil
+}
+
 // Helper functions
 
 func isCleanWorkingTree(path string) (bool, error) {
