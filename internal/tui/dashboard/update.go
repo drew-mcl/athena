@@ -3,6 +3,7 @@ package dashboard
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -34,18 +35,22 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 	m.agentTable.SetWidth(m.width)
 	m.taskTable.SetWidth(m.width)
 
+	var cmd tea.Cmd
+
 	if m.planMode {
 		if m.planStatus == "pending" {
 			m.planRendered = m.renderPendingPlan(m.planPlannerStatus)
 		} else {
-			m.planRendered = m.renderMarkdown(m.planContent)
+			m.planRendered = "Rendering..."
+			cmd = tea.Batch(cmd, m.renderMarkdownCmd("plan", m.planContent))
 		}
 	}
 
 	if m.detailMode && m.detailAgent != nil && m.detailAgent.Prompt != "" {
-		m.detailRenderedPrompt = m.renderMarkdown(m.detailAgent.Prompt)
+		m.detailRenderedPrompt = "Rendering..."
+		cmd = tea.Batch(cmd, m.renderMarkdownCmd("agent:"+m.detailAgent.ID, m.detailAgent.Prompt))
 	}
-	return m, nil
+	return m, cmd
 }
 
 func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
@@ -60,12 +65,14 @@ func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
 	m.lastUpdate = time.Now()
 
 	// Update detail view if active
+	var cmd tea.Cmd
 	if m.detailMode && m.detailAgent != nil {
 		found := false
 		for _, a := range msg.agents {
 			if a.ID == m.detailAgent.ID {
 				if a.Prompt != m.detailAgent.Prompt {
-					m.detailRenderedPrompt = m.renderMarkdown(a.Prompt)
+					m.detailRenderedPrompt = "Rendering..."
+					cmd = tea.Batch(cmd, m.renderMarkdownCmd("agent:"+a.ID, a.Prompt))
 				}
 				m.detailAgent = a
 				found = true
@@ -79,7 +86,6 @@ func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
 		}
 	}
 
-	var cmd tea.Cmd
 	if msg.err != nil {
 		m.err = msg.err
 		m.statusMsg = "✗ " + msg.err.Error()
@@ -137,10 +143,10 @@ func (m Model) handlePlanResult(msg planResultMsg) (Model, tea.Cmd) {
 	// Render markdown with glamour (or show pending message)
 	if msg.status == "pending" {
 		m.planRendered = m.renderPendingPlan(msg.plannerStatus)
-	} else {
-		m.planRendered = m.renderMarkdown(msg.content)
+		return m, nil
 	}
-	return m, nil
+	m.planRendered = "Rendering..."
+	return m, m.renderMarkdownCmd("plan", msg.content)
 }
 
 func (m Model) handleContextResult(msg contextResultMsg) (Model, tea.Cmd) {
@@ -197,4 +203,31 @@ func (m Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 
 func (m Model) handleControlEvent(msg eventMsg) (Model, tea.Cmd) {
 	return m, tea.Batch(m.fetchData, m.listenForEvents())
+}
+
+func (m Model) handleMarkdownRendered(msg markdownRenderedMsg) (Model, tea.Cmd) {
+	if strings.HasPrefix(msg.target, "agent:") {
+		agentID := strings.TrimPrefix(msg.target, "agent:")
+		if m.detailMode && m.detailAgent != nil && m.detailAgent.ID == agentID {
+			m.detailRenderedPrompt = msg.content
+		}
+	} else if strings.HasPrefix(msg.target, "agent_plan:") {
+		agentID := strings.TrimPrefix(msg.target, "agent_plan:")
+		if m.detailMode && m.detailAgent != nil && m.detailAgent.ID == agentID {
+			m.detailRenderedPlan = msg.content
+		}
+	} else if msg.target == "plan" {
+		if m.planMode {
+			m.planRendered = msg.content
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleDetailPlanResult(msg detailPlanResultMsg) (Model, tea.Cmd) {
+	if m.detailMode && m.detailAgent != nil && m.detailAgent.ID == msg.agentID {
+		m.detailRenderedPlan = "Rendering..."
+		return m, m.renderMarkdownCmd("agent_plan:"+msg.agentID, msg.content)
+	}
+	return m, nil
 }
