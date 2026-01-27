@@ -539,7 +539,10 @@ func resolveProjectPath(path string) (string, error) {
 	return filepath.Abs(path)
 }
 
-var initialProject string
+var (
+	initialProject string
+	noAutoProject  bool
+)
 
 func init() {
 	// TUI debug flags
@@ -548,6 +551,7 @@ func init() {
 
 	// Navigation flags
 	rootCmd.Flags().StringVarP(&initialProject, "project", "p", "", "Open directly to a specific project")
+	rootCmd.Flags().BoolVar(&noAutoProject, "no-auto-project", false, "Don't auto-navigate to project based on current directory")
 
 	// Migration flags
 	migrateCmd.Flags().BoolP("execute", "e", false, "Execute the migration (default: show plan only)")

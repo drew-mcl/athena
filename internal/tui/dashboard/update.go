@@ -59,6 +59,20 @@ func (m Model) handleFetchDataResult(msg fetchDataResultMsg) (Model, tea.Cmd) {
 	m.projects = m.extractProjects()
 	m.lastUpdate = time.Now()
 
+	// Handle initial project navigation (once, on first data load)
+	if m.initialProject != "" {
+		for _, p := range m.projects {
+			if p == m.initialProject {
+				m.selectedProject = m.initialProject
+				m.level = LevelProject
+				m.tab = TabWorktrees // Start on worktrees tab within project
+				m.selected = 0
+				break
+			}
+		}
+		m.initialProject = "" // Clear to prevent re-triggering
+	}
+
 	// Update detail view if active
 	if m.detailMode && m.detailAgent != nil {
 		found := false
