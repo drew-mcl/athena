@@ -145,6 +145,55 @@ All goroutines use `safeGo()` or `safeLoop()` for panic recovery.
 | Questions | Quick Q&A history |
 | Notes | Idea capture, promote to features |
 
+## Merge Queue Workflow
+
+Athena uses a **merge queue** to coordinate multiple in-flight features. This ensures features stack properly and dependencies are managed automatically.
+
+### How It Works
+
+1. **New features start from queue head**: When you create a worktree, it automatically branches from the most recent feature in the queue (not main). This creates a proper dependency chain.
+
+2. **Add completed features to queue**: When your feature is ready:
+   ```bash
+   ath queue add
+   ```
+
+3. **Queue tracks order**: Features merge to main in queue order. Position 1 merges first.
+
+4. **Editing earlier features**: If you need to fix a feature that's earlier in the queue:
+   - Make your changes
+   - Run `ath queue bump` - this moves your feature to the back
+   - Athena **automatically rebases** all dependent features
+   - If conflicts occur, the agent is notified to resolve them
+
+### CLI Commands
+
+```bash
+ath queue              # Show queue status
+ath queue add          # Add current worktree to queue
+ath queue head         # Show integration HEAD for new features
+ath queue bump         # Move to back after edits (auto-rebases dependents)
+ath queue rm           # Remove from queue
+```
+
+### For Agents
+
+When working in a worktree:
+- Check if you're in the queue: `ath queue` shows your position
+- After completing a feature, add it: `ath queue add`
+- If fixing an earlier feature: make changes, then `ath queue bump`
+- If you see `status: conflict` - resolve the merge conflict, then continue
+
+The queue ensures features integrate cleanly in order.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/store/merge_queue.go` | Queue persistence and ordering |
+| `internal/daemon/merge_queue.go` | Queue API handlers, auto-rebase |
+| `cmd/ath/commands.go` | CLI commands (runQueue*) |
+
 ## Future Ideas
 
 ### Multi-Agent Orchestration

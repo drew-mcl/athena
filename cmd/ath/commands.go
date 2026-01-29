@@ -469,3 +469,328 @@ func runWtList() error {
 	printWorktreeTable(worktrees)
 	return nil
 }
+
+// ============================================================================
+// Merge Queue Commands
+// ============================================================================
+
+func runQueueList(project string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Auto-detect project if not provided
+	if project == "" {
+		project = detectProject()
+	}
+
+	items, err := client.GetMergeQueue(project)
+	if err != nil {
+		return err
+	}
+
+	// Check if VCS plugin is enabled for full functionality
+	cfg, _ := loadPluginConfig()
+	vcsEnabled := cfg != nil && (cfg.Enabled["github"] || cfg.Enabled["gitlab"])
+
+	if len(items) == 0 {
+		fmt.Println(gray + "Queue empty - new worktrees will branch from main" + reset)
+		if !vcsEnabled {
+			fmt.Println()
+			fmt.Println(gray + "Tip: Enable a VCS plugin for automatic PR sync:" + reset)
+			fmt.Println(gray + "  ath plugin enable github" + reset)
+		}
+		return nil
+	}
+
+	fmt.Printf("%s≡%s Merge Queue (%d items)\n\n", cyan, reset, len(items))
+
+	for _, item := range items {
+		statusIcon := getQueueStatusIcon(item.Status)
+		branchName := filepath.Base(item.Branch)
+
+		// Truncate path for display
+		displayPath := item.WorktreePath
+		if len(displayPath) > 40 {
+			displayPath = "..." + displayPath[len(displayPath)-37:]
+		}
+
+		fmt.Printf("  %s %s#%d%s %s\n",
+			statusIcon,
+			yellow, item.Position, reset,
+			branchName,
+		)
+		fmt.Printf("      %spath:%s %s\n", gray, reset, displayPath)
+
+		if item.Status == "rebasing" {
+			fmt.Printf("      %sneeds rebase%s\n", yellow, reset)
+		}
+	}
+
+	return nil
+}
+
+func runQueueAdd(path string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	item, err := client.AddToMergeQueue(control.AddToMergeQueueRequest{
+		WorktreePath: absPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Added to queue at position #%d\n", green, checkMark, reset, item.Position)
+	fmt.Printf("   Branch: %s\n", item.Branch)
+	fmt.Printf("   Based on: %s (%s)\n", item.BaseBranch, shortSHA(item.BaseCommit))
+
+	return nil
+}
+
+func runQueueHead(project string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	if project == "" {
+		project = detectProject()
+	}
+
+	head, err := client.GetMergeQueueHead(project)
+	if err != nil {
+		return err
+	}
+
+	if head.Empty {
+		fmt.Println(gray + "Queue empty - base new worktrees on main" + reset)
+		return nil
+	}
+
+	fmt.Printf("%s≡%s Integration HEAD\n", cyan, reset)
+	fmt.Printf("   Branch: %s\n", head.Branch)
+	if head.Commit != "" {
+		fmt.Printf("   Commit: %s\n", shortSHA(head.Commit))
+	}
+	fmt.Println()
+	fmt.Println(gray + "New worktrees should branch from this point" + reset)
+
+	return nil
+}
+
+func runQueueBump(path string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	item, err := client.BumpMergeQueueItem(absPath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Moved to position #%d\n", green, checkMark, reset, item.Position)
+	fmt.Println(yellow + "Dependent features marked for rebase" + reset)
+
+	return nil
+}
+
+func runQueueRemove(path string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	if err := client.RemoveFromMergeQueue(absPath); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Removed from queue\n", green, checkMark, reset)
+	return nil
+}
+
+// Helper functions for queue display
+
+func getQueueStatusIcon(status string) string {
+	switch status {
+	case "queued":
+		return cyan + "[Q]" + reset
+	case "merging":
+		return green + "[M]" + reset
+	case "rebasing":
+		return yellow + "[R]" + reset
+	case "conflict":
+		return red + "[!]" + reset
+	default:
+		return gray + "[?]" + reset
+	}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// ============================================================================
+// Plugin Commands
+// ============================================================================
+
+// Available plugins (static list for now - could be dynamic later)
+var availablePlugins = []struct {
+	name     string
+	category string
+	desc     string
+}{
+	{"github", "vcs", "GitHub - PRs, CI/CD via gh CLI"},
+	{"gitlab", "vcs", "GitLab - MRs, CI/CD via glab CLI"},
+	{"linear", "pm", "Linear - Issue tracking"},
+	{"jira", "pm", "Jira - Issue tracking (coming soon)"},
+}
+
+// Plugin state stored in config file
+func getPluginConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "athena", "plugins.json")
+}
+
+type PluginConfig struct {
+	Enabled map[string]bool `json:"enabled"`
+}
+
+func loadPluginConfig() (*PluginConfig, error) {
+	path := getPluginConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &PluginConfig{Enabled: make(map[string]bool)}, nil
+		}
+		return nil, err
+	}
+
+	var cfg PluginConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Enabled == nil {
+		cfg.Enabled = make(map[string]bool)
+	}
+	return &cfg, nil
+}
+
+func savePluginConfig(cfg *PluginConfig) error {
+	path := getPluginConfigPath()
+	os.MkdirAll(filepath.Dir(path), 0755)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func runPluginList(category string) error {
+	cfg, err := loadPluginConfig()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%sPlugins%s\n\n", bold, reset)
+
+	currentCat := ""
+	for _, p := range availablePlugins {
+		if category != "" && p.category != category {
+			continue
+		}
+
+		// Print category header
+		if p.category != currentCat {
+			currentCat = p.category
+			catName := "Version Control"
+			if currentCat == "pm" {
+				catName = "Project Management"
+			}
+			fmt.Printf("%s%s%s\n", cyan, catName, reset)
+		}
+
+		// Status indicator
+		enabled := cfg.Enabled[p.name]
+		status := gray + "[ ]" + reset
+		if enabled {
+			status = green + "[*]" + reset
+		}
+
+		fmt.Printf("  %s %s%s%s - %s\n", status, bold, p.name, reset, p.desc)
+	}
+
+	fmt.Println()
+	fmt.Println(gray + "Use 'ath plugin enable <name>' to enable a plugin" + reset)
+	return nil
+}
+
+func runPluginEnable(name string) error {
+	// Validate plugin exists
+	found := false
+	for _, p := range availablePlugins {
+		if p.name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("unknown plugin: %s", name)
+	}
+
+	cfg, err := loadPluginConfig()
+	if err != nil {
+		return err
+	}
+
+	cfg.Enabled[name] = true
+	if err := savePluginConfig(cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Enabled %s\n", green, checkMark, reset, name)
+	return nil
+}
+
+func runPluginDisable(name string) error {
+	cfg, err := loadPluginConfig()
+	if err != nil {
+		return err
+	}
+
+	cfg.Enabled[name] = false
+	if err := savePluginConfig(cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Disabled %s\n", green, checkMark, reset, name)
+	return nil
+}

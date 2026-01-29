@@ -223,6 +223,7 @@ type CreateWorktreeOptions struct {
 	Description  string // Description of the work
 	WorkflowMode string // automatic | approve | manual
 	SourceNoteID string // Note ID if promoted from note (for abandon rollback)
+	StartPoint   string // Git ref to start from (commit/branch) - if empty, uses HEAD
 }
 
 // CreateWorktree creates a new worktree with the standard naming convention.
@@ -264,7 +265,12 @@ func (m *Migrator) CreateWorktree(opts CreateWorktreeOptions) (string, error) {
 	if branchExists {
 		gitArgs = []string{"worktree", "add", targetPath, branch}
 	} else {
-		gitArgs = []string{"worktree", "add", "-b", branch, targetPath}
+		// Create new branch - optionally from a specific start point (queue head)
+		if opts.StartPoint != "" {
+			gitArgs = []string{"worktree", "add", "-b", branch, targetPath, opts.StartPoint}
+		} else {
+			gitArgs = []string{"worktree", "add", "-b", branch, targetPath}
+		}
 	}
 
 	cmd, err = executil.Command("git", gitArgs...)
@@ -363,8 +369,28 @@ func (m *Migrator) createTodoFile(worktreePath string, opts CreateWorktreeOption
 		content.WriteString("- [ ] Define implementation approach\n")
 	}
 	content.WriteString("- [ ] Create implementation plan\n")
+	content.WriteString("- [ ] Implement the feature\n")
+	content.WriteString("- [ ] Add to merge queue: `ath queue add`\n")
+
+	// Merge queue workflow section
+	content.WriteString("\n## Merge Queue Workflow\n\n")
+	if opts.StartPoint != "" {
+		content.WriteString(fmt.Sprintf("This feature was branched from: `%s`\n\n", opts.StartPoint))
+	}
+	content.WriteString("When your work is complete:\n")
+	content.WriteString("1. Commit and push your changes\n")
+	content.WriteString("2. Add to the merge queue: `ath queue add`\n")
+	content.WriteString("3. Check queue status: `ath queue`\n\n")
+	content.WriteString("If you need to fix something after adding to queue:\n")
+	content.WriteString("1. Make your changes\n")
+	content.WriteString("2. Run `ath queue bump` to move to back and auto-rebase dependents\n")
+	content.WriteString("3. If conflicts occur, resolve them and continue\n")
+
 	content.WriteString("\n---\n")
 	content.WriteString(fmt.Sprintf("Ticket: %s\n", opts.TicketID))
+	if opts.StartPoint != "" {
+		content.WriteString(fmt.Sprintf("Based on: %s\n", opts.StartPoint))
+	}
 
 	return os.WriteFile(todoPath, []byte(content.String()), 0644)
 }

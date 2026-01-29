@@ -19,6 +19,8 @@ import (
 	actx "github.com/drewfead/athena/internal/context"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
+	"github.com/drewfead/athena/internal/plugin"
+	"github.com/drewfead/athena/internal/plugin/vcs"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/task"
 	"github.com/drewfead/athena/internal/task/claude"
@@ -46,6 +48,9 @@ type Daemon struct {
 
 	// Task management (Claude Code tasks integration)
 	taskRegistry *task.Registry
+
+	// Merge queue sync
+	queueSync *QueueSync
 
 	agents   map[string]*AgentProcess
 	agentsMu sync.RWMutex
@@ -115,6 +120,15 @@ func New(cfg *config.Config) (*Daemon, error) {
 		d.emitAgentStreamEvent(eventType, agentID, worktreePath, payload)
 	})
 
+	// Initialize plugin registry for integrations
+	plugins := plugin.NewRegistry()
+	plugins.Register(vcs.NewGitHub())
+	plugins.Register(vcs.NewGitLab())
+	// TODO: Load enabled state from config and register PM plugins
+
+	// Initialize queue sync (watches PRs and auto-pops merged items)
+	d.queueSync = NewQueueSync(st, plugins, d.server)
+
 	d.registerHandlers()
 	return d, nil
 }
@@ -140,6 +154,9 @@ func (d *Daemon) Run() error {
 
 	// Pick up any pending jobs from previous session
 	d.requeuePendingJobs()
+
+	// Start merge queue sync (watches PRs and auto-pops merged items)
+	d.queueSync.Start()
 
 	// Start background workers
 	d.wg.Add(3)
@@ -202,6 +219,9 @@ func (d *Daemon) gracefulShutdown() {
 		// Mark as draining - stop accepting new work
 		d.setDraining(true)
 		logging.Info("stopped accepting new work, draining in-flight jobs")
+
+		// Stop the queue sync background process
+		d.queueSync.Stop()
 
 		// Stop the control server from accepting new connections
 		// but allow existing connections to finish
@@ -451,6 +471,8 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_work_item_children", d.handleGetWorkItemChildren)
 	d.server.Handle("get_work_item_ancestors", d.handleGetWorkItemAncestors)
 	d.server.Handle("get_ready_items", d.handleGetReadyItems)
+	// Merge Queue
+	d.registerMergeQueueHandlers()
 }
 
 func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
@@ -904,6 +926,23 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("main repo not found: %s", req.MainRepoPath)
 	}
 
+	// Determine start point - use queue head by default for proper feature stacking
+	startPoint := req.StartPoint
+	if startPoint == "" && req.UseQueueHead {
+		// Get project name for queue lookup
+		projectName := mainRepo.Project
+		if mainRepo.ProjectName != nil {
+			projectName = *mainRepo.ProjectName
+		}
+
+		// Check merge queue for integration HEAD
+		queueBranch, _, err := d.store.GetQueueHead(projectName)
+		if err == nil && queueBranch != "" {
+			startPoint = queueBranch
+			logging.Info("using queue head as start point", "branch", queueBranch, "project", projectName)
+		}
+	}
+
 	// Create worktree
 	opts := worktree.CreateWorktreeOptions{
 		MainRepoPath: req.MainRepoPath,
@@ -912,6 +951,7 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		Description:  req.Description,
 		WorkflowMode: req.WorkflowMode,
 		SourceNoteID: req.SourceNoteID,
+		StartPoint:   startPoint,
 	}
 
 	path, err := d.migrator.CreateWorktree(opts)
