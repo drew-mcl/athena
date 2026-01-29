@@ -1354,3 +1354,203 @@ func (c *Client) SpawnChat(req SpawnChatRequest) (*SpawnChatResponse, error) {
 	json.Unmarshal(data, &result)
 	return &result, nil
 }
+
+// WorkItemInfo represents a hierarchical work item for API responses.
+type WorkItemInfo struct {
+	ID          string `json:"id"`           // wi-a3f8, wi-a3f8.1, etc.
+	Project     string `json:"project"`      // project scope
+	ItemType    string `json:"item_type"`    // goal, feature, task
+	ParentID    string `json:"parent_id"`    // parent work item (empty for goals)
+	Subject     string `json:"subject"`      // brief title
+	Description string `json:"description"`  // detailed description
+	Status      string `json:"status"`       // pending, in_progress, completed
+	Priority    int    `json:"priority"`     // 0=critical, 1=high, 2=normal, 3=low
+
+	// Feature-specific
+	WorktreePath string `json:"worktree_path,omitempty"` // linked worktree
+	TicketID     string `json:"ticket_id,omitempty"`     // external ticket (ENG-123)
+	PRURL        string `json:"pr_url,omitempty"`        // PR URL if published
+
+	// Assignment
+	AgentID string `json:"agent_id,omitempty"` // current agent
+
+	// Progress (for goals/features)
+	CompletedCount int `json:"completed_count,omitempty"` // completed descendants
+	TotalCount     int `json:"total_count,omitempty"`     // total descendants
+
+	// Timestamps
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListWorkItemsRequest is the request to list work items.
+type ListWorkItemsRequest struct {
+	Project  string `json:"project,omitempty"`
+	ItemType string `json:"item_type,omitempty"` // goal, feature, task
+	Status   string `json:"status,omitempty"`    // pending, in_progress, completed
+}
+
+// CreateWorkItemRequest is the request to create a work item.
+type CreateWorkItemRequest struct {
+	Project     string `json:"project"`
+	ItemType    string `json:"item_type"`             // goal, feature, task
+	ParentID    string `json:"parent_id,omitempty"`   // parent (empty for goals/orphans)
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"` // defaults to pending
+	TicketID    string `json:"ticket_id,omitempty"`
+	Priority    int    `json:"priority,omitempty"` // defaults to 2 (normal)
+}
+
+// UpdateWorkItemRequest is the request to update a work item.
+type UpdateWorkItemRequest struct {
+	ID          string `json:"id"`
+	Subject     string `json:"subject,omitempty"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Priority    *int   `json:"priority,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+}
+
+// ListWorkItems retrieves work items with optional filters.
+func (c *Client) ListWorkItems(req ListWorkItemsRequest) ([]*WorkItemInfo, error) {
+	resp, err := c.Call("list_work_items", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
+
+// GetWorkItem retrieves a work item by ID.
+func (c *Client) GetWorkItem(id string) (*WorkItemInfo, error) {
+	resp, err := c.Call("get_work_item", map[string]string{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var item WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &item)
+	return &item, nil
+}
+
+// CreateWorkItem creates a new work item.
+func (c *Client) CreateWorkItem(req CreateWorkItemRequest) (*WorkItemInfo, error) {
+	resp, err := c.Call("create_work_item", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var item WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &item)
+	return &item, nil
+}
+
+// UpdateWorkItem updates an existing work item.
+func (c *Client) UpdateWorkItem(req UpdateWorkItemRequest) (*WorkItemInfo, error) {
+	resp, err := c.Call("update_work_item", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var item WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &item)
+	return &item, nil
+}
+
+// DeleteWorkItem removes a work item.
+func (c *Client) DeleteWorkItem(id string) error {
+	resp, err := c.Call("delete_work_item", map[string]string{"id": id})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// GetWorkItemTree retrieves a work item and all its descendants.
+func (c *Client) GetWorkItemTree(rootID, project string) ([]*WorkItemInfo, error) {
+	resp, err := c.Call("get_work_item_tree", map[string]string{
+		"root_id": rootID,
+		"project": project,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
+
+// GetWorkItemChildren retrieves direct children of a work item.
+func (c *Client) GetWorkItemChildren(parentID string) ([]*WorkItemInfo, error) {
+	resp, err := c.Call("get_work_item_children", map[string]string{"parent_id": parentID})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
+
+// GetWorkItemAncestors retrieves all ancestors of a work item.
+func (c *Client) GetWorkItemAncestors(id string) ([]*WorkItemInfo, error) {
+	resp, err := c.Call("get_work_item_ancestors", map[string]string{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
+
+// GetReadyItems retrieves unblocked work items ready to be worked on.
+func (c *Client) GetReadyItems(project string) ([]*WorkItemInfo, error) {
+	resp, err := c.Call("get_ready_items", map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*WorkItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
