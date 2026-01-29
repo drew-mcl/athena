@@ -210,6 +210,51 @@ func (s *Store) migrateMetricsColumns() error {
 	return nil
 }
 
+// migrateWorkItems creates the work_items table if it doesn't exist.
+// This table stores the hierarchical work item model (goal/feature/task).
+func (s *Store) migrateWorkItems() error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS work_items (
+		id TEXT PRIMARY KEY,                          -- wi-a3f8, wi-a3f8.1, wi-a3f8.1.2
+		project TEXT NOT NULL,                        -- project scope
+		item_type TEXT NOT NULL,                      -- goal, feature, task
+		parent_id TEXT,                               -- parent work item (null for goals/orphans)
+
+		subject TEXT NOT NULL,
+		description TEXT,
+		status TEXT DEFAULT 'pending',                -- pending, in_progress, completed
+
+		-- Feature-specific (when item_type = 'feature')
+		worktree_path TEXT,                           -- linked worktree
+		ticket_id TEXT,                               -- ENG-123
+		pr_url TEXT,
+
+		-- Assignment
+		agent_id TEXT,                                -- current agent working on it
+
+		-- Metadata
+		priority INTEGER DEFAULT 2,                   -- 0=critical, 1=high, 2=normal, 3=low
+		metadata TEXT,                                -- JSON blob for extensibility
+
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+		FOREIGN KEY (parent_id) REFERENCES work_items(id),
+		FOREIGN KEY (worktree_path) REFERENCES worktrees(path),
+		FOREIGN KEY (agent_id) REFERENCES agents(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project);
+	CREATE INDEX IF NOT EXISTS idx_work_items_parent ON work_items(parent_id);
+	CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+	CREATE INDEX IF NOT EXISTS idx_work_items_type ON work_items(item_type);
+	CREATE INDEX IF NOT EXISTS idx_work_items_worktree ON work_items(worktree_path);
+	CREATE INDEX IF NOT EXISTS idx_work_items_ticket ON work_items(ticket_id);
+	`
+	_, err := s.db.Exec(schema)
+	return err
+}
+
 // migrateContextCacheMetrics creates the context_cache_metrics table if it doesn't exist.
 // This table is created via migration rather than main schema to support existing databases.
 func (s *Store) migrateContextCacheMetrics() error {
@@ -260,6 +305,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.migrateContextCacheMetrics(); err != nil {
+		return err
+	}
+	if err := s.migrateWorkItems(); err != nil {
 		return err
 	}
 
@@ -834,4 +882,58 @@ func (m *AgentMetrics) TotalInputTokens() int {
 // CostUSD returns the cost in USD.
 func (m *AgentMetrics) CostUSD() float64 {
 	return float64(m.CostCents) / 100
+}
+
+// WorkItemType represents the kind of work item in the hierarchy.
+type WorkItemType string
+
+const (
+	WorkItemTypeGoal    WorkItemType = "goal"    // Strategic objective, no worktree
+	WorkItemTypeFeature WorkItemType = "feature" // PR-sized, has worktree, maps to Claude task list
+	WorkItemTypeTask    WorkItemType = "task"    // Individual work unit, maps to Claude task
+)
+
+// WorkItemStatus represents the lifecycle state of a work item.
+type WorkItemStatus string
+
+const (
+	WorkItemStatusPending    WorkItemStatus = "pending"     // Not started
+	WorkItemStatusInProgress WorkItemStatus = "in_progress" // Being worked on
+	WorkItemStatusCompleted  WorkItemStatus = "completed"   // Done
+)
+
+// WorkItemPriority represents urgency levels.
+type WorkItemPriority int
+
+const (
+	WorkItemPriorityCritical WorkItemPriority = 0
+	WorkItemPriorityHigh     WorkItemPriority = 1
+	WorkItemPriorityNormal   WorkItemPriority = 2
+	WorkItemPriorityLow      WorkItemPriority = 3
+)
+
+// WorkItem represents a hierarchical work item (goal, feature, or task).
+type WorkItem struct {
+	ID          string
+	Project     string
+	ItemType    WorkItemType
+	ParentID    *string // nil for goals and orphan tasks
+	Subject     string
+	Description string
+	Status      WorkItemStatus
+
+	// Feature-specific fields
+	WorktreePath *string // linked worktree (features only)
+	TicketID     *string // external ticket ID (e.g., ENG-123)
+	PRURL        *string // PR URL if published
+
+	// Assignment
+	AgentID *string // current agent working on it
+
+	// Metadata
+	Priority WorkItemPriority
+	Metadata string // JSON blob
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

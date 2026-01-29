@@ -147,6 +147,9 @@ func (d *Daemon) Run() error {
 	go d.safeLoop("health-check-loop", d.healthCheckLoop)
 	go d.safeLoop("job-execution-loop", d.jobExecutionLoop)
 
+	// Start task watcher for Claude task sync
+	d.startTaskWatcher(d.ctx)
+
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 2) // Buffer of 2 for second signal
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -438,6 +441,16 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("delete_task", d.handleDeleteTask)
 	d.server.Handle("execute_task", d.handleExecuteTask)
 	d.server.Handle("broadcast_task", d.handleBroadcastTask)
+	// Work Items (hierarchical work model)
+	d.server.Handle("list_work_items", d.handleListWorkItems)
+	d.server.Handle("get_work_item", d.handleGetWorkItem)
+	d.server.Handle("create_work_item", d.handleCreateWorkItem)
+	d.server.Handle("update_work_item", d.handleUpdateWorkItem)
+	d.server.Handle("delete_work_item", d.handleDeleteWorkItem)
+	d.server.Handle("get_work_item_tree", d.handleGetWorkItemTree)
+	d.server.Handle("get_work_item_children", d.handleGetWorkItemChildren)
+	d.server.Handle("get_work_item_ancestors", d.handleGetWorkItemAncestors)
+	d.server.Handle("get_ready_items", d.handleGetReadyItems)
 }
 
 func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
@@ -446,9 +459,13 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	var result []*control.WorktreeInfo
-	for _, wt := range worktrees {
-		info := &control.WorktreeInfo{
+	// Pre-allocate result slice
+	result := make([]*control.WorktreeInfo, len(worktrees))
+
+	// Use goroutines to fetch git status in parallel
+	var wg sync.WaitGroup
+	for i, wt := range worktrees {
+		result[i] = &control.WorktreeInfo{
 			Path:     wt.Path,
 			Project:  wt.Project,
 			Branch:   wt.Branch,
@@ -456,44 +473,50 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 			WTStatus: string(wt.Status),
 		}
 		if wt.AgentID != nil {
-			info.AgentID = *wt.AgentID
+			result[i].AgentID = *wt.AgentID
 		}
 		if wt.TicketID != nil {
-			info.TicketID = *wt.TicketID
+			result[i].TicketID = *wt.TicketID
 		}
 		if wt.TicketHash != nil {
-			info.TicketHash = *wt.TicketHash
+			result[i].TicketHash = *wt.TicketHash
 		}
 		if wt.Description != nil {
-			info.Description = *wt.Description
+			result[i].Description = *wt.Description
 		}
 		if wt.ProjectName != nil {
-			info.ProjectName = *wt.ProjectName
+			result[i].ProjectName = *wt.ProjectName
 		}
 		if wt.PRURL != nil {
-			info.PRURL = *wt.PRURL
+			result[i].PRURL = *wt.PRURL
 		}
 		if wt.SourceNoteID != nil {
-			info.SourceNoteID = *wt.SourceNoteID
+			result[i].SourceNoteID = *wt.SourceNoteID
 		}
 
-		// Get plan summary for this worktree
-		if summary, err := d.store.GetPlanSummary(wt.Path); err == nil && summary != "" {
-			info.Summary = summary
-		}
+		// Fetch git status and plan summary in parallel
+		wg.Add(1)
+		go func(idx int, path string) {
+			defer wg.Done()
 
-		// Get git status
-		status, _ := d.provisioner.GetStatus(wt.Path)
-		if status != nil {
-			if status.Clean {
-				info.Status = "clean"
-			} else {
-				info.Status = fmt.Sprintf("+%d ~%d", status.Modified, status.Staged)
+			// Get plan summary
+			if summary, err := d.store.GetPlanSummary(path); err == nil && summary != "" {
+				result[idx].Summary = summary
 			}
-		}
 
-		result = append(result, info)
+			// Get git status
+			status, _ := d.provisioner.GetStatus(path)
+			if status != nil {
+				if status.Clean {
+					result[idx].Status = "clean"
+				} else {
+					result[idx].Status = fmt.Sprintf("+%d ~%d", status.Modified, status.Staged)
+				}
+			}
+		}(i, wt.Path)
 	}
+
+	wg.Wait()
 	return result, nil
 }
 
