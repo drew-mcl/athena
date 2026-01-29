@@ -209,9 +209,9 @@ func extractWorktreeName(path string) string {
 	return path
 }
 
-// printWorktreeTableWithQueue shows worktrees with queue position indicator.
+// printWorktreeTableWithQueue shows worktrees with queue position and ahead/behind indicators.
 // Queued worktrees are sorted to the top.
-func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositions map[string]int) {
+func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositions map[string]int, aheadBehind map[string]AheadBehind) {
 	// Filter out main repos
 	var filtered []*control.WorktreeInfo
 	for _, wt := range worktrees {
@@ -310,36 +310,45 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 			queuedCount++
 		}
 
-		// Status
-		var statusIcon, statusText, statusColor string
+		// Status with ahead/behind indicators
+		var statusParts []string
+
+		// Ahead/behind arrows
+		if ab, ok := aheadBehind[wt.Path]; ok {
+			if ab.Behind > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%s↓%d%s", red, ab.Behind, reset))
+			}
+			if ab.Ahead > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%s↑%d%s", cyan, ab.Ahead, reset))
+			}
+		}
+
+		// Git status
 		switch {
 		case wt.Status == "" || wt.Status == "clean":
-			statusIcon, statusText, statusColor = checkMark, "", green
+			statusParts = append(statusParts, green+checkMark+reset)
 			cleanCount++
 		case strings.Contains(wt.Status, "untracked"):
-			statusIcon, statusText, statusColor = "?", "untracked", yellow
+			statusParts = append(statusParts, yellow+"?"+reset)
 			untrackedCount++
 		default:
-			statusIcon, statusText, statusColor = bullet, "changes", yellow
+			statusParts = append(statusParts, yellow+bullet+reset)
 			changesCount++
 		}
 
-		plainStatus := statusIcon
-		if statusText != "" {
-			plainStatus = statusIcon + " " + statusText
-		}
+		plainStatus := strings.Join(statusParts, " ")
 
 		// Print row
 		queueColor := ""
 		if queueStr != "" {
 			queueColor = cyan
 		}
-		fmt.Printf("%s%s%s %s%s%s %s%s%s  %s%s%s  %s%s%s %s%s%s\n",
+		fmt.Printf("%s%s%s %s%s%s %s%s%s  %s%s%s  %s %s%s%s\n",
 			gray, boxVertical, reset,
 			queueColor, padRight(queueStr, queueWidth), reset,
 			dim+magenta, padRight(id, idWidth), reset,
 			cyan, padRight(branch, branchWidth), reset,
-			statusColor, padRight(plainStatus, statusWidth), reset,
+			plainStatus,
 			gray, boxVertical, reset)
 	}
 

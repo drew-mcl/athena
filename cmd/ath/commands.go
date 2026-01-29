@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -531,8 +532,39 @@ func runWtList() error {
 		}
 	}
 
-	printWorktreeTableWithQueue(worktrees, queuePositions)
+	// Get ahead/behind info for each worktree
+	aheadBehind := getWorktreeAheadBehind(worktrees)
+
+	printWorktreeTableWithQueue(worktrees, queuePositions, aheadBehind)
 	return nil
+}
+
+// AheadBehind holds git ahead/behind counts
+type AheadBehind struct {
+	Ahead  int
+	Behind int
+}
+
+// getWorktreeAheadBehind fetches ahead/behind counts for worktrees
+func getWorktreeAheadBehind(worktrees []*control.WorktreeInfo) map[string]AheadBehind {
+	result := make(map[string]AheadBehind)
+	for _, wt := range worktrees {
+		if wt.IsMain {
+			continue
+		}
+		cmd := exec.Command("git", "-C", wt.Path, "rev-list", "--left-right", "--count", "main...HEAD")
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		parts := strings.Fields(strings.TrimSpace(string(out)))
+		if len(parts) == 2 {
+			behind, _ := strconv.Atoi(parts[0])
+			ahead, _ := strconv.Atoi(parts[1])
+			result[wt.Path] = AheadBehind{Ahead: ahead, Behind: behind}
+		}
+	}
+	return result
 }
 
 // getProjectWorktreePaths returns all worktree paths belonging to the current git repo.
