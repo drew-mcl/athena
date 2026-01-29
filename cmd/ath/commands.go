@@ -506,8 +506,52 @@ func runWtList() error {
 		return err
 	}
 
-	printWorktreeTable(worktrees)
+	// Filter by git worktree membership if we're in a project context
+	project := detectProject()
+	projectWorktrees := getProjectWorktreePaths()
+	if len(projectWorktrees) > 0 {
+		filtered := make([]*control.WorktreeInfo, 0)
+		for _, wt := range worktrees {
+			if _, ok := projectWorktrees[wt.Path]; ok {
+				filtered = append(filtered, wt)
+			}
+		}
+		worktrees = filtered
+	}
+
+	// Get queue info to show position
+	var queuePositions map[string]int
+	if project != "" {
+		queueItems, err := client.GetMergeQueue(project)
+		if err == nil {
+			queuePositions = make(map[string]int)
+			for _, item := range queueItems {
+				queuePositions[item.WorktreePath] = item.Position
+			}
+		}
+	}
+
+	printWorktreeTableWithQueue(worktrees, queuePositions)
 	return nil
+}
+
+// getProjectWorktreePaths returns all worktree paths belonging to the current git repo.
+func getProjectWorktreePaths() map[string]bool {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	paths := make(map[string]bool)
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "worktree ") {
+			path := strings.TrimPrefix(line, "worktree ")
+			paths[path] = true
+		}
+	}
+	return paths
 }
 
 // ============================================================================

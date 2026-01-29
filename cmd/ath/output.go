@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/drewfead/athena/internal/control"
@@ -206,6 +207,149 @@ func extractWorktreeName(path string) string {
 		return parts[len(parts)-1]
 	}
 	return path
+}
+
+// printWorktreeTableWithQueue shows worktrees with queue position indicator.
+// Queued worktrees are sorted to the top.
+func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositions map[string]int) {
+	// Filter out main repos
+	var filtered []*control.WorktreeInfo
+	for _, wt := range worktrees {
+		if !wt.IsMain {
+			filtered = append(filtered, wt)
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println(dim + "No worktrees found" + reset)
+		return
+	}
+
+	// Sort: queued items first (by position), then others
+	sort.Slice(filtered, func(i, j int) bool {
+		posI, inQueueI := queuePositions[filtered[i].Path]
+		posJ, inQueueJ := queuePositions[filtered[j].Path]
+
+		// Both in queue: sort by position
+		if inQueueI && inQueueJ {
+			return posI < posJ
+		}
+		// Only i in queue: i comes first
+		if inQueueI {
+			return true
+		}
+		// Only j in queue: j comes first
+		if inQueueJ {
+			return false
+		}
+		// Neither in queue: alphabetical by name
+		return extractWorktreeName(filtered[i].Path) < extractWorktreeName(filtered[j].Path)
+	})
+
+	// Column widths - add QUEUE column
+	const queueWidth = 5
+	const nameWidth = 20
+	const branchWidth = 40
+	const statusWidth = 14
+	const innerWidth = 1 + queueWidth + 1 + nameWidth + 2 + branchWidth + 2 + statusWidth + 1
+
+	// Header
+	titleText := "Worktrees"
+	rightDashes := innerWidth - 2 - len(titleText) - 1
+	fmt.Printf("%s%s%s %s%s%s %s%s\n",
+		gray, boxTopLeft, boxHorizontal,
+		dim+cyan, titleText, reset,
+		gray+strings.Repeat(boxHorizontal, rightDashes)+boxTopRight, reset)
+
+	// Column headers
+	fmt.Printf("%s%s%s %s%s %s  %s  %s%s %s%s%s\n",
+		gray, boxVertical, reset,
+		dim, padRight("Q", queueWidth),
+		padRight("NAME", nameWidth),
+		padRight("BRANCH", branchWidth),
+		padRight("STATUS", statusWidth), reset,
+		gray, boxVertical, reset)
+
+	// Separator
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxTeeRight,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxTeeLeft, reset)
+
+	// Stats
+	cleanCount, changesCount, untrackedCount, queuedCount := 0, 0, 0, 0
+
+	// Rows
+	for _, wt := range filtered {
+		name := truncate(extractWorktreeName(wt.Path), nameWidth)
+		branch := truncate(wt.Branch, branchWidth)
+
+		// Queue position
+		var queueStr string
+		if pos, ok := queuePositions[wt.Path]; ok {
+			queueStr = fmt.Sprintf("#%d", pos)
+			queuedCount++
+		}
+
+		// Status
+		var statusIcon, statusText, statusColor string
+		switch {
+		case wt.Status == "" || wt.Status == "clean":
+			statusIcon, statusText, statusColor = checkMark, "", green
+			cleanCount++
+		case strings.Contains(wt.Status, "untracked"):
+			statusIcon, statusText, statusColor = "?", "untracked", yellow
+			untrackedCount++
+		default:
+			statusIcon, statusText, statusColor = bullet, "changes", yellow
+			changesCount++
+		}
+
+		plainStatus := statusIcon
+		if statusText != "" {
+			plainStatus = statusIcon + " " + statusText
+		}
+
+		// Print row
+		queueColor := ""
+		if queueStr != "" {
+			queueColor = cyan
+		}
+		fmt.Printf("%s%s%s %s%s%s %s%s%s  %s%s%s  %s%s%s %s%s%s\n",
+			gray, boxVertical, reset,
+			queueColor, padRight(queueStr, queueWidth), reset,
+			dim+magenta, padRight(name, nameWidth), reset,
+			cyan, padRight(branch, branchWidth), reset,
+			statusColor, padRight(plainStatus, statusWidth), reset,
+			gray, boxVertical, reset)
+	}
+
+	// Footer
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxBottomLeft,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxBottomRight, reset)
+
+	// Summary
+	var parts []string
+	if queuedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d queued", queuedCount))
+	}
+	if cleanCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d clean", cleanCount))
+	}
+	if changesCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d with changes", changesCount))
+	}
+	if untrackedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked", untrackedCount))
+	}
+
+	fmt.Printf("\n%s%d worktrees%s", dim, len(filtered), reset)
+	if len(parts) > 0 {
+		fmt.Printf(" %s(%s)%s", dim, strings.Join(parts, ", "), reset)
+	}
+	fmt.Println()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
