@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/drewfead/athena/internal/config"
@@ -174,18 +175,8 @@ func (p *Provisioner) PruneStale(project string) error {
 func (p *Provisioner) GetStatus(worktreePath string) (*WorktreeStatus, error) {
 	status := &WorktreeStatus{Path: worktreePath}
 
-	// Get branch
-	cmd, err := executil.Command("git", "branch", "--show-current")
-	if err != nil {
-		return status, err
-	}
-	cmd.Dir = worktreePath
-	if output, err := cmd.Output(); err == nil {
-		status.Branch = strings.TrimSpace(string(output))
-	}
-
 	// Get status
-	cmd, err = executil.Command("git", "status", "--porcelain")
+	cmd, err := executil.Command("git", "status", "-sb", "--porcelain")
 	if err != nil {
 		return status, err
 	}
@@ -195,8 +186,18 @@ func (p *Provisioner) GetStatus(worktreePath string) (*WorktreeStatus, error) {
 		return status, nil
 	}
 
-	for _, line := range strings.Split(string(output), "\n") {
+	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "## ") {
+		status.Branch, status.Ahead, status.Behind = parseGitStatusHeader(lines[0])
+		lines = lines[1:]
+	}
+
+	for _, line := range lines {
 		if len(line) < 2 {
+			continue
+		}
+		if strings.HasPrefix(line, "??") {
+			status.Untracked++
 			continue
 		}
 		switch line[0] {
@@ -209,20 +210,63 @@ func (p *Provisioner) GetStatus(worktreePath string) (*WorktreeStatus, error) {
 		}
 	}
 
-	status.Clean = status.Staged == 0 && status.Modified == 0
+	status.Clean = status.Staged == 0 && status.Modified == 0 && status.Untracked == 0
 	return status, nil
 }
 
 // WorktreeStatus represents the git status of a worktree.
 type WorktreeStatus struct {
-	Path     string
-	Branch   string
-	Clean    bool
-	Staged   int
-	Modified int
-	Merged   bool
-	Stale    bool
-	Gone     bool
+	Path      string
+	Branch    string
+	Clean     bool
+	Staged    int
+	Modified  int
+	Untracked int
+	Ahead     int
+	Behind    int
+	Merged    bool
+	Stale     bool
+	Gone      bool
+}
+
+func parseGitStatusHeader(line string) (branch string, ahead int, behind int) {
+	header := strings.TrimPrefix(line, "## ")
+	meta := ""
+	if idx := strings.Index(header, " ["); idx != -1 && strings.HasSuffix(header, "]") {
+		meta = header[idx+2 : len(header)-1]
+		header = header[:idx]
+	}
+
+	if idx := strings.Index(header, "..."); idx != -1 {
+		branch = header[:idx]
+	} else {
+		fields := strings.Fields(header)
+		if len(fields) > 0 {
+			branch = fields[0]
+		}
+	}
+
+	if meta == "" {
+		return branch, 0, 0
+	}
+
+	parts := strings.Split(meta, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "ahead ") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(part, "ahead ")); err == nil {
+				ahead = n
+			}
+			continue
+		}
+		if strings.HasPrefix(part, "behind ") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(part, "behind ")); err == nil {
+				behind = n
+			}
+		}
+	}
+
+	return branch, ahead, behind
 }
 
 func (p *Provisioner) findMainRepo(project string) (string, error) {
@@ -382,7 +426,7 @@ func slugify(text string, maxLen int) string {
 
 // NormalizePlan describes what normalize would do without making changes.
 type NormalizePlan struct {
-	BaseDir string       // Target directory for normalized repos
+	BaseDir string // Target directory for normalized repos
 	Moves   []NormalizeMove
 }
 

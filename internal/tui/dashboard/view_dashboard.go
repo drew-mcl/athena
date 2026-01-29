@@ -344,14 +344,30 @@ func worktreeSummary(wt *control.WorktreeInfo, emptyValue string) string {
 }
 
 func isDirtyGitStatus(status string) bool {
-	return strings.Contains(status, "dirty") || strings.Contains(status, "M")
+	lower := strings.ToLower(status)
+	return strings.Contains(lower, "dirty") ||
+		strings.Contains(lower, "untracked") ||
+		strings.Contains(lower, "ahead") ||
+		strings.Contains(lower, "behind") ||
+		strings.Contains(lower, "changes") ||
+		strings.Contains(lower, "+") ||
+		strings.Contains(lower, "~") ||
+		strings.Contains(lower, "?")
 }
 
 func renderGitStatus(status string) string {
-	if strings.Contains(status, "dirty") || strings.Contains(status, "M") {
+	lower := strings.ToLower(status)
+	if strings.Contains(lower, "dirty") ||
+		strings.Contains(lower, "untracked") ||
+		strings.Contains(lower, "ahead") ||
+		strings.Contains(lower, "behind") ||
+		strings.Contains(lower, "changes") ||
+		strings.Contains(lower, "+") ||
+		strings.Contains(lower, "~") ||
+		strings.Contains(lower, "?") {
 		return tui.StyleWarning.Render(status)
 	}
-	if strings.Contains(status, "clean") {
+	if strings.Contains(lower, "clean") {
 		return tui.StyleSuccess.Render(status)
 	}
 	return tui.StyleMuted.Render(status)
