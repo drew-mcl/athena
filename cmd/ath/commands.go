@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -124,17 +125,56 @@ func runSpAdd(text string) error {
 	return nil
 }
 
-// detectProject tries to determine the current project from cwd.
+// detectProject tries to determine the current project from git context.
+// For worktrees, it finds the main repo name. For regular repos, uses the repo name.
 func detectProject() string {
+	// First, try to get the main worktree path (works for both worktrees and main repos)
+	mainWorktree := getMainWorktreePath()
+	if mainWorktree != "" {
+		// Extract the repo name from the main worktree path
+		return filepath.Base(mainWorktree)
+	}
+
+	// Fallback: try to get repo name from git remote
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err == nil {
+		url := strings.TrimSpace(string(out))
+		// Parse repo name from URL (handles both SSH and HTTPS)
+		// git@github.com:user/repo.git -> repo
+		// https://github.com/user/repo.git -> repo
+		url = strings.TrimSuffix(url, ".git")
+		parts := strings.Split(url, "/")
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+
+	// Last resort: use cwd basename
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	// Extract project name from path (last component of repos path)
-	parts := strings.Split(cwd, "/")
-	for i, p := range parts {
-		if p == "repos" && i+1 < len(parts) {
-			return parts[i+1]
+	return filepath.Base(cwd)
+}
+
+// getMainWorktreePath returns the path to the main worktree (the original repo).
+// For a regular repo, this returns the repo path itself.
+// For a linked worktree, this returns the path to the main repo.
+func getMainWorktreePath() string {
+	// git worktree list --porcelain gives us all worktrees
+	// The first one listed is always the main worktree
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "worktree ") {
+			// First "worktree" line is the main worktree
+			return strings.TrimPrefix(line, "worktree ")
 		}
 	}
 	return ""
