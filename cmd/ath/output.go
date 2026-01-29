@@ -209,6 +209,31 @@ func extractWorktreeName(path string) string {
 	return path
 }
 
+// isTicketPrefix checks if a string looks like a ticket prefix (2-5 uppercase letters)
+func isTicketPrefix(s string) bool {
+	if len(s) < 2 || len(s) > 5 {
+		return false
+	}
+	for _, c := range s {
+		if c < 'A' || c > 'Z' {
+			// Allow lowercase too, we'll uppercase it
+			if c < 'a' || c > 'z' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isNumeric checks if a string starts with digits (allowing suffixes like "123-something")
+func isNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	// Just check first char is a digit
+	return s[0] >= '0' && s[0] <= '9'
+}
+
 // printWorktreeTableWithQueue shows worktrees with queue position and ahead/behind indicators.
 // Queued worktrees are sorted to the top.
 func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositions map[string]int, aheadBehind map[string]AheadBehind) {
@@ -281,23 +306,23 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 
 	// Rows
 	for _, wt := range filtered {
-		// ID: prefer TicketID, fall back to extracting from path
+		// ID: prefer TicketID, then wi-id pattern, then ticket pattern, then short name
 		id := wt.TicketID
 		if id == "" {
-			// Try to extract wi-id or ticket from path name
 			name := extractWorktreeName(wt.Path)
-			// Check for wi-xxxx pattern
+			// Check for wi-xxxx pattern (work item ID)
 			if strings.HasPrefix(name, "wi-") || strings.HasPrefix(name, "WI-") {
 				id = name
-			} else if strings.Contains(name, "-") {
-				// Check for ticket pattern like ENG-123, OMI-42
-				parts := strings.SplitN(name, "-", 3)
-				if len(parts) >= 2 && len(parts[0]) <= 6 {
+			} else {
+				// Check for real ticket pattern: 2-4 uppercase letters + dash + numbers
+				// e.g., ENG-123, OMI-42, ATH-1 (not athena-cli-fix)
+				parts := strings.SplitN(name, "-", 2)
+				if len(parts) >= 2 && isTicketPrefix(parts[0]) && isNumeric(parts[1]) {
 					id = strings.ToUpper(parts[0]) + "-" + parts[1]
+				} else {
+					// Just use the short directory name
+					id = truncate(name, idWidth)
 				}
-			}
-			if id == "" {
-				id = truncate(name, idWidth)
 			}
 		}
 		id = truncate(id, idWidth)
