@@ -233,7 +233,12 @@ func (c *Client) KillAgentWithDelete(id string, deleteData bool) error {
 
 // ListWorktrees retrieves all worktrees.
 func (c *Client) ListWorktrees() ([]*WorktreeInfo, error) {
-	resp, err := c.Call("list_worktrees", nil)
+	return c.ListWorktreesWithOptions(ListWorktreesRequest{})
+}
+
+// ListWorktreesWithOptions retrieves worktrees with optional fields.
+func (c *Client) ListWorktreesWithOptions(req ListWorktreesRequest) ([]*WorktreeInfo, error) {
+	resp, err := c.Call("list_worktrees", req)
 	if err != nil {
 		return nil, err
 	}
@@ -862,6 +867,14 @@ type WorktreeInfo struct {
 	PRURL        string `json:"pr_url,omitempty"`         // GitHub PR URL if published
 	Summary      string `json:"summary,omitempty"`        // Plan summary from frontmatter
 	SourceNoteID string `json:"source_note_id,omitempty"` // Note ID if promoted from note
+	Ahead        int    `json:"ahead,omitempty"`          // Commits ahead of upstream
+	Behind       int    `json:"behind,omitempty"`         // Commits behind upstream
+}
+
+// ListWorktreesRequest controls optional fields for worktree listing.
+type ListWorktreesRequest struct {
+	IncludeStatus  *bool `json:"include_status,omitempty"`
+	IncludeSummary *bool `json:"include_summary,omitempty"`
 }
 
 // JobInfo represents job data for API responses.
@@ -1357,14 +1370,14 @@ func (c *Client) SpawnChat(req SpawnChatRequest) (*SpawnChatResponse, error) {
 
 // WorkItemInfo represents a hierarchical work item for API responses.
 type WorkItemInfo struct {
-	ID          string `json:"id"`           // wi-a3f8, wi-a3f8.1, etc.
-	Project     string `json:"project"`      // project scope
-	ItemType    string `json:"item_type"`    // goal, feature, task
-	ParentID    string `json:"parent_id"`    // parent work item (empty for goals)
-	Subject     string `json:"subject"`      // brief title
-	Description string `json:"description"`  // detailed description
-	Status      string `json:"status"`       // pending, in_progress, completed
-	Priority    int    `json:"priority"`     // 0=critical, 1=high, 2=normal, 3=low
+	ID          string `json:"id"`          // wi-a3f8, wi-a3f8.1, etc.
+	Project     string `json:"project"`     // project scope
+	ItemType    string `json:"item_type"`   // goal, feature, task
+	ParentID    string `json:"parent_id"`   // parent work item (empty for goals)
+	Subject     string `json:"subject"`     // brief title
+	Description string `json:"description"` // detailed description
+	Status      string `json:"status"`      // pending, in_progress, completed
+	Priority    int    `json:"priority"`    // 0=critical, 1=high, 2=normal, 3=low
 
 	// Feature-specific
 	WorktreePath string `json:"worktree_path,omitempty"` // linked worktree
@@ -1393,8 +1406,8 @@ type ListWorkItemsRequest struct {
 // CreateWorkItemRequest is the request to create a work item.
 type CreateWorkItemRequest struct {
 	Project     string `json:"project"`
-	ItemType    string `json:"item_type"`             // goal, feature, task
-	ParentID    string `json:"parent_id,omitempty"`   // parent (empty for goals/orphans)
+	ItemType    string `json:"item_type"`           // goal, feature, task
+	ParentID    string `json:"parent_id,omitempty"` // parent (empty for goals/orphans)
 	Subject     string `json:"subject"`
 	Description string `json:"description,omitempty"`
 	Status      string `json:"status,omitempty"` // defaults to pending

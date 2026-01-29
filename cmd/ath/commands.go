@@ -125,6 +125,7 @@ func runSpAdd(text string) error {
 }
 
 // detectProject tries to determine the current project from cwd.
+// Handles worktree naming: "athena-feature-name" -> "athena"
 func detectProject() string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -134,10 +135,37 @@ func detectProject() string {
 	parts := strings.Split(cwd, "/")
 	for i, p := range parts {
 		if p == "repos" && i+1 < len(parts) {
-			return parts[i+1]
+			dirName := parts[i+1]
+			// Strip worktree suffixes (e.g., "athena-feature-name" -> "athena")
+			// Common patterns: project-feature, project-fix-xxx, project-eng-123
+			return extractBaseProject(dirName)
 		}
 	}
 	return ""
+}
+
+// extractBaseProject extracts the base project name from a worktree directory name.
+// Examples: "athena-cli-output-fix" -> "athena", "myapp-eng-123" -> "myapp"
+func extractBaseProject(dirName string) string {
+	// Known worktree suffix patterns (find earliest match)
+	suffixPatterns := []string{
+		"-fix", "-feat", "-feature", "-eng", "-bug",
+		"-wip", "-dev", "-test", "-refactor", "-cli", "-tui",
+	}
+
+	lower := strings.ToLower(dirName)
+	earliestIdx := len(dirName)
+
+	for _, pattern := range suffixPatterns {
+		if idx := strings.Index(lower, pattern); idx > 0 && idx < earliestIdx {
+			earliestIdx = idx
+		}
+	}
+
+	if earliestIdx < len(dirName) {
+		return dirName[:earliestIdx]
+	}
+	return dirName
 }
 
 // runStatus shows a summary of active work.
@@ -307,7 +335,7 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 
 // Task commands
 
-func runTskList(itemType string) error {
+func runTskList(itemType string, allProjects bool) error {
 	client, err := getClient()
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon: %w", err)
@@ -315,6 +343,9 @@ func runTskList(itemType string) error {
 	defer client.Close()
 
 	project := detectProject()
+	if allProjects {
+		project = ""
+	}
 
 	// Map short types to full types
 	title := "Tasks"
@@ -449,23 +480,5 @@ func runTree(rootID, project string, goalsOnly bool) error {
 	}
 
 	printWorkItemTree(items)
-	return nil
-}
-
-// Worktree command
-
-func runWtList() error {
-	client, err := getClient()
-	if err != nil {
-		return fmt.Errorf("cannot connect to daemon: %w", err)
-	}
-	defer client.Close()
-
-	worktrees, err := client.ListWorktrees()
-	if err != nil {
-		return err
-	}
-
-	printWorktreeTable(worktrees)
 	return nil
 }

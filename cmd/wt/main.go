@@ -6,13 +6,16 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/worktree"
+	"github.com/spf13/cobra"
 )
 
-var cfg *config.Config
+var (
+	cfg      *config.Config
+	wtRescan bool
+)
 
 func main() {
 	var err error
@@ -79,6 +82,7 @@ var pruneCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolVar(&wtRescan, "rescan", false, "Rescan filesystem for worktrees (slower)")
 	rootCmd.AddCommand(listCmd, addCmd, removeCmd, pruneCmd)
 }
 
@@ -89,9 +93,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 	defer st.Close()
 
-	// Scan first to get fresh data
-	scanner := worktree.NewScanner(cfg, st)
-	scanner.ScanAndStore()
+	if wtRescan {
+		// Scan first to get fresh data
+		scanner := worktree.NewScanner(cfg, st)
+		scanner.ScanAndStore()
+	}
 
 	worktrees, err := st.ListWorktrees("")
 	if err != nil {
@@ -100,7 +106,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	if len(worktrees) == 0 {
 		fmt.Println("No worktrees found.")
-		fmt.Printf("Configure base_dirs in %s\n", config.DefaultConfigPath())
+		fmt.Printf("Configure base_dirs in %s or run with --rescan\n", config.DefaultConfigPath())
 		return nil
 	}
 
