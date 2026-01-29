@@ -246,12 +246,12 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 		return extractWorktreeName(filtered[i].Path) < extractWorktreeName(filtered[j].Path)
 	})
 
-	// Column widths - add QUEUE column
-	const queueWidth = 5
-	const nameWidth = 20
-	const branchWidth = 40
-	const statusWidth = 14
-	const innerWidth = 1 + queueWidth + 1 + nameWidth + 2 + branchWidth + 2 + statusWidth + 1
+	// Column widths: Q | ID | BRANCH (summary) | STATUS
+	const queueWidth = 3
+	const idWidth = 14
+	const branchWidth = 45
+	const statusWidth = 12
+	const innerWidth = 1 + queueWidth + 1 + idWidth + 2 + branchWidth + 2 + statusWidth + 1
 
 	// Header
 	titleText := "Worktrees"
@@ -265,7 +265,7 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 	fmt.Printf("%s%s%s %s%s %s  %s  %s%s %s%s%s\n",
 		gray, boxVertical, reset,
 		dim, padRight("Q", queueWidth),
-		padRight("NAME", nameWidth),
+		padRight("ID", idWidth),
 		padRight("BRANCH", branchWidth),
 		padRight("STATUS", statusWidth), reset,
 		gray, boxVertical, reset)
@@ -281,7 +281,26 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 
 	// Rows
 	for _, wt := range filtered {
-		name := truncate(extractWorktreeName(wt.Path), nameWidth)
+		// ID: prefer TicketID, fall back to extracting from path
+		id := wt.TicketID
+		if id == "" {
+			// Try to extract wi-id or ticket from path name
+			name := extractWorktreeName(wt.Path)
+			// Check for wi-xxxx pattern
+			if strings.HasPrefix(name, "wi-") || strings.HasPrefix(name, "WI-") {
+				id = name
+			} else if strings.Contains(name, "-") {
+				// Check for ticket pattern like ENG-123, OMI-42
+				parts := strings.SplitN(name, "-", 3)
+				if len(parts) >= 2 && len(parts[0]) <= 6 {
+					id = strings.ToUpper(parts[0]) + "-" + parts[1]
+				}
+			}
+			if id == "" {
+				id = truncate(name, idWidth)
+			}
+		}
+		id = truncate(id, idWidth)
 		branch := truncate(wt.Branch, branchWidth)
 
 		// Queue position
@@ -318,7 +337,7 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 		fmt.Printf("%s%s%s %s%s%s %s%s%s  %s%s%s  %s%s%s %s%s%s\n",
 			gray, boxVertical, reset,
 			queueColor, padRight(queueStr, queueWidth), reset,
-			dim+magenta, padRight(name, nameWidth), reset,
+			dim+magenta, padRight(id, idWidth), reset,
 			cyan, padRight(branch, branchWidth), reset,
 			statusColor, padRight(plainStatus, statusWidth), reset,
 			gray, boxVertical, reset)
