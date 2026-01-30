@@ -310,6 +310,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateWorkItems(); err != nil {
 		return err
 	}
+	if err := s.migrateMergeQueue(); err != nil {
+		return err
+	}
 
 	schema := `
 	-- Core agent registry

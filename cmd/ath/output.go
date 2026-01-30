@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/drewfead/athena/internal/control"
@@ -27,6 +28,320 @@ func padRight(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-len(s))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKTREE TABLE - Boxed table layout matching reference design
+// ═══════════════════════════════════════════════════════════════════════════
+
+func printWorktreeTable(worktrees []*control.WorktreeInfo) {
+	// Filter out main repos
+	var filtered []*control.WorktreeInfo
+	for _, wt := range worktrees {
+		if !wt.IsMain {
+			filtered = append(filtered, wt)
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println(dim + "No worktrees found" + reset)
+		return
+	}
+
+	// Column widths
+	const nameWidth = 20
+	const branchWidth = 45
+	const statusWidth = 14
+	// Inner width: 1 (left pad) + name + 2 (gap) + branch + 2 (gap) + status + 1 (right pad)
+	const innerWidth = 1 + nameWidth + 2 + branchWidth + 2 + statusWidth + 1
+
+	// Header: ┌─ Worktrees ────...────┐
+	titleText := "Worktrees"
+	// Calculate remaining width for right side dashes
+	// Total inner = 2 (for "─ " before title) + len(title) + 1 (space after) + dashes
+	rightDashes := innerWidth - 2 - len(titleText) - 1
+	fmt.Printf("%s%s%s %s%s%s %s%s\n",
+		gray, boxTopLeft, boxHorizontal,
+		dim+cyan, titleText, reset,
+		gray+strings.Repeat(boxHorizontal, rightDashes)+boxTopRight, reset)
+
+	// Column headers
+	fmt.Printf("%s%s%s %s%s  %s%s  %s%s %s%s\n",
+		gray, boxVertical, reset,
+		dim, padRight("NAME", nameWidth),
+		padRight("BRANCH", branchWidth),
+		padRight("STATUS", statusWidth), reset,
+		gray, boxVertical, reset)
+
+	// Separator
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxTeeRight,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxTeeLeft, reset)
+
+	// Stats
+	cleanCount, changesCount, untrackedCount := 0, 0, 0
+
+	// Rows
+	for _, wt := range filtered {
+		name := truncate(extractWorktreeName(wt.Path), nameWidth)
+		branch := truncate(wt.Branch, branchWidth)
+
+		// Status
+		var statusIcon, statusText, statusColor string
+		switch {
+		case wt.Status == "" || wt.Status == "clean":
+			statusIcon, statusText, statusColor = checkMark, "", green
+			cleanCount++
+		case strings.Contains(wt.Status, "untracked"):
+			statusIcon, statusText, statusColor = "?", "untracked", yellow
+			untrackedCount++
+		default:
+			statusIcon, statusText, statusColor = bullet, "changes", yellow
+			changesCount++
+		}
+
+		plainStatus := statusIcon
+		if statusText != "" {
+			plainStatus = statusIcon + " " + statusText
+		}
+
+		// Print row: NAME dimmed magenta, BRANCH cyan, STATUS colored
+		fmt.Printf("%s%s%s %s%s%s  %s%s%s  %s%s%s %s%s%s\n",
+			gray, boxVertical, reset,
+			dim+magenta, padRight(name, nameWidth), reset,
+			cyan, padRight(branch, branchWidth), reset,
+			statusColor, padRight(plainStatus, statusWidth), reset,
+			gray, boxVertical, reset)
+	}
+
+	// Footer
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxBottomLeft,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxBottomRight, reset)
+
+	// Summary
+	var parts []string
+	if cleanCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d clean", cleanCount))
+	}
+	if changesCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d with changes", changesCount))
+	}
+	if untrackedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked", untrackedCount))
+	}
+
+	fmt.Printf("\n%s%d worktrees%s", dim, len(filtered), reset)
+	if len(parts) > 0 {
+		fmt.Printf(" %s(%s)%s", dim, strings.Join(parts, ", "), reset)
+	}
+	fmt.Println()
+}
+
+func extractWorktreeName(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return path
+}
+
+// isTicketPrefix checks if a string looks like a ticket prefix (2-5 uppercase letters)
+func isTicketPrefix(s string) bool {
+	if len(s) < 2 || len(s) > 5 {
+		return false
+	}
+	for _, c := range s {
+		if c < 'A' || c > 'Z' {
+			// Allow lowercase too, we'll uppercase it
+			if c < 'a' || c > 'z' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isNumeric checks if a string starts with digits (allowing suffixes like "123-something")
+func isNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	// Just check first char is a digit
+	return s[0] >= '0' && s[0] <= '9'
+}
+
+// printWorktreeTableWithQueue shows worktrees with queue position and ahead/behind indicators.
+// Queued worktrees are sorted to the top.
+func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositions map[string]int, aheadBehind map[string]AheadBehind) {
+	// Filter out main repos
+	var filtered []*control.WorktreeInfo
+	for _, wt := range worktrees {
+		if !wt.IsMain {
+			filtered = append(filtered, wt)
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println(dim + "No worktrees found" + reset)
+		return
+	}
+
+	// Sort: queued items first (by position), then others
+	sort.Slice(filtered, func(i, j int) bool {
+		posI, inQueueI := queuePositions[filtered[i].Path]
+		posJ, inQueueJ := queuePositions[filtered[j].Path]
+
+		// Both in queue: sort by position
+		if inQueueI && inQueueJ {
+			return posI < posJ
+		}
+		// Only i in queue: i comes first
+		if inQueueI {
+			return true
+		}
+		// Only j in queue: j comes first
+		if inQueueJ {
+			return false
+		}
+		// Neither in queue: alphabetical by name
+		return extractWorktreeName(filtered[i].Path) < extractWorktreeName(filtered[j].Path)
+	})
+
+	// Column widths: Q | ID | BRANCH (summary) | STATUS
+	const queueWidth = 3
+	const idWidth = 14
+	const branchWidth = 45
+	const statusWidth = 12
+	const innerWidth = 1 + queueWidth + 1 + idWidth + 2 + branchWidth + 2 + statusWidth + 1
+
+	// Header
+	titleText := "Worktrees"
+	rightDashes := innerWidth - 2 - len(titleText) - 1
+	fmt.Printf("%s%s%s %s%s%s %s%s\n",
+		gray, boxTopLeft, boxHorizontal,
+		dim+cyan, titleText, reset,
+		gray+strings.Repeat(boxHorizontal, rightDashes)+boxTopRight, reset)
+
+	// Column headers
+	fmt.Printf("%s%s%s %s%s %s  %s  %s%s %s%s%s\n",
+		gray, boxVertical, reset,
+		dim, padRight("Q", queueWidth),
+		padRight("ID", idWidth),
+		padRight("BRANCH", branchWidth),
+		padRight("STATUS", statusWidth), reset,
+		gray, boxVertical, reset)
+
+	// Separator
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxTeeRight,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxTeeLeft, reset)
+
+	// Stats
+	cleanCount, changesCount, untrackedCount, queuedCount := 0, 0, 0, 0
+
+	// Rows
+	for _, wt := range filtered {
+		// ID: prefer TicketID, then wi-id pattern, then ticket pattern, then short name
+		id := wt.TicketID
+		if id == "" {
+			name := extractWorktreeName(wt.Path)
+			// Check for wi-xxxx pattern (work item ID)
+			if strings.HasPrefix(name, "wi-") || strings.HasPrefix(name, "WI-") {
+				id = name
+			} else {
+				// Check for real ticket pattern: 2-4 uppercase letters + dash + numbers
+				// e.g., ENG-123, OMI-42, ATH-1 (not athena-cli-fix)
+				parts := strings.SplitN(name, "-", 2)
+				if len(parts) >= 2 && isTicketPrefix(parts[0]) && isNumeric(parts[1]) {
+					id = strings.ToUpper(parts[0]) + "-" + parts[1]
+				} else {
+					// Just use the short directory name
+					id = truncate(name, idWidth)
+				}
+			}
+		}
+		id = truncate(id, idWidth)
+		branch := truncate(wt.Branch, branchWidth)
+
+		// Queue position
+		var queueStr string
+		if pos, ok := queuePositions[wt.Path]; ok {
+			queueStr = fmt.Sprintf("#%d", pos)
+			queuedCount++
+		}
+
+		// Status with ahead/behind indicators
+		var statusParts []string
+
+		// Ahead/behind arrows
+		if ab, ok := aheadBehind[wt.Path]; ok {
+			if ab.Behind > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%s↓%d%s", red, ab.Behind, reset))
+			}
+			if ab.Ahead > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%s↑%d%s", cyan, ab.Ahead, reset))
+			}
+		}
+
+		// Git status
+		switch {
+		case wt.Status == "" || wt.Status == "clean":
+			statusParts = append(statusParts, green+checkMark+reset)
+			cleanCount++
+		case strings.Contains(wt.Status, "untracked"):
+			statusParts = append(statusParts, yellow+"?"+reset)
+			untrackedCount++
+		default:
+			statusParts = append(statusParts, yellow+bullet+reset)
+			changesCount++
+		}
+
+		plainStatus := strings.Join(statusParts, " ")
+
+		// Print row
+		queueColor := ""
+		if queueStr != "" {
+			queueColor = cyan
+		}
+		fmt.Printf("%s%s%s %s%s%s %s%s%s  %s%s%s  %s %s%s%s\n",
+			gray, boxVertical, reset,
+			queueColor, padRight(queueStr, queueWidth), reset,
+			dim+magenta, padRight(id, idWidth), reset,
+			cyan, padRight(branch, branchWidth), reset,
+			plainStatus,
+			gray, boxVertical, reset)
+	}
+
+	// Footer
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxBottomLeft,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxBottomRight, reset)
+
+	// Summary
+	var parts []string
+	if queuedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d queued", queuedCount))
+	}
+	if cleanCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d clean", cleanCount))
+	}
+	if changesCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d with changes", changesCount))
+	}
+	if untrackedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked", untrackedCount))
+	}
+
+	fmt.Printf("\n%s%d worktrees%s", dim, len(filtered), reset)
+	if len(parts) > 0 {
+		fmt.Printf(" %s(%s)%s", dim, strings.Join(parts, ", "), reset)
+	}
+	fmt.Println()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

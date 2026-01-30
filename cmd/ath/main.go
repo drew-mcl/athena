@@ -44,6 +44,11 @@ Work Item Hierarchy:
   Feature  ◇  - PR-sized work (has worktree)           [green]
   Task     ○  - Individual work items                   [yellow]
 
+Shorthand Commands:
+  g  → goal      t  → tsk       tr → tree
+  f  → feat      w  → wt        q  → queue
+  s  → sp        p  → plugin
+
 Display:
   Shape colors indicate item type (blue/green/yellow)
   Filled shapes (■ ◆ ●) indicate in_progress status
@@ -52,11 +57,11 @@ Display:
 
 Examples:
   ath                           # Status summary
-  ath tree                      # Full work item tree
-  ath goal new "Auth system"    # Create goal
-  ath feat new wi-a3f8 "OAuth"  # Create feature under goal
-  ath tsk "Update readme"       # Quick task (inbox)
-  ath tsk -f wi-a3f8.1 "Task"   # Task under feature`,
+  ath tr                        # Full work item tree
+  ath g new "Auth system"       # Create goal
+  ath f new wi-a3f8 "OAuth"     # Create feature under goal
+  ath t "Update readme"         # Quick task (inbox)
+  ath q                         # Show merge queue`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatus()
 	},
@@ -64,8 +69,9 @@ Examples:
 
 // Goal commands
 var goalCmd = &cobra.Command{
-	Use:   "goal",
-	Short: "Manage goals (strategic objectives)",
+	Use:     "goal",
+	Aliases: []string{"g"},
+	Short:   "Manage goals (strategic objectives)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGoalList()
 	},
@@ -93,8 +99,9 @@ var goalShowCmd = &cobra.Command{
 
 // Feature commands
 var featCmd = &cobra.Command{
-	Use:   "feat",
-	Short: "Manage features (PR-sized work with worktree)",
+	Use:     "feat",
+	Aliases: []string{"f"},
+	Short:   "Manage features (PR-sized work with worktree)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runFeatList()
 	},
@@ -115,8 +122,9 @@ var featNewCmd = &cobra.Command{
 
 // Task commands
 var tskCmd = &cobra.Command{
-	Use:   "tsk [subject...]",
-	Short: "Manage tasks",
+	Use:     "tsk [subject...]",
+	Aliases: []string{"t", "task"},
+	Short:   "Manage tasks",
 	Long: `Create and manage tasks.
 
 With no args: list tasks
@@ -165,8 +173,9 @@ var tskReadyCmd = &cobra.Command{
 
 // Tree command
 var treeCmd = &cobra.Command{
-	Use:   "tree [root-id]",
-	Short: "Display work item tree",
+	Use:     "tree [root-id]",
+	Aliases: []string{"tr"},
+	Short:   "Display work item tree",
 	Long: `Display hierarchical tree of work items.
 
 Examples:
@@ -185,6 +194,143 @@ Examples:
 	},
 }
 
+// Worktree commands
+var wtCmd = &cobra.Command{
+	Use:     "wt",
+	Aliases: []string{"w"},
+	Short:   "Manage worktrees",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWtList()
+	},
+}
+
+// Queue commands - manage the merge queue
+var queueCmd = &cobra.Command{
+	Use:     "queue",
+	Aliases: []string{"q"},
+	Short:   "Manage the merge queue",
+	Long: `Manage the local merge queue for coordinating feature branches.
+
+The merge queue maintains ordering between in-flight features so that:
+- New features start from the integration HEAD (last queued feature)
+- When you edit an earlier feature, dependent features are marked for rebase
+- Features merge to main in order
+
+Examples:
+  ath queue                    # Show queue status
+  ath queue add                # Add current worktree to queue
+  ath queue head               # Show integration HEAD for new features
+  ath queue bump               # Move current worktree to back (after edits)
+  ath queue rm                 # Remove current worktree from queue`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runQueueList(project)
+	},
+}
+
+var queueAddCmd = &cobra.Command{
+	Use:   "add [worktree-path]",
+	Short: "Add worktree to the merge queue",
+	Long:  `Add a worktree to the merge queue. Uses current directory if no path provided.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := "."
+		if len(args) > 0 {
+			path = args[0]
+		}
+		return runQueueAdd(path)
+	},
+}
+
+var queueHeadCmd = &cobra.Command{
+	Use:   "head",
+	Short: "Show integration HEAD for new features",
+	Long:  `Show the branch/commit that new worktrees should be based on.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runQueueHead(project)
+	},
+}
+
+var queueBumpCmd = &cobra.Command{
+	Use:   "bump [worktree-path]",
+	Short: "Move worktree to back of queue",
+	Long: `Move a worktree to the back of the queue after making edits.
+This marks dependent features as needing rebase.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := "."
+		if len(args) > 0 {
+			path = args[0]
+		}
+		return runQueueBump(path)
+	},
+}
+
+var queueRmCmd = &cobra.Command{
+	Use:   "rm [worktree-path]",
+	Short: "Remove worktree from the queue",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := "."
+		if len(args) > 0 {
+			path = args[0]
+		}
+		return runQueueRemove(path)
+	},
+}
+
+// Plugin commands - manage integrations
+var pluginCmd = &cobra.Command{
+	Use:     "plugin",
+	Aliases: []string{"p"},
+	Short:   "Manage plugins (VCS, PM integrations)",
+	Long: `Manage plugin integrations for version control and project management.
+
+Plugin Categories:
+  vcs  - Version Control Systems (github, gitlab)
+  pm   - Project Management (linear, jira)
+
+Examples:
+  ath plugin                    # List all plugins
+  ath plugin enable github      # Enable GitHub integration
+  ath plugin disable jira       # Disable Jira
+  ath plugin vcs                # List VCS plugins only`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPluginList("")
+	},
+}
+
+var pluginEnableCmd = &cobra.Command{
+	Use:   "enable <plugin>",
+	Short: "Enable a plugin",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPluginEnable(args[0])
+	},
+}
+
+var pluginDisableCmd = &cobra.Command{
+	Use:   "disable <plugin>",
+	Short: "Disable a plugin",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPluginDisable(args[0])
+	},
+}
+
+var pluginVCSCmd = &cobra.Command{
+	Use:   "vcs",
+	Short: "List VCS plugins",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPluginList("vcs")
+	},
+}
+
+var pluginPMCmd = &cobra.Command{
+	Use:   "pm",
+	Short: "List PM plugins",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPluginList("pm")
+	},
+}
 
 func init() {
 	// Goal flags
@@ -211,13 +357,22 @@ func init() {
 	// Scratchpad flags
 	spCmd.Flags().BoolP("edit", "e", false, "Open scratchpad in editor")
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, spCmd)
+	// Queue flags
+	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
+	queueHeadCmd.Flags().StringP("project", "p", "", "Project name")
+	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd)
+
+	// Plugin commands
+	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
+
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spCmd, queueCmd, pluginCmd)
 }
 
 // Scratchpad command
 var spCmd = &cobra.Command{
-	Use:   "sp [text...]",
-	Short: "Scratchpad for quick ideas",
+	Use:     "sp [text...]",
+	Aliases: []string{"s"},
+	Short:   "Scratchpad for quick ideas",
 	Long: `Quick scratchpad for jotting down ideas.
 
 With no args: show all scratchpad entries

@@ -982,6 +982,8 @@ type CreateWorktreeRequest struct {
 	WorkflowMode string `json:"workflow_mode"`  // Workflow mode: automatic, approve, or manual
 	Provider     string `json:"provider"`       // AI Provider (claude, gemini, etc.)
 	SourceNoteID string `json:"source_note_id"` // Note ID if promoted from note (for abandon rollback)
+	StartPoint   string `json:"start_point"`    // Git ref to start from (optional, auto-uses queue head)
+	UseQueueHead bool   `json:"use_queue_head"` // If true, auto-start from merge queue head (default: true)
 }
 
 // MigrationPlan describes what migration would do.
@@ -1566,4 +1568,128 @@ func (c *Client) GetReadyItems(project string) ([]*WorkItemInfo, error) {
 	data, _ := json.Marshal(resp.Data)
 	json.Unmarshal(data, &items)
 	return items, nil
+}
+
+// ============================================================================
+// Merge Queue API
+// ============================================================================
+
+// MergeQueueItemInfo represents a worktree in the merge queue.
+type MergeQueueItemInfo struct {
+	ID           string `json:"id"`
+	Project      string `json:"project"`
+	WorktreePath string `json:"worktree_path"`
+	Branch       string `json:"branch"`
+	Position     int    `json:"position"`
+	Status       string `json:"status"` // queued, merging, merged, conflict, rebasing
+	BaseBranch   string `json:"base_branch"`
+	BaseCommit   string `json:"base_commit"`
+	HeadCommit   string `json:"head_commit,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// MergeQueueHeadInfo represents the current integration HEAD.
+type MergeQueueHeadInfo struct {
+	Branch string `json:"branch"` // Empty means use main
+	Commit string `json:"commit"` // Empty means use main HEAD
+	Empty  bool   `json:"empty"`  // True if queue is empty (use main)
+}
+
+// AddToMergeQueueRequest is the request to add a worktree to the merge queue.
+type AddToMergeQueueRequest struct {
+	WorktreePath string `json:"worktree_path"`
+	Project      string `json:"project,omitempty"` // Auto-detected if not provided
+}
+
+// GetMergeQueue retrieves all items in the merge queue for a project.
+func (c *Client) GetMergeQueue(project string) ([]*MergeQueueItemInfo, error) {
+	resp, err := c.Call("get_merge_queue", map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var items []*MergeQueueItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &items)
+	return items, nil
+}
+
+// GetMergeQueueHead returns the integration HEAD - what new worktrees should base on.
+func (c *Client) GetMergeQueueHead(project string) (*MergeQueueHeadInfo, error) {
+	resp, err := c.Call("get_merge_queue_head", map[string]string{"project": project})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var head MergeQueueHeadInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &head)
+	return &head, nil
+}
+
+// AddToMergeQueue adds a worktree to the merge queue.
+func (c *Client) AddToMergeQueue(req AddToMergeQueueRequest) (*MergeQueueItemInfo, error) {
+	resp, err := c.Call("add_to_merge_queue", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var item MergeQueueItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &item)
+	return &item, nil
+}
+
+// RemoveFromMergeQueue removes a worktree from the merge queue.
+func (c *Client) RemoveFromMergeQueue(worktreePath string) error {
+	resp, err := c.Call("remove_from_merge_queue", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+// BumpMergeQueueItem moves a worktree to the back of the queue (after editing).
+func (c *Client) BumpMergeQueueItem(worktreePath string) (*MergeQueueItemInfo, error) {
+	resp, err := c.Call("bump_merge_queue_item", map[string]string{"worktree_path": worktreePath})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var item MergeQueueItemInfo
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &item)
+	return &item, nil
+}
+
+// RebaseMergeQueueItem marks a queue item as rebased with new commits.
+func (c *Client) RebaseMergeQueueItem(worktreePath, newBaseCommit, newHeadCommit string) error {
+	resp, err := c.Call("rebase_merge_queue_item", map[string]string{
+		"worktree_path":   worktreePath,
+		"new_base_commit": newBaseCommit,
+		"new_head_commit": newHeadCommit,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
 }

@@ -1,50 +1,49 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
+	"github.com/drewfead/athena/internal/task"
 )
 
-type workItemCount struct {
-	total     int
-	completed int
-}
+// Work item handlers
 
 func (d *Daemon) handleListWorkItems(params json.RawMessage) (any, error) {
 	var req control.ListWorkItemsRequest
-	if len(params) > 0 && string(params) != "null" {
+	if params != nil {
 		if err := json.Unmarshal(params, &req); err != nil {
 			return nil, err
 		}
 	}
 
-	items, err := d.store.ListWorkItems(store.WorkItemFilter{
-		Project:  req.Project,
-		ItemType: req.ItemType,
-		Status:   req.Status,
-	})
+	items, err := d.store.ListWorkItems(
+		req.Project,
+		store.WorkItemType(req.ItemType),
+		store.WorkItemStatus(req.Status),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	infos := make([]*control.WorkItemInfo, 0, len(items))
+	var result []*control.WorkItemInfo
 	for _, item := range items {
-		infos = append(infos, workItemToInfo(item))
-	}
-
-	counts, _ := d.computeWorkItemCounts(req.Project)
-	for _, info := range infos {
-		if c, ok := counts[info.ID]; ok {
-			info.TotalCount = c.total
-			info.CompletedCount = c.completed
+		info := workItemToInfo(item)
+		// Add progress for goals and features
+		if item.ItemType == store.WorkItemTypeGoal || item.ItemType == store.WorkItemTypeFeature {
+			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
+			info.CompletedCount = completed
+			info.TotalCount = total
 		}
+		result = append(result, info)
 	}
-
-	return infos, nil
+	return result, nil
 }
 
 func (d *Daemon) handleGetWorkItem(params json.RawMessage) (any, error) {
@@ -53,9 +52,6 @@ func (d *Daemon) handleGetWorkItem(params json.RawMessage) (any, error) {
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
-	}
-	if req.ID == "" {
-		return nil, fmt.Errorf("missing work item id")
 	}
 
 	item, err := d.store.GetWorkItem(req.ID)
@@ -67,11 +63,12 @@ func (d *Daemon) handleGetWorkItem(params json.RawMessage) (any, error) {
 	}
 
 	info := workItemToInfo(item)
-	counts, _ := d.computeWorkItemCounts(item.Project)
-	if c, ok := counts[item.ID]; ok {
-		info.TotalCount = c.total
-		info.CompletedCount = c.completed
-	}
+
+	// Add progress
+	completed, total, _ := d.store.GetWorkItemProgress(item.ID)
+	info.CompletedCount = completed
+	info.TotalCount = total
+
 	return info, nil
 }
 
@@ -81,72 +78,47 @@ func (d *Daemon) handleCreateWorkItem(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	if req.Subject == "" {
-		return nil, fmt.Errorf("subject is required")
-	}
-	if req.ItemType == "" {
-		return nil, fmt.Errorf("item_type is required")
-	}
-
-	project := req.Project
-	var parent *store.WorkItem
-	if req.ParentID != "" {
-		var err error
-		parent, err = d.store.GetWorkItem(req.ParentID)
-		if err != nil {
-			return nil, err
-		}
-		if parent == nil {
-			return nil, fmt.Errorf("parent work item not found: %s", req.ParentID)
-		}
-		if project == "" {
-			project = parent.Project
-		}
-	}
-	if project == "" {
-		return nil, fmt.Errorf("project is required")
+	// Generate ID
+	id, err := d.store.GenerateWorkItemID(req.ParentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate ID: %w", err)
 	}
 
-	status := req.Status
+	// Default status
+	status := store.WorkItemStatus(req.Status)
 	if status == "" {
-		status = string(store.WorkItemStatusPending)
-	}
-
-	priority := req.Priority
-	if priority == 0 {
-		priority = int(store.WorkItemPriorityNormal)
+		status = store.WorkItemStatusPending
 	}
 
 	item := &store.WorkItem{
-		Project:     project,
+		ID:          id,
+		Project:     req.Project,
 		ItemType:    store.WorkItemType(req.ItemType),
+		ParentID:    nilIfEmpty(req.ParentID),
 		Subject:     req.Subject,
 		Description: req.Description,
-		Status:      store.WorkItemStatus(status),
-		Priority:    store.WorkItemPriority(priority),
-	}
-	if req.ParentID != "" {
-		item.ParentID = &req.ParentID
-	}
-	if req.TicketID != "" {
-		item.TicketID = &req.TicketID
+		Status:      status,
+		TicketID:    nilIfEmpty(req.TicketID),
+		Priority:    store.WorkItemPriority(req.Priority),
 	}
 
-	created, err := d.store.CreateWorkItem(item)
-	if err != nil {
+	if err := d.store.CreateWorkItem(item); err != nil {
 		return nil, err
 	}
 
-	return workItemToInfo(created), nil
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "work_item_created",
+		Payload: workItemToInfo(item),
+	})
+
+	return workItemToInfo(item), nil
 }
 
 func (d *Daemon) handleUpdateWorkItem(params json.RawMessage) (any, error) {
 	var req control.UpdateWorkItemRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
-	}
-	if req.ID == "" {
-		return nil, fmt.Errorf("id is required")
 	}
 
 	item, err := d.store.GetWorkItem(req.ID)
@@ -157,6 +129,7 @@ func (d *Daemon) handleUpdateWorkItem(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("work item not found: %s", req.ID)
 	}
 
+	// Apply updates
 	if req.Subject != "" {
 		item.Subject = req.Subject
 	}
@@ -177,6 +150,12 @@ func (d *Daemon) handleUpdateWorkItem(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "work_item_updated",
+		Payload: workItemToInfo(item),
+	})
+
 	return workItemToInfo(item), nil
 }
 
@@ -187,88 +166,72 @@ func (d *Daemon) handleDeleteWorkItem(params json.RawMessage) (any, error) {
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	if req.ID == "" {
-		return nil, fmt.Errorf("id is required")
+
+	if err := d.store.DeleteWorkItem(req.ID); err != nil {
+		return nil, err
 	}
 
-	return map[string]bool{"success": true}, d.store.DeleteWorkItem(req.ID)
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type: "work_item_deleted",
+		Payload: map[string]string{
+			"id": req.ID,
+		},
+	})
+
+	return map[string]bool{"success": true}, nil
 }
 
 func (d *Daemon) handleGetWorkItemTree(params json.RawMessage) (any, error) {
 	var req struct {
 		RootID  string `json:"root_id"`
-		Project string `json:"project"`
+		Project string `json:"project"` // If root_id empty, get all for project
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
 
-	project := req.Project
+	var items []*store.WorkItem
+	var err error
+
 	if req.RootID != "" {
-		root, err := d.store.GetWorkItem(req.RootID)
+		// Get tree from specific root
+		items, err = d.store.GetWorkItemTree(req.RootID)
+	} else {
+		// Get all goals for project
+		goals, err := d.store.ListWorkItems(req.Project, store.WorkItemTypeGoal, "")
 		if err != nil {
 			return nil, err
 		}
-		if root == nil {
-			return []*control.WorkItemInfo{}, nil
+
+		// For each goal, get its full tree
+		for _, goal := range goals {
+			tree, _ := d.store.GetWorkItemTree(goal.ID)
+			items = append(items, tree...)
 		}
-		project = root.Project
+
+		// Also get orphan tasks
+		orphans, _ := d.store.ListOrphanTasks(req.Project)
+		items = append(items, orphans...)
 	}
 
-	items, err := d.store.ListWorkItems(store.WorkItemFilter{Project: project})
 	if err != nil {
 		return nil, err
 	}
 
-	infos := make([]*control.WorkItemInfo, 0, len(items))
-	byID := make(map[string]*control.WorkItemInfo, len(items))
-	children := make(map[string][]*control.WorkItemInfo)
+	var result []*control.WorkItemInfo
 	for _, item := range items {
 		info := workItemToInfo(item)
-		infos = append(infos, info)
-		byID[info.ID] = info
-		if info.ParentID != "" {
-			children[info.ParentID] = append(children[info.ParentID], info)
+		// Add progress for non-tasks
+		if item.ItemType != store.WorkItemTypeTask {
+			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
+			info.CompletedCount = completed
+			info.TotalCount = total
 		}
+		result = append(result, info)
 	}
 
-	if req.RootID != "" {
-		if _, ok := byID[req.RootID]; !ok {
-			return []*control.WorkItemInfo{}, nil
-		}
-		wanted := make(map[string]bool)
-		stack := []string{req.RootID}
-		wanted[req.RootID] = true
-		for len(stack) > 0 {
-			id := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			for _, child := range children[id] {
-				if wanted[child.ID] {
-					continue
-				}
-				wanted[child.ID] = true
-				stack = append(stack, child.ID)
-			}
-		}
-
-		filtered := make([]*control.WorkItemInfo, 0, len(wanted))
-		for _, info := range infos {
-			if wanted[info.ID] {
-				filtered = append(filtered, info)
-			}
-		}
-		infos = filtered
-	}
-
-	counts := computeWorkItemCounts(infos)
-	for _, info := range infos {
-		if c, ok := counts[info.ID]; ok {
-			info.TotalCount = c.total
-			info.CompletedCount = c.completed
-		}
-	}
-
-	return infos, nil
+	return result, nil
 }
 
 func (d *Daemon) handleGetWorkItemChildren(params json.RawMessage) (any, error) {
@@ -278,34 +241,25 @@ func (d *Daemon) handleGetWorkItemChildren(params json.RawMessage) (any, error) 
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	if req.ParentID == "" {
-		return nil, fmt.Errorf("parent_id is required")
-	}
 
-	children, err := d.store.ListWorkItemChildren(req.ParentID)
+	items, err := d.store.ListWorkItemsByParent(req.ParentID)
 	if err != nil {
 		return nil, err
 	}
 
-	infos := make([]*control.WorkItemInfo, 0, len(children))
-	for _, item := range children {
-		infos = append(infos, workItemToInfo(item))
-	}
-
-	parent, _ := d.store.GetWorkItem(req.ParentID)
-	project := ""
-	if parent != nil {
-		project = parent.Project
-	}
-	counts, _ := d.computeWorkItemCounts(project)
-	for _, info := range infos {
-		if c, ok := counts[info.ID]; ok {
-			info.TotalCount = c.total
-			info.CompletedCount = c.completed
+	var result []*control.WorkItemInfo
+	for _, item := range items {
+		info := workItemToInfo(item)
+		// Add progress for non-tasks
+		if item.ItemType != store.WorkItemTypeTask {
+			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
+			info.CompletedCount = completed
+			info.TotalCount = total
 		}
+		result = append(result, info)
 	}
 
-	return infos, nil
+	return result, nil
 }
 
 func (d *Daemon) handleGetWorkItemAncestors(params json.RawMessage) (any, error) {
@@ -315,45 +269,42 @@ func (d *Daemon) handleGetWorkItemAncestors(params json.RawMessage) (any, error)
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
-	if req.ID == "" {
-		return nil, fmt.Errorf("id is required")
-	}
 
 	items, err := d.store.GetWorkItemAncestors(req.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	infos := make([]*control.WorkItemInfo, 0, len(items))
+	var result []*control.WorkItemInfo
 	for _, item := range items {
-		infos = append(infos, workItemToInfo(item))
+		result = append(result, workItemToInfo(item))
 	}
 
-	return infos, nil
+	return result, nil
 }
 
 func (d *Daemon) handleGetReadyItems(params json.RawMessage) (any, error) {
 	var req struct {
 		Project string `json:"project"`
 	}
-	if len(params) > 0 && string(params) != "null" {
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, err
-		}
+	if params != nil {
+		json.Unmarshal(params, &req)
 	}
 
-	items, err := d.store.ListReadyWorkItems(req.Project)
+	items, err := d.store.ListReadyItems(req.Project)
 	if err != nil {
 		return nil, err
 	}
 
-	infos := make([]*control.WorkItemInfo, 0, len(items))
+	var result []*control.WorkItemInfo
 	for _, item := range items {
-		infos = append(infos, workItemToInfo(item))
+		result = append(result, workItemToInfo(item))
 	}
 
-	return infos, nil
+	return result, nil
 }
+
+// Helper functions
 
 func workItemToInfo(item *store.WorkItem) *control.WorkItemInfo {
 	info := &control.WorkItemInfo{
@@ -367,6 +318,7 @@ func workItemToInfo(item *store.WorkItem) *control.WorkItemInfo {
 		CreatedAt:   item.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   item.UpdatedAt.Format(time.RFC3339),
 	}
+
 	if item.ParentID != nil {
 		info.ParentID = *item.ParentID
 	}
@@ -382,54 +334,147 @@ func workItemToInfo(item *store.WorkItem) *control.WorkItemInfo {
 	if item.AgentID != nil {
 		info.AgentID = *item.AgentID
 	}
+
 	return info
 }
 
-func (d *Daemon) computeWorkItemCounts(project string) (map[string]workItemCount, error) {
-	items, err := d.store.ListWorkItems(store.WorkItemFilter{Project: project})
-	if err != nil {
-		return nil, err
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
 	}
-	infos := make([]*control.WorkItemInfo, 0, len(items))
-	for _, item := range items {
-		infos = append(infos, workItemToInfo(item))
-	}
-	return computeWorkItemCounts(infos), nil
+	return &s
 }
 
-func computeWorkItemCounts(items []*control.WorkItemInfo) map[string]workItemCount {
-	counts := make(map[string]workItemCount, len(items))
-	children := make(map[string][]*control.WorkItemInfo)
-	for _, item := range items {
-		if item.ParentID == "" {
-			continue
-		}
-		children[item.ParentID] = append(children[item.ParentID], item)
+// Task sync watcher - syncs Claude Code tasks to work_items table
+
+// startTaskWatcher begins watching for Claude task changes and syncing to work_items.
+func (d *Daemon) startTaskWatcher(ctx context.Context) {
+	events, err := d.taskRegistry.WatchAll(ctx)
+	if err != nil {
+		logging.Warn("failed to start task watcher", "error", err)
+		return
 	}
 
-	var walk func(id string) (int, int)
-	walk = func(id string) (int, int) {
-		total := 0
-		completed := 0
-		for _, child := range children[id] {
-			total++
-			if child.Status == string(store.WorkItemStatusCompleted) {
-				completed++
-			}
-			childTotal, childCompleted := walk(child.ID)
-			total += childTotal
-			completed += childCompleted
+	d.safeGo("task-watcher", func() {
+		for event := range events {
+			d.handleTaskEvent(event)
 		}
-		counts[id] = workItemCount{total: total, completed: completed}
-		return total, completed
+	})
+
+	logging.Info("task watcher started")
+}
+
+// handleTaskEvent processes a task event and syncs to work_items if applicable.
+func (d *Daemon) handleTaskEvent(event task.TaskEvent) {
+	// Only sync work items (wi-xxxx pattern)
+	if !strings.HasPrefix(event.ListID, "wi-") {
+		return
 	}
 
-	for _, item := range items {
-		if _, ok := counts[item.ID]; ok {
-			continue
+	switch event.Type {
+	case task.EventTypeListSync:
+		// Full resync of a task list
+		d.syncClaudeTasksToWorkItems(event.ListID)
+
+	case task.EventTypeCreated, task.EventTypeUpdated:
+		if event.Task != nil {
+			d.syncSingleTask(event.ListID, event.Task)
 		}
-		walk(item.ID)
+
+	case task.EventTypeDeleted:
+		// Mark task as deleted (soft delete in work_items)
+		if event.TaskID != "" {
+			taskWorkItemID := fmt.Sprintf("%s.%s", event.ListID, event.TaskID)
+			d.store.DeleteWorkItem(taskWorkItemID)
+		}
 	}
 
-	return counts
+	// Broadcast update to TUI clients
+	d.server.Broadcast(control.Event{
+		Type: "work_items_synced",
+		Payload: map[string]string{
+			"list_id": event.ListID,
+		},
+	})
+}
+
+// syncClaudeTasksToWorkItems syncs all tasks from a Claude task list to work_items.
+func (d *Daemon) syncClaudeTasksToWorkItems(listID string) {
+	// Get the parent work item
+	parent, err := d.store.GetWorkItem(listID)
+	if err != nil || parent == nil {
+		logging.Debug("work item not found for task sync", "list_id", listID)
+		return
+	}
+
+	// Get tasks from Claude
+	tasks, err := d.taskRegistry.ListTasks("claude", listID, task.TaskFilters{})
+	if err != nil {
+		logging.Debug("failed to list tasks for sync", "list_id", listID, "error", err)
+		return
+	}
+
+	// Sync each task
+	for _, t := range tasks {
+		d.syncSingleTask(listID, &t)
+	}
+
+	logging.Debug("synced Claude tasks to work_items",
+		"list_id", listID,
+		"task_count", len(tasks))
+}
+
+// syncSingleTask syncs a single Claude task to a work_item.
+func (d *Daemon) syncSingleTask(listID string, t *task.Task) {
+	// Get parent work item for project context
+	parent, err := d.store.GetWorkItem(listID)
+	if err != nil || parent == nil {
+		return
+	}
+
+	// Task work item ID: parent.taskID (e.g., wi-a3f8.1.task-123)
+	taskWorkItemID := fmt.Sprintf("%s.%s", listID, t.ID)
+
+	// Check if task work item exists
+	existing, _ := d.store.GetWorkItem(taskWorkItemID)
+
+	// Map task status to work item status
+	status := store.WorkItemStatusPending
+	switch t.Status {
+	case task.StatusInProgress:
+		status = store.WorkItemStatusInProgress
+	case task.StatusCompleted:
+		status = store.WorkItemStatusCompleted
+	}
+
+	if existing == nil {
+		// Create new work item for this task
+		item := &store.WorkItem{
+			ID:          taskWorkItemID,
+			Project:     parent.Project,
+			ItemType:    store.WorkItemTypeTask,
+			ParentID:    &listID,
+			Subject:     t.Subject,
+			Description: t.Description,
+			Status:      status,
+			Priority:    store.WorkItemPriorityNormal,
+		}
+		if t.Owner != "" {
+			item.AgentID = &t.Owner
+		}
+		if err := d.store.CreateWorkItem(item); err != nil {
+			logging.Debug("failed to create synced work item", "id", taskWorkItemID, "error", err)
+		}
+	} else {
+		// Update existing work item
+		existing.Subject = t.Subject
+		existing.Description = t.Description
+		existing.Status = status
+		if t.Owner != "" {
+			existing.AgentID = &t.Owner
+		}
+		if err := d.store.UpdateWorkItem(existing); err != nil {
+			logging.Debug("failed to update synced work item", "id", taskWorkItemID, "error", err)
+		}
+	}
 }
