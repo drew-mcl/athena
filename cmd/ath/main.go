@@ -204,6 +204,21 @@ var wtCmd = &cobra.Command{
 	},
 }
 
+var wtPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Clean up merged and orphaned worktrees",
+	Long: `Prune worktrees that are no longer needed:
+- Merged worktrees (branch deleted from remote)
+- Orphaned directories (not tracked by git)
+- Stale database entries (paths that don't exist)
+
+Examples:
+  ath wt prune              # Prune all worktrees`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWtPrune()
+	},
+}
+
 // Queue commands - manage the merge queue
 var queueCmd = &cobra.Command{
 	Use:     "queue",
@@ -353,6 +368,9 @@ func init() {
 	// Tree flags
 	treeCmd.Flags().Bool("goals", false, "Show goals only")
 	treeCmd.Flags().StringP("project", "p", "", "Filter by project")
+
+	// Worktree subcommands
+	wtCmd.AddCommand(wtPruneCmd)
 
 	// Scratchpad flags
 	spCmd.Flags().BoolP("edit", "e", false, "Open scratchpad in editor")

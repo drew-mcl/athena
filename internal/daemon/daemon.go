@@ -449,6 +449,7 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("merge_local", d.handleMergeLocal)
 	d.server.Handle("cleanup_worktree", d.handleCleanupWorktree)
 	d.server.Handle("abandon_worktree", d.handleAbandonWorktree)
+	d.server.Handle("prune_worktrees", d.handlePruneWorktrees)
 	// Context (blackboard + state)
 	d.server.Handle("get_blackboard", d.handleGetBlackboard)
 	d.server.Handle("post_blackboard", d.handlePostBlackboard)
@@ -1558,6 +1559,61 @@ func (d *Daemon) handleAbandonWorktree(params json.RawMessage) (any, error) {
 	})
 
 	return map[string]bool{"success": true}, nil
+}
+
+func (d *Daemon) handlePruneWorktrees(_ json.RawMessage) (any, error) {
+	result := struct {
+		Merged  []string `json:"merged"`
+		Orphans []string `json:"orphans"`
+		Stale   []string `json:"stale"`
+	}{}
+
+	// Get all projects to prune
+	projects, err := d.store.GetProjectNames()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project names: %w", err)
+	}
+
+	// Prune merged worktrees for each project
+	for _, project := range projects {
+		pruned, err := d.provisioner.Prune(project)
+		if err != nil {
+			logging.Warn("error pruning merged worktrees", "project", project, "error", err)
+			continue
+		}
+		result.Merged = append(result.Merged, pruned...)
+	}
+
+	// Prune stale git worktree entries
+	for _, project := range projects {
+		if err := d.provisioner.PruneStale(project); err != nil {
+			logging.Warn("error pruning stale entries", "project", project, "error", err)
+		}
+	}
+
+	// Prune orphaned directories
+	orphans, err := d.provisioner.PruneOrphans()
+	if err != nil {
+		logging.Warn("error pruning orphaned directories", "error", err)
+	} else {
+		result.Orphans = orphans
+	}
+
+	// Prune stale store entries
+	stale, err := d.provisioner.PruneStoreEntries()
+	if err != nil {
+		logging.Warn("error pruning stale store entries", "error", err)
+	} else {
+		result.Stale = stale
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "worktrees_pruned",
+		Payload: result,
+	})
+
+	return result, nil
 }
 
 // parsePlanFrontmatter extracts the summary from YAML frontmatter in a plan.

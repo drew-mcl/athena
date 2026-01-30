@@ -1693,3 +1693,27 @@ func (c *Client) RebaseMergeQueueItem(worktreePath, newBaseCommit, newHeadCommit
 	}
 	return nil
 }
+
+// PruneWorktreesResult contains the results of pruning worktrees.
+type PruneWorktreesResult struct {
+	Merged  []string `json:"merged"`  // Merged worktrees that were pruned
+	Orphans []string `json:"orphans"` // Orphaned directories that were removed
+	Stale   []string `json:"stale"`   // Stale database entries that were removed
+}
+
+// PruneWorktrees cleans up merged and orphaned worktrees.
+func (c *Client) PruneWorktrees() (*PruneWorktreesResult, error) {
+	resp, err := c.Call("prune_worktrees", nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	data, _ := json.Marshal(resp.Data)
+	var result PruneWorktreesResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
