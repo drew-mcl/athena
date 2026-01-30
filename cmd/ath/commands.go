@@ -613,6 +613,54 @@ func getProjectWorktreePaths() map[string]bool {
 	return paths
 }
 
+// runWtPrune cleans up merged and orphaned worktrees
+func runWtPrune() error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	result, err := client.PruneWorktrees()
+	if err != nil {
+		return err
+	}
+
+	total := 0
+
+	// Show pruned merged worktrees
+	if len(result.Merged) > 0 {
+		for _, path := range result.Merged {
+			fmt.Printf("%sPruned (merged):%s %s\n", green, reset, path)
+			total++
+		}
+	}
+
+	// Show pruned orphaned directories
+	if len(result.Orphans) > 0 {
+		for _, path := range result.Orphans {
+			fmt.Printf("%sPruned (orphan):%s %s\n", yellow, reset, path)
+			total++
+		}
+	}
+
+	// Show pruned stale entries
+	if len(result.Stale) > 0 {
+		for _, path := range result.Stale {
+			fmt.Printf("%sPruned (stale):%s %s\n", gray, reset, path)
+			total++
+		}
+	}
+
+	if total == 0 {
+		fmt.Println(dim + "No worktrees to prune." + reset)
+	} else {
+		fmt.Printf("\n%s%d worktree(s) pruned.%s\n", bold, total, reset)
+	}
+
+	return nil
+}
+
 // ============================================================================
 // Merge Queue Commands
 // ============================================================================

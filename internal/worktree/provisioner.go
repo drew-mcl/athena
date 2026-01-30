@@ -171,6 +171,142 @@ func (p *Provisioner) PruneStale(project string) error {
 	return cmd.Run()
 }
 
+// PruneOrphans removes orphaned worktree directories from the worktree directory.
+// Orphans are directories that have a .git file pointing to a repo but are no longer
+// tracked as valid worktrees by git. This can happen when worktrees are removed improperly
+// or when git's worktree metadata gets corrupted/deleted.
+func (p *Provisioner) PruneOrphans() ([]string, error) {
+	wtDir := p.config.Repos.WorktreeDir
+	if wtDir == "" {
+		return nil, nil // No worktree directory configured
+	}
+
+	// Check if worktree directory exists
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		return nil, fmt.Errorf("read worktree directory: %w", err)
+	}
+
+	var pruned []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		dirPath := filepath.Join(wtDir, entry.Name())
+		gitFile := filepath.Join(dirPath, ".git")
+
+		// Check if .git is a file (worktrees have .git files, not directories)
+		info, err := os.Stat(gitFile)
+		if err != nil || info.IsDir() {
+			continue // Not a worktree
+		}
+
+		// Read the .git file to find the main repo
+		content, err := os.ReadFile(gitFile)
+		if err != nil {
+			continue
+		}
+
+		// Parse gitdir line: "gitdir: /path/to/repo/.git/worktrees/name"
+		gitdirLine := strings.TrimSpace(string(content))
+		gitdir, ok := strings.CutPrefix(gitdirLine, "gitdir: ")
+		if !ok {
+			continue
+		}
+
+		// Extract main repo path from gitdir
+		// gitdir is like: /path/to/repo/.git/worktrees/name
+		mainGitDir := extractMainGitDir(gitdir)
+		if mainGitDir == "" {
+			continue
+		}
+
+		// Check if this directory is a valid worktree
+		if p.isValidWorktree(mainGitDir, dirPath) {
+			continue
+		}
+
+		// This is an orphan - remove it
+		if err := os.RemoveAll(dirPath); err != nil {
+			continue // Log but continue
+		}
+
+		// Also remove from store if it exists
+		_ = p.store.DeleteWorktree(dirPath)
+
+		pruned = append(pruned, dirPath)
+	}
+
+	return pruned, nil
+}
+
+// extractMainGitDir extracts the main .git directory from a worktree gitdir path.
+// Input: /path/to/repo/.git/worktrees/name
+// Output: /path/to/repo/.git
+func extractMainGitDir(gitdir string) string {
+	// Look for /.git/worktrees/ pattern
+	idx := strings.Index(gitdir, "/.git/worktrees/")
+	if idx == -1 {
+		return ""
+	}
+	return gitdir[:idx+5] // Include /.git
+}
+
+// isValidWorktree checks if a directory is tracked as a valid worktree by git.
+func (p *Provisioner) isValidWorktree(mainGitDir, worktreePath string) bool {
+	// Get the main repo directory (parent of .git)
+	mainRepo := filepath.Dir(mainGitDir)
+
+	cmd, err := executil.Command("git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return true // Assume valid if we can't check
+	}
+	cmd.Dir = mainRepo
+	output, err := cmd.Output()
+	if err != nil {
+		return true // Assume valid if we can't check
+	}
+
+	// Parse porcelain output looking for "worktree /path"
+	absPath, _ := filepath.Abs(worktreePath)
+	for _, line := range strings.Split(string(output), "\n") {
+		if wtPath, ok := strings.CutPrefix(line, "worktree "); ok {
+			if wtPath == absPath || wtPath == worktreePath {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// PruneStoreEntries removes store entries for worktrees that no longer exist on disk.
+func (p *Provisioner) PruneStoreEntries() ([]string, error) {
+	worktrees, err := p.store.ListWorktrees("")
+	if err != nil {
+		return nil, err
+	}
+
+	var pruned []string
+	for _, wt := range worktrees {
+		// Check if the path exists
+		if _, err := os.Stat(wt.Path); os.IsNotExist(err) {
+			// Path doesn't exist, remove from store
+			if err := p.store.DeleteWorktree(wt.Path); err != nil {
+				continue // Log but continue
+			}
+			pruned = append(pruned, wt.Path)
+		}
+	}
+
+	return pruned, nil
+}
+
 // GetStatus returns the git status for a worktree.
 func (p *Provisioner) GetStatus(worktreePath string) (*WorktreeStatus, error) {
 	status := &WorktreeStatus{Path: worktreePath}
