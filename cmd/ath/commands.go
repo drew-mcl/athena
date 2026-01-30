@@ -661,6 +661,252 @@ func runWtPrune() error {
 	return nil
 }
 
+// runWtInitShell outputs a shell function that wraps 'ath' to handle
+// directory changes after worktree creation.
+func runWtInitShell() error {
+	shellWrapper := `# Athena shell wrapper - enables directory switching after worktree creation
+# Add to ~/.zshrc or ~/.bashrc: eval "$(ath wt init-shell)"
+
+ath() {
+    local output
+    output=$(command ath "$@")
+    local exit_code=$?
+
+    # Check if output contains a __CD__ directive
+    if [[ "$output" == *"__CD__:"* ]]; then
+        # Extract the path from __CD__:/path/to/dir
+        local cd_line=$(echo "$output" | grep "^__CD__:")
+        local target_dir="${cd_line#__CD__:}"
+
+        # Print everything except the __CD__ line
+        echo "$output" | grep -v "^__CD__:"
+
+        # Change to the target directory
+        if [[ -d "$target_dir" ]]; then
+            cd "$target_dir"
+            echo ""
+            echo "Changed to: $target_dir"
+        fi
+    else
+        echo "$output"
+    fi
+
+    return $exit_code
+}`
+	fmt.Println(shellWrapper)
+	return nil
+}
+
+// runWtNew creates a new worktree, either by selecting an existing feature
+// or by creating a new feature from the provided description.
+func runWtNew(args []string, goalID string, manual bool) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	project := detectProject()
+	mainRepoPath := getMainWorktreePath()
+	if mainRepoPath == "" {
+		return fmt.Errorf("not in a git repository")
+	}
+
+	var feature *control.WorkItemInfo
+
+	if len(args) == 0 {
+		// Interactive mode: pick from pending features
+		feature, err = pickPendingFeature(client, project)
+		if err != nil {
+			return err
+		}
+		if feature == nil {
+			return nil // User cancelled
+		}
+	} else {
+		// Create mode: new feature from description
+		description := strings.Join(args, " ")
+		feature, err = createFeatureForWorktree(client, project, goalID, description)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Create the worktree
+	workflowMode := "automatic"
+	if manual {
+		workflowMode = "manual"
+	}
+
+	wt, err := client.CreateWorktree(control.CreateWorktreeRequest{
+		MainRepoPath: mainRepoPath,
+		Description:  feature.Subject,
+		TicketID:     feature.TicketID,
+		WorkflowMode: workflowMode,
+		UseQueueHead: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create worktree: %w", err)
+	}
+
+	// Link the worktree to the feature work item
+	_, err = client.UpdateWorkItem(control.UpdateWorkItemRequest{
+		ID:           feature.ID,
+		WorktreePath: wt.Path,
+		Status:       "in_progress",
+	})
+	if err != nil {
+		// Non-fatal: worktree was created, just couldn't link
+		fmt.Fprintf(os.Stderr, "%sWarning: couldn't link worktree to feature: %v%s\n", yellow, err, reset)
+	}
+
+	// Success output
+	printSuccess(fmt.Sprintf("Created worktree for %s", feature.ID))
+	fmt.Printf("  %sPath:%s %s\n", gray, reset, wt.Path)
+	fmt.Printf("  %sBranch:%s %s\n", gray, reset, wt.Branch)
+
+	// Output shell directive for cd
+	// Shell wrapper should look for this pattern and execute: cd "${output#__CD__:}"
+	fmt.Printf("\n__CD__:%s\n", wt.Path)
+
+	return nil
+}
+
+// pickPendingFeature shows an interactive picker for pending features.
+func pickPendingFeature(client *control.Client, project string) (*control.WorkItemInfo, error) {
+	// Get pending features
+	features, err := client.ListWorkItems(control.ListWorkItemsRequest{
+		Project:  project,
+		ItemType: "feature",
+		Status:   "pending",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(features) == 0 {
+		fmt.Println(gray + "No pending features found." + reset)
+		fmt.Println()
+		fmt.Println("Create one with: ath wt new \"Description\"")
+		fmt.Println("Or first create a goal: ath goal new \"Goal name\"")
+		return nil, nil
+	}
+
+	// Display numbered list
+	fmt.Printf("%sSelect a feature:%s\n\n", bold, reset)
+	for i, f := range features {
+		shape := getShapeForItem(f)
+		parentInfo := ""
+		if f.ParentID != "" {
+			parentInfo = fmt.Sprintf(" %s(under %s)%s", gray, f.ParentID, reset)
+		}
+		fmt.Printf("  %s%d%s. %s %s%s%s %s%s\n",
+			cyan, i+1, reset,
+			shape,
+			magenta, f.ID, reset,
+			f.Subject, parentInfo)
+	}
+	fmt.Println()
+
+	// Prompt for selection
+	fmt.Printf("%sEnter number (or q to quit):%s ", dim, reset)
+
+	reader := bufio.NewReader(os.Stdin)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	input = strings.TrimSpace(input)
+
+	if input == "q" || input == "" {
+		return nil, nil // User cancelled
+	}
+
+	num, err := strconv.Atoi(input)
+	if err != nil || num < 1 || num > len(features) {
+		return nil, fmt.Errorf("invalid selection: %s", input)
+	}
+
+	return features[num-1], nil
+}
+
+// createFeatureForWorktree creates a new feature work item.
+// If goalID is empty, creates an orphan feature (or prompts for goal).
+func createFeatureForWorktree(client *control.Client, project, goalID, description string) (*control.WorkItemInfo, error) {
+	if project == "" {
+		project = "default"
+	}
+
+	// If no goal specified, check if we should pick one
+	if goalID == "" {
+		goals, err := client.ListWorkItems(control.ListWorkItemsRequest{
+			Project:  project,
+			ItemType: "goal",
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// Filter to active goals (not completed)
+		activeGoals := make([]*control.WorkItemInfo, 0)
+		for _, g := range goals {
+			if g.Status != "completed" {
+				activeGoals = append(activeGoals, g)
+			}
+		}
+
+		if len(activeGoals) == 1 {
+			// Only one active goal, use it automatically
+			goalID = activeGoals[0].ID
+			fmt.Printf("%sUsing goal:%s %s%s%s %s\n\n",
+				dim, reset, magenta, goalID, reset, activeGoals[0].Subject)
+		} else if len(activeGoals) > 1 {
+			// Multiple goals, let user pick
+			fmt.Printf("%sSelect parent goal (or Enter to skip):%s\n\n", bold, reset)
+			for i, g := range activeGoals {
+				shape := getShapeForItem(g)
+				fmt.Printf("  %s%d%s. %s %s%s%s %s\n",
+					cyan, i+1, reset,
+					shape,
+					magenta, g.ID, reset,
+					g.Subject)
+			}
+			fmt.Println()
+			fmt.Printf("%sEnter number:%s ", dim, reset)
+
+			reader := bufio.NewReader(os.Stdin)
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				return nil, err
+			}
+			input = strings.TrimSpace(input)
+
+			if input != "" {
+				num, err := strconv.Atoi(input)
+				if err == nil && num >= 1 && num <= len(activeGoals) {
+					goalID = activeGoals[num-1].ID
+				}
+			}
+		}
+		// If no goals at all, create orphan feature
+	}
+
+	// Create the feature
+	feature, err := client.CreateWorkItem(control.CreateWorkItemRequest{
+		Project:     project,
+		ItemType:    "feature",
+		ParentID:    goalID,
+		Subject:     description,
+		Description: description,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create feature: %w", err)
+	}
+
+	fmt.Printf("%sCreated feature:%s %s%s%s\n", green, reset, magenta, feature.ID, reset)
+	return feature, nil
+}
+
 // ============================================================================
 // Merge Queue Commands
 // ============================================================================

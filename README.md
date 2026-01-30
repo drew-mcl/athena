@@ -22,9 +22,17 @@ More UI views live in [docs/screenshots.md](docs/screenshots.md).
 ## Quick Start
 
 ```bash
-make install    # Install athena, athenad, wt
+make install    # Install athena, athenad, ath
 athenad &       # Start daemon
 athena          # Launch TUI
+```
+
+### Shell Setup
+
+Add to your `~/.zshrc` or `~/.bashrc` to enable auto-cd into new worktrees:
+
+```bash
+eval "$(ath wt init-shell)"
 ```
 
 See [docs/development.md](docs/development.md) for building from source.

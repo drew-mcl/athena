@@ -204,6 +204,44 @@ var wtCmd = &cobra.Command{
 	},
 }
 
+var wtNewCmd = &cobra.Command{
+	Use:   "new [description...]",
+	Short: "Create a new worktree for a feature",
+	Long: `Create a new worktree for feature work.
+
+With no args: interactive feature picker from pending features
+With args: create a new feature with that description
+
+The worktree is automatically linked to the feature work item and
+the merge queue integration HEAD is used as the start point.
+
+Examples:
+  ath wt new                        # Pick from pending features
+  ath wt new "Add OAuth support"    # Create feature + worktree
+  ath wt new -g wi-a3f8 "OAuth"     # Under specific goal`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		goalID, _ := cmd.Flags().GetString("goal")
+		manual, _ := cmd.Flags().GetBool("manual")
+		return runWtNew(args, goalID, manual)
+	},
+}
+
+var wtInitShellCmd = &cobra.Command{
+	Use:   "init-shell",
+	Short: "Output shell wrapper for directory switching",
+	Long: `Output a shell function that enables automatic directory
+switching after creating a worktree.
+
+Add the output to your ~/.zshrc or ~/.bashrc:
+  eval "$(ath wt init-shell)"
+
+The wrapper intercepts ath commands and handles __CD__:/path
+directives by changing to that directory.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWtInitShell()
+	},
+}
+
 var wtPruneCmd = &cobra.Command{
 	Use:   "prune",
 	Short: "Clean up merged and orphaned worktrees",
@@ -370,7 +408,9 @@ func init() {
 	treeCmd.Flags().StringP("project", "p", "", "Filter by project")
 
 	// Worktree subcommands
-	wtCmd.AddCommand(wtPruneCmd)
+	wtNewCmd.Flags().StringP("goal", "g", "", "Parent goal ID for new feature")
+	wtNewCmd.Flags().BoolP("manual", "m", false, "Manual mode (no auto-agent)")
+	wtCmd.AddCommand(wtNewCmd, wtInitShellCmd, wtPruneCmd)
 
 	// Scratchpad flags
 	spCmd.Flags().BoolP("edit", "e", false, "Open scratchpad in editor")

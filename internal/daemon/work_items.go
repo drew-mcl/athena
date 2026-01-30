@@ -145,6 +145,9 @@ func (d *Daemon) handleUpdateWorkItem(params json.RawMessage) (any, error) {
 	if req.AgentID != "" {
 		item.AgentID = &req.AgentID
 	}
+	if req.WorktreePath != "" {
+		item.WorktreePath = &req.WorktreePath
+	}
 
 	if err := d.store.UpdateWorkItem(item); err != nil {
 		return nil, err

@@ -1419,12 +1419,13 @@ type CreateWorkItemRequest struct {
 
 // UpdateWorkItemRequest is the request to update a work item.
 type UpdateWorkItemRequest struct {
-	ID          string `json:"id"`
-	Subject     string `json:"subject,omitempty"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Priority    *int   `json:"priority,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
+	ID           string `json:"id"`
+	Subject      string `json:"subject,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Priority     *int   `json:"priority,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"` // Link to worktree (features only)
 }
 
 // ListWorkItems retrieves work items with optional filters.
