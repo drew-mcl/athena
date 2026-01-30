@@ -181,6 +181,30 @@ func getMainWorktreePath() string {
 	return ""
 }
 
+// extractBaseProject extracts the base project name from a worktree directory name.
+// Examples: "athena-cli-output-fix" -> "athena", "myapp-eng-123" -> "myapp"
+func extractBaseProject(dirName string) string {
+	// Known worktree suffix patterns (find earliest match)
+	suffixPatterns := []string{
+		"-fix", "-feat", "-feature", "-eng", "-bug",
+		"-wip", "-dev", "-test", "-refactor", "-cli", "-tui",
+	}
+
+	lower := strings.ToLower(dirName)
+	earliestIdx := len(dirName)
+
+	for _, pattern := range suffixPatterns {
+		if idx := strings.Index(lower, pattern); idx > 0 && idx < earliestIdx {
+			earliestIdx = idx
+		}
+	}
+
+	if earliestIdx < len(dirName) {
+		return dirName[:earliestIdx]
+	}
+	return dirName
+}
+
 // runStatus shows a summary of active work.
 func runStatus() error {
 	client, err := getClient()
@@ -348,7 +372,7 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 
 // Task commands
 
-func runTskList(itemType string) error {
+func runTskList(itemType string, allProjects bool) error {
 	client, err := getClient()
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon: %w", err)
@@ -356,6 +380,9 @@ func runTskList(itemType string) error {
 	defer client.Close()
 
 	project := detectProject()
+	if allProjects {
+		project = ""
+	}
 
 	// Map short types to full types
 	title := "Tasks"

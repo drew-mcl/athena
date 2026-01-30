@@ -83,29 +83,29 @@ type Model struct {
 	scrollOffset map[Tab]int
 
 	// UI state
-	width          int // Inner content width
-	height         int // Inner content height
-	termWidth      int // Full terminal width
-	termHeight     int // Full terminal height
-	inputMode      bool
-	questionMode   bool // true = question, false = job
-	noteMode       bool // true = adding note
-	detailMode     bool // showing detail view
-	detailScroll   int  // scroll offset for detail view
-	detailJob      *control.JobInfo
-	detailAgent    *control.AgentInfo
-	detailRenderedPrompt string // cached rendered prompt
-	detailRenderedPlan   string // cached rendered plan for detail view
-	detailWorktree *control.WorktreeInfo // showing worktree detail
-	logsMode       bool                  // showing agent logs
-	logsAgentID    string
-	logs           []*control.AgentEventInfo
-	logsScroll     int  // scroll offset for logs viewport
-	logsFollow     bool // auto-scroll to bottom
-	textInput      textarea.Model
-	spinner        spinner.Model
-	lastUpdate     time.Time
-	err            error
+	width                int // Inner content width
+	height               int // Inner content height
+	termWidth            int // Full terminal width
+	termHeight           int // Full terminal height
+	inputMode            bool
+	questionMode         bool // true = question, false = job
+	noteMode             bool // true = adding note
+	detailMode           bool // showing detail view
+	detailScroll         int  // scroll offset for detail view
+	detailJob            *control.JobInfo
+	detailAgent          *control.AgentInfo
+	detailRenderedPrompt string                // cached rendered prompt
+	detailRenderedPlan   string                // cached rendered plan for detail view
+	detailWorktree       *control.WorktreeInfo // showing worktree detail
+	logsMode             bool                  // showing agent logs
+	logsAgentID          string
+	logs                 []*control.AgentEventInfo
+	logsScroll           int  // scroll offset for logs viewport
+	logsFollow           bool // auto-scroll to bottom
+	textInput            textarea.Model
+	spinner              spinner.Model
+	lastUpdate           time.Time
+	err                  error
 
 	// Worktree creation wizard
 	worktreeMode       bool                // true = creating worktree
@@ -2356,12 +2356,7 @@ func (m Model) renderWorktreeDetailSummary(content *strings.Builder, wt *control
 }
 
 func (m Model) renderWorktreeDetailGit(content *strings.Builder, wt *control.WorktreeInfo) {
-	gitStatus := wt.Status
-	if strings.Contains(gitStatus, "dirty") {
-		gitStatus = tui.StyleWarning.Render("dirty")
-	} else if strings.Contains(gitStatus, "clean") {
-		gitStatus = tui.StyleSuccess.Render("clean")
-	}
+	gitStatus := renderGitStatus(wt.Status)
 	content.WriteString(tui.StyleMuted.Render("  Git: "))
 	content.WriteString(wt.Project + " | " + gitStatus)
 	content.WriteString("\n\n")
@@ -3958,4 +3953,3 @@ func (m Model) viewAgent(agent *control.AgentInfo) (Model, tea.Cmd) {
 
 	return m, cmd
 }
-

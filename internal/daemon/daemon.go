@@ -34,6 +34,14 @@ const ShutdownTimeout = 30 * time.Second
 // DrainTimeout is how long to wait for in-flight jobs to complete.
 const DrainTimeout = 60 * time.Second
 
+// gitStatusCacheTTL is how long to reuse cached git status results.
+const gitStatusCacheTTL = 5 * time.Second
+
+type gitStatusCacheEntry struct {
+	status    *worktree.WorktreeStatus
+	fetchedAt time.Time
+}
+
 // Daemon is the main orchestrator service.
 type Daemon struct {
 	config      *config.Config
@@ -54,6 +62,9 @@ type Daemon struct {
 
 	agents   map[string]*AgentProcess
 	agentsMu sync.RWMutex
+
+	gitStatusCache   map[string]gitStatusCacheEntry
+	gitStatusCacheMu sync.Mutex
 
 	// Job queue for execution
 	jobQueue chan string
@@ -99,19 +110,20 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		config:       cfg,
-		store:        st,
-		server:       control.NewServer(cfg.Daemon.Socket),
-		scanner:      worktree.NewScanner(cfg, st),
-		provisioner:  worktree.NewProvisioner(cfg, st),
-		migrator:     worktree.NewMigrator(cfg, st),
-		publisher:    publisher,
-		spawner:      agent.NewSpawner(cfg, st, publisher),
-		taskRegistry: taskRegistry,
-		agents:       make(map[string]*AgentProcess),
-		jobQueue:     make(chan string, 100),
-		ctx:          ctx,
-		cancel:       cancel,
+		config:         cfg,
+		store:          st,
+		server:         control.NewServer(cfg.Daemon.Socket),
+		scanner:        worktree.NewScanner(cfg, st),
+		provisioner:    worktree.NewProvisioner(cfg, st),
+		migrator:       worktree.NewMigrator(cfg, st),
+		publisher:      publisher,
+		spawner:        agent.NewSpawner(cfg, st, publisher),
+		taskRegistry:   taskRegistry,
+		agents:         make(map[string]*AgentProcess),
+		jobQueue:       make(chan string, 100),
+		gitStatusCache: make(map[string]gitStatusCacheEntry),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 	d.executor = NewJobExecutor(d)
 
@@ -475,7 +487,22 @@ func (d *Daemon) registerHandlers() {
 	d.registerMergeQueueHandlers()
 }
 
-func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
+func (d *Daemon) handleListWorktrees(params json.RawMessage) (any, error) {
+	includeStatus := true
+	includeSummary := true
+	if len(params) > 0 && string(params) != "null" {
+		var req control.ListWorktreesRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		if req.IncludeStatus != nil {
+			includeStatus = *req.IncludeStatus
+		}
+		if req.IncludeSummary != nil {
+			includeSummary = *req.IncludeSummary
+		}
+	}
+
 	worktrees, err := d.store.ListWorktrees("")
 	if err != nil {
 		return nil, err
@@ -516,30 +543,104 @@ func (d *Daemon) handleListWorktrees(_ json.RawMessage) (any, error) {
 			result[i].SourceNoteID = *wt.SourceNoteID
 		}
 
-		// Fetch git status and plan summary in parallel
-		wg.Add(1)
-		go func(idx int, path string) {
-			defer wg.Done()
+		if includeStatus || includeSummary {
+			// Fetch git status and plan summary in parallel
+			wg.Add(1)
+			go func(idx int, path string) {
+				defer wg.Done()
 
-			// Get plan summary
-			if summary, err := d.store.GetPlanSummary(path); err == nil && summary != "" {
-				result[idx].Summary = summary
-			}
-
-			// Get git status
-			status, _ := d.provisioner.GetStatus(path)
-			if status != nil {
-				if status.Clean {
-					result[idx].Status = "clean"
-				} else {
-					result[idx].Status = fmt.Sprintf("+%d ~%d", status.Modified, status.Staged)
+				// Get plan summary
+				if includeSummary {
+					if summary, err := d.store.GetPlanSummary(path); err == nil && summary != "" {
+						result[idx].Summary = summary
+					}
 				}
-			}
-		}(i, wt.Path)
+
+				// Get git status
+				if includeStatus {
+					status := d.cachedGitStatus(path)
+					if status != nil {
+						result[idx].Status = formatGitStatus(status)
+						result[idx].Ahead = status.Ahead
+						result[idx].Behind = status.Behind
+					}
+				}
+			}(i, wt.Path)
+		}
 	}
 
-	wg.Wait()
+	if includeStatus || includeSummary {
+		wg.Wait()
+	}
 	return result, nil
+}
+
+func (d *Daemon) cachedGitStatus(path string) *worktree.WorktreeStatus {
+	d.gitStatusCacheMu.Lock()
+	entry, ok := d.gitStatusCache[path]
+	if ok && time.Since(entry.fetchedAt) < gitStatusCacheTTL {
+		status := entry.status
+		d.gitStatusCacheMu.Unlock()
+		return status
+	}
+	d.gitStatusCacheMu.Unlock()
+
+	status, _ := d.provisioner.GetStatus(path)
+	if status == nil {
+		return nil
+	}
+
+	d.gitStatusCacheMu.Lock()
+	d.gitStatusCache[path] = gitStatusCacheEntry{status: status, fetchedAt: time.Now()}
+	d.gitStatusCacheMu.Unlock()
+	return status
+}
+
+func formatGitStatus(status *worktree.WorktreeStatus) string {
+	if status == nil {
+		return ""
+	}
+	if status.Clean {
+		if status.Ahead > 0 || status.Behind > 0 {
+			return fmt.Sprintf("clean %s", formatSyncStatus(status.Ahead, status.Behind))
+		}
+		return "clean"
+	}
+
+	if status.Untracked > 0 && status.Modified == 0 && status.Staged == 0 {
+		if status.Untracked > 0 {
+			return fmt.Sprintf("untracked ?%d", status.Untracked)
+		}
+		return "untracked"
+	}
+
+	parts := make([]string, 0, 3)
+	if status.Modified > 0 {
+		parts = append(parts, fmt.Sprintf("+%d", status.Modified))
+	}
+	if status.Staged > 0 {
+		parts = append(parts, fmt.Sprintf("~%d", status.Staged))
+	}
+	if status.Untracked > 0 {
+		parts = append(parts, fmt.Sprintf("?%d", status.Untracked))
+	}
+	if len(parts) == 0 {
+		return "dirty"
+	}
+	return fmt.Sprintf("dirty %s", strings.Join(parts, " "))
+}
+
+func formatSyncStatus(ahead, behind int) string {
+	if ahead > 0 && behind > 0 {
+		return fmt.Sprintf("behind %d ahead %d", behind, ahead)
+	}
+	if behind > 0 {
+		return fmt.Sprintf("behind %d", behind)
+	}
+	if ahead > 0 {
+		return fmt.Sprintf("ahead %d", ahead)
+	}
+	return ""
 }
 
 func (d *Daemon) handleRescan(_ json.RawMessage) (any, error) {
@@ -1888,9 +1989,9 @@ func (d *Daemon) handleSubscribeStream(
 
 	// Return subscription confirmation
 	return map[string]any{
-		"subscribed":        true,
-		"filter":            req,
-		"active_agents":     d.countActiveAgents(),
+		"subscribed":         true,
+		"filter":             req,
+		"active_agents":      d.countActiveAgents(),
 		"stream_subscribers": d.server.StreamSubscriberCount(),
 	}, nil
 }

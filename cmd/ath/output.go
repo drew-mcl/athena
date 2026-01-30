@@ -10,67 +10,6 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ANSI COLOR CODES - Standard terminal colors
-// ═══════════════════════════════════════════════════════════════════════════
-
-const (
-	// Styles
-	reset     = "\033[0m"
-	bold      = "\033[1m"
-	dim       = "\033[2m"
-	italic    = "\033[3m"
-	underline = "\033[4m"
-
-	// Standard colors
-	black   = "\033[30m"
-	red     = "\033[31m"
-	green   = "\033[32m"
-	yellow  = "\033[33m"
-	blue    = "\033[34m"
-	magenta = "\033[35m"
-	cyan    = "\033[36m"
-	white   = "\033[37m"
-
-	// Bright colors
-	gray         = "\033[90m" // bright black
-	brightRed    = "\033[91m"
-	brightGreen  = "\033[92m"
-	brightYellow = "\033[93m"
-	brightBlue   = "\033[94m"
-	brightMagenta = "\033[95m"
-	brightCyan   = "\033[96m"
-	brightWhite  = "\033[97m"
-)
-
-// Box drawing characters
-const (
-	boxTopLeft     = "┌"
-	boxTopRight    = "┐"
-	boxBottomLeft  = "└"
-	boxBottomRight = "┘"
-	boxHorizontal  = "─"
-	boxVertical    = "│"
-	boxTeeRight    = "├"
-	boxTeeLeft     = "┤"
-)
-
-// Status indicators
-const (
-	checkMark = "✓"
-	bullet    = "●"
-	circle    = "○"
-	arrowDown = "↓"
-	arrowUp   = "↑"
-)
-
-// Work item shapes
-const (
-	shapeGoal    = "□"
-	shapeFeature = "◇"
-	shapeTask    = "○"
-)
-
-// ═══════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -431,9 +370,17 @@ func printWorkItemTree(items []*control.WorkItemInfo) {
 	// Stats
 	stats := map[string]int{"pending": 0, "in_progress": 0, "completed": 0}
 
+	// Align IDs
+	idWidth := 0
+	for _, item := range items {
+		if len(item.ID) > idWidth {
+			idWidth = len(item.ID)
+		}
+	}
+
 	// Print tree
 	for i, root := range roots {
-		printTreeNode(root, children, "", i == len(roots)-1, stats)
+		printTreeNode(root, children, "", i == len(roots)-1, stats, idWidth)
 		if i < len(roots)-1 {
 			fmt.Println()
 		}
@@ -459,35 +406,48 @@ func printWorkItemTree(items []*control.WorkItemInfo) {
 	fmt.Println()
 }
 
-func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.WorkItemInfo, prefix string, isLast bool, stats map[string]int) {
+func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.WorkItemInfo, prefix string, isLast bool, stats map[string]int, idWidth int) {
 	stats[item.Status]++
 
-	// Shape and color based on type
-	var shape, shapeColor string
+	// Shape based on type
+	var shape string
 	switch item.ItemType {
 	case "goal":
-		shape, shapeColor = shapeGoal, blue
+		shape = shapeGoal
 	case "feature":
-		shape, shapeColor = shapeFeature, green
+		shape = shapeFeature
 	default:
-		shape, shapeColor = shapeTask, yellow
+		shape = shapeTask
 	}
 
 	// Fill shape if in_progress
 	if item.Status == "in_progress" {
 		switch item.ItemType {
 		case "goal":
-			shape = "■"
+			shape = shapeGoalFilled
 		case "feature":
-			shape = "◆"
+			shape = shapeFeatureFilled
 		default:
-			shape = "●"
+			shape = shapeTaskFilled
 		}
 	}
 
-	// Dim everything if completed
-	idStyle := dim + cyan // IDs are dimmed cyan
+	// Color shape by item type: goal=blue, feature=green, task=yellow
+	var shapeColor string
+	switch item.ItemType {
+	case "goal":
+		shapeColor = blue
+	case "feature":
+		shapeColor = green
+	default: // task
+		shapeColor = yellow
+	}
+
+	// IDs are magenta, text is white
+	idStyle := magenta
 	textStyle := white
+
+	// Dim everything if completed
 	if item.Status == "completed" {
 		shapeColor = gray
 		idStyle = gray
@@ -495,9 +455,9 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 	}
 
 	// Tree connector
-	connector := "├─"
+	connector := treeBranch
 	if isLast {
-		connector = "└─"
+		connector = treeLastBranch
 	}
 	if prefix == "" {
 		connector = ""
@@ -522,11 +482,17 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 	}
 
 	// Print: connector shape ID subject [progress] [ticket] [status]
+	paddedID := padRight(item.ID, idWidth)
+	// Sanitize subject: replace newlines with spaces, collapse multiple spaces, truncate
+	subject := strings.ReplaceAll(item.Subject, "\n", " ")
+	subject = strings.ReplaceAll(subject, "\r", "")
+	subject = strings.Join(strings.Fields(subject), " ")
+	subject = truncate(subject, 80) // Limit width to prevent wrapping
 	fmt.Printf("%s%s%s%s%s%s %s%s%s %s%s%s%s%s%s\n",
 		gray, prefix, connector, reset,
 		shapeColor, shape, reset,
-		idStyle, item.ID, reset,
-		textStyle, item.Subject, reset,
+		idStyle, paddedID, reset,
+		textStyle, subject, reset,
 		ticketStr, progressStr+statusStr)
 
 	// Children
@@ -534,14 +500,14 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 	childPrefix := prefix
 	if prefix != "" || len(childItems) > 0 {
 		if isLast || prefix == "" {
-			childPrefix += "  "
+			childPrefix += treeSpace
 		} else {
-			childPrefix += "│ "
+			childPrefix += treeVertical
 		}
 	}
 
 	for i, child := range childItems {
-		printTreeNode(child, children, childPrefix, i == len(childItems)-1, stats)
+		printTreeNode(child, children, childPrefix, i == len(childItems)-1, stats, idWidth)
 	}
 }
 
@@ -560,7 +526,7 @@ func printWorkItemTable(title string, items []*control.WorkItemInfo) {
 	pendingCount, inProgressCount, completedCount := 0, 0, 0
 
 	for _, item := range items {
-		shape := getShapeForType(item.ItemType, item.Status == "in_progress")
+		shape := getShapeForItem(item)
 
 		switch item.Status {
 		case "in_progress":
@@ -581,8 +547,8 @@ func printWorkItemTable(title string, items []*control.WorkItemInfo) {
 			statusStr = fmt.Sprintf(" %s%s active%s", yellow, bullet, reset)
 		}
 
-		// ID dimmed cyan, text white (or gray if completed)
-		idStyle, textStyle := dim+cyan, white
+		// ID magenta, text white (or gray if completed)
+		idStyle, textStyle := magenta, white
 		if item.Status == "completed" {
 			idStyle, textStyle = gray, gray
 		}
@@ -627,10 +593,10 @@ func printStatusBox(inProgress, ready []*control.WorkItemInfo) {
 	if len(inProgress) > 0 {
 		fmt.Printf("%sActive:%s\n", bold, reset)
 		for _, item := range inProgress {
-			shape := getShapeForType(item.ItemType, true)
+			shape := getShapeForItem(item)
 			fmt.Printf("  %s %s%s%s %s%s%s\n",
 				shape,
-				dim+cyan, item.ID, reset,
+				magenta, item.ID, reset,
 				white, item.Subject, reset)
 			if item.AgentID != "" {
 				fmt.Printf("    %sAgent: %s%s%s\n", gray, yellow, item.AgentID, reset)
@@ -647,11 +613,11 @@ func printStatusBox(inProgress, ready []*control.WorkItemInfo) {
 				fmt.Printf("  %s... and %d more%s\n", dim, len(ready)-maxShow, reset)
 				break
 			}
-			shape := getShapeForType(item.ItemType, false)
+			shape := getShapeForItem(item)
 			fmt.Printf("  %s %s%s%s %s%s%s\n",
 				shape,
-				dim+cyan, item.ID, reset,
-				gray, item.Subject, reset)
+				magenta, item.ID, reset,
+				white, item.Subject, reset)
 		}
 	}
 }
@@ -660,25 +626,47 @@ func printStatusBox(inProgress, ready []*control.WorkItemInfo) {
 // SHARED HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-func getShapeForType(itemType string, filled bool) string {
-	if filled {
-		switch itemType {
+// getShapeForItem returns colored shape based on item type and priority
+// getShapeForItem returns colored shape based on item type
+// Colors: goal=blue, feature=green, task=yellow (gray if completed)
+func getShapeForItem(item *control.WorkItemInfo) string {
+	var shape string
+	if item.Status == "in_progress" {
+		switch item.ItemType {
 		case "goal":
-			return blue + "■" + reset
+			shape = shapeGoalFilled
 		case "feature":
-			return green + "◆" + reset
+			shape = shapeFeatureFilled
 		default:
-			return yellow + "●" + reset
+			shape = shapeTaskFilled
+		}
+	} else {
+		switch item.ItemType {
+		case "goal":
+			shape = shapeGoal
+		case "feature":
+			shape = shapeFeature
+		default:
+			shape = shapeTask
 		}
 	}
-	switch itemType {
-	case "goal":
-		return blue + "□" + reset
-	case "feature":
-		return green + "◇" + reset
-	default:
-		return yellow + "○" + reset
+
+	// Color by item type (dimmed if completed)
+	var color string
+	if item.Status == "completed" {
+		color = gray
+	} else {
+		switch item.ItemType {
+		case "goal":
+			color = blue
+		case "feature":
+			color = green
+		default: // task
+			color = yellow
+		}
 	}
+
+	return color + shape + reset
 }
 
 func printSuccess(msg string) {
@@ -691,7 +679,7 @@ func printError(msg string) {
 
 // Legacy compatibility
 func printWorkItem(item *control.WorkItemInfo, indent int) {
-	shape := getShapeForType(item.ItemType, item.Status == "in_progress")
+	shape := getShapeForItem(item)
 	indentStr := strings.Repeat("  ", indent)
-	fmt.Printf("%s%s %s%s%s  %s\n", indentStr, shape, dim, item.ID, reset, item.Subject)
+	fmt.Printf("%s%s %s%s%s  %s%s%s\n", indentStr, shape, magenta, item.ID, reset, white, item.Subject, reset)
 }

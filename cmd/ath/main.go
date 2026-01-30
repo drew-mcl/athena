@@ -40,19 +40,20 @@ Use 'athena' for the full TUI dashboard.
 Use 'ath' for quick CLI commands.
 
 Work Item Hierarchy:
-  Goal     - Strategic objectives (no worktree)
-  Feature  - PR-sized work (has worktree, Claude task list)
-  Task     - Individual work items (Claude tasks)
+  Goal     □  - Strategic objectives (no worktree)     [blue]
+  Feature  ◇  - PR-sized work (has worktree)           [green]
+  Task     ○  - Individual work items                   [yellow]
 
 Shorthand Commands:
   g  → goal      t  → tsk       tr → tree
   f  → feat      w  → wt        q  → queue
   s  → sp        p  → plugin
 
-Status indicators:
-  Outline shapes (pending):  [] <> //
-  Filled shapes (in_progress): [*] <*> /*/
-  Dimmed (completed)
+Display:
+  Shape colors indicate item type (blue/green/yellow)
+  Filled shapes (■ ◆ ●) indicate in_progress status
+  Dimmed/gray indicates completed items
+  IDs shown in magenta, text in white
 
 Examples:
   ath                           # Status summary
@@ -126,29 +127,35 @@ var tskCmd = &cobra.Command{
 	Short:   "Manage tasks",
 	Long: `Create and manage tasks.
 
-With no args: interactive mode
+With no args: list tasks
 With subject(s): create quick task(s) in inbox
+With --interactive: interactive mode
+With --all: list tasks across all projects
 
 Flags:
   -f <feature-id>  Add tasks under a specific feature
+  -a, --all        List tasks across all projects
+  -i, --interactive  Interactive mode
   -t <type>        Filter by type (goal, feat, task)
 
 Examples:
-  ath tsk                           # Interactive
+  ath tsk                           # List tasks
+  ath tsk --interactive             # Interactive
   ath tsk "Update readme"           # Inbox task
   ath tsk -f wi-a3f8.1 "Task one"   # Under feature`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		featureID, _ := cmd.Flags().GetString("feature")
 		itemType, _ := cmd.Flags().GetString("type")
-
-		if len(args) == 0 && featureID == "" {
-			// Interactive mode
-			return runTskInteractive()
-		}
+		interactive, _ := cmd.Flags().GetBool("interactive")
+		allProjects, _ := cmd.Flags().GetBool("all")
 
 		if len(args) == 0 {
+			if interactive && featureID == "" {
+				// Interactive mode
+				return runTskInteractive()
+			}
 			// List tasks
-			return runTskList(itemType)
+			return runTskList(itemType, allProjects)
 		}
 
 		// Create task(s)
@@ -338,6 +345,8 @@ func init() {
 
 	// Task flags
 	tskCmd.Flags().StringP("feature", "f", "", "Parent feature ID")
+	tskCmd.Flags().BoolP("interactive", "i", false, "Interactive mode")
+	tskCmd.Flags().BoolP("all", "a", false, "List tasks across all projects")
 	tskCmd.Flags().StringP("type", "t", "", "Filter by type: goal, feat, task")
 	tskCmd.AddCommand(tskReadyCmd)
 

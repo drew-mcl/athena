@@ -40,11 +40,11 @@ func (d *Daemon) handleListTaskLists(_ json.RawMessage) (any, error) {
 
 func (d *Daemon) handleListTasks(params json.RawMessage) (any, error) {
 	var req struct {
-		Provider string         `json:"provider"`
-		ListID   string         `json:"list_id"`
-		Status   *string        `json:"status,omitempty"`
-		Owner    *string        `json:"owner,omitempty"`
-		Blocked  *bool          `json:"blocked,omitempty"`
+		Provider string  `json:"provider"`
+		ListID   string  `json:"list_id"`
+		Status   *string `json:"status,omitempty"`
+		Owner    *string `json:"owner,omitempty"`
+		Blocked  *bool   `json:"blocked,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
