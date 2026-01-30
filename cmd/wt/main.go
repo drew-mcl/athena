@@ -194,20 +194,51 @@ func runPrune(project string) error {
 	}
 
 	total := 0
+
+	// 1. Prune merged worktrees
 	for _, p := range projects {
 		pruned, err := provisioner.Prune(p)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: error pruning %s: %v\n", p, err)
+			fmt.Fprintf(os.Stderr, "Warning: error pruning merged worktrees for %s: %v\n", p, err)
 			continue
 		}
 		for _, path := range pruned {
-			fmt.Printf("Pruned: %s\n", path)
+			fmt.Printf("Pruned (merged): %s\n", path)
+			total++
+		}
+	}
+
+	// 2. Prune stale git worktree entries
+	for _, p := range projects {
+		if err := provisioner.PruneStale(p); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: error pruning stale entries for %s: %v\n", p, err)
+		}
+	}
+
+	// 3. Prune orphaned directories
+	orphans, err := provisioner.PruneOrphans()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: error pruning orphaned directories: %v\n", err)
+	} else {
+		for _, path := range orphans {
+			fmt.Printf("Pruned (orphan): %s\n", path)
+			total++
+		}
+	}
+
+	// 4. Prune stale store entries (paths that no longer exist)
+	stale, err := provisioner.PruneStoreEntries()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: error pruning stale store entries: %v\n", err)
+	} else {
+		for _, path := range stale {
+			fmt.Printf("Pruned (stale): %s\n", path)
 			total++
 		}
 	}
 
 	if total == 0 {
-		fmt.Println("No merged worktrees to prune.")
+		fmt.Println("No worktrees to prune.")
 	} else {
 		fmt.Printf("Pruned %d worktree(s).\n", total)
 	}
