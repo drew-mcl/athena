@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1172,7 +1171,7 @@ func TestFindMainRepoPath_Found(t *testing.T) {
 	d := newTestDaemon(t)
 
 	// Create a main repo worktree entry
-	mainPath := filepath.Join(os.TempDir(), "test-main-repo")
+	mainPath := filepath.Join(t.TempDir(), "test-main-repo")
 	wt := &store.Worktree{
 		Path:    mainPath,
 		Project: "myproject",
@@ -1209,7 +1208,7 @@ func TestFindMainRepoPath_FallbackByProjectName(t *testing.T) {
 	d := newTestDaemon(t)
 
 	// Create a worktree that doesn't match project directly but has projectName set
-	mainPath := filepath.Join(os.TempDir(), "test-fallback-repo")
+	mainPath := filepath.Join(t.TempDir(), "test-fallback-repo")
 	pName := "real-name"
 	wt := &store.Worktree{
 		Path:        mainPath,
