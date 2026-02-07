@@ -393,8 +393,22 @@ func TestLinearIssueNodeToIssue(t *testing.T) {
 	}
 }
 
+// setupJiraMockServer creates an httptest server, points JIRA_* env vars at it,
+// and returns a cleanup function that restores the env and closes the server.
+func setupJiraMockServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	t.Setenv("JIRA_URL", server.URL)
+	t.Setenv("JIRA_EMAIL", "test@example.com")
+	t.Setenv("JIRA_API_TOKEN", "token123")
+
+	return server
+}
+
 func TestJiraGetIssueWithMockServer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	setupJiraMockServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rest/api/3/issue/ENG-1" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -411,17 +425,6 @@ func TestJiraGetIssueWithMockServer(t *testing.T) {
 
 		json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
-
-	// Set env for the mock server
-	os.Setenv("JIRA_URL", server.URL)
-	os.Setenv("JIRA_EMAIL", "test@example.com")
-	os.Setenv("JIRA_API_TOKEN", "token123")
-	defer func() {
-		os.Unsetenv("JIRA_URL")
-		os.Unsetenv("JIRA_EMAIL")
-		os.Unsetenv("JIRA_API_TOKEN")
-	}()
 
 	j := NewJira()
 	issue, err := j.GetIssue(context.Background(), "ENG-1")
@@ -679,7 +682,7 @@ func TestLinearProjectNodeToIssue(t *testing.T) {
 }
 
 func TestJiraGetIssueWithTypeFromMockServer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	setupJiraMockServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := jiraIssue{
 			ID:  "10001",
 			Key: "PROJ-100",
@@ -692,16 +695,6 @@ func TestJiraGetIssueWithTypeFromMockServer(t *testing.T) {
 
 		json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
-
-	os.Setenv("JIRA_URL", server.URL)
-	os.Setenv("JIRA_EMAIL", "test@example.com")
-	os.Setenv("JIRA_API_TOKEN", "token123")
-	defer func() {
-		os.Unsetenv("JIRA_URL")
-		os.Unsetenv("JIRA_EMAIL")
-		os.Unsetenv("JIRA_API_TOKEN")
-	}()
 
 	j := NewJira()
 	issue, err := j.GetIssue(context.Background(), "PROJ-100")

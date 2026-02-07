@@ -141,6 +141,32 @@ func (j *Jira) GetIssue(ctx context.Context, issueKey string) (*Issue, error) {
 	return jiraIssueToIssue(&result, cfg.baseURL), nil
 }
 
+// jiraSearchIssues runs a JQL search and converts results to Issue models.
+func jiraSearchIssues(ctx context.Context, cfg *jiraConfig, jql string, fields string, maxResults int) ([]*Issue, error) {
+	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
+		"&fields=" + fields + "&maxResults=" + fmt.Sprintf("%d", maxResults)
+
+	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Issues []jiraIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	issues := make([]*Issue, len(result.Issues))
+	for i := range result.Issues {
+		issues[i] = jiraIssueToIssue(&result.Issues[i], cfg.baseURL)
+	}
+	return issues, nil
+}
+
+const jiraDefaultFields = "summary,description,status,issuetype,parent,priority,assignee,labels,created,updated"
+
 func (j *Jira) ListIssues(ctx context.Context, project string, state IssueState) ([]*Issue, error) {
 	cfg, err := getJiraConfig()
 	if err != nil {
@@ -155,26 +181,10 @@ func (j *Jira) ListIssues(ctx context.Context, project string, state IssueState)
 		}
 	}
 
-	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
-		"&fields=summary,description,status,issuetype,parent,priority,assignee,labels,created,updated&maxResults=50"
-
-	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	issues, err := jiraSearchIssues(ctx, cfg, jql, jiraDefaultFields, 50)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
 	}
-
-	var result struct {
-		Issues []jiraIssue `json:"issues"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	issues := make([]*Issue, len(result.Issues))
-	for i := range result.Issues {
-		issues[i] = jiraIssueToIssue(&result.Issues[i], cfg.baseURL)
-	}
-
 	return issues, nil
 }
 
@@ -413,23 +423,13 @@ func (j *Jira) GetEpic(ctx context.Context, epicKey string) (*Issue, error) {
 	}
 
 	jql := fmt.Sprintf(`"Epic Link" = %s ORDER BY created ASC`, epicKey)
-	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
-		"&fields=summary,status,issuetype,parent&maxResults=100"
-
-	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	children, err := jiraSearchIssues(ctx, cfg, jql, "summary,status,issuetype,parent", 100)
 	if err != nil {
 		return nil, fmt.Errorf("list epic children for %s: %w", epicKey, err)
 	}
 
-	var result struct {
-		Issues []jiraIssue `json:"issues"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	issue.Children = make([]string, len(result.Issues))
-	for i, child := range result.Issues {
+	issue.Children = make([]string, len(children))
+	for i, child := range children {
 		issue.Children[i] = child.Key
 	}
 
@@ -444,26 +444,10 @@ func (j *Jira) ListEpics(ctx context.Context, project string) ([]*Issue, error) 
 	}
 
 	jql := fmt.Sprintf("project = %q AND issuetype = Epic ORDER BY updated DESC", project)
-	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
-		"&fields=summary,description,status,issuetype,parent,priority,assignee,labels,created,updated&maxResults=50"
-
-	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	issues, err := jiraSearchIssues(ctx, cfg, jql, jiraDefaultFields, 50)
 	if err != nil {
 		return nil, fmt.Errorf("list epics: %w", err)
 	}
-
-	var result struct {
-		Issues []jiraIssue `json:"issues"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	issues := make([]*Issue, len(result.Issues))
-	for i := range result.Issues {
-		issues[i] = jiraIssueToIssue(&result.Issues[i], cfg.baseURL)
-	}
-
 	return issues, nil
 }
 
