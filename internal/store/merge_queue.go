@@ -11,11 +11,12 @@ import (
 type MergeQueueStatus string
 
 const (
-	MergeQueueStatusQueued    MergeQueueStatus = "queued"    // Waiting in line
-	MergeQueueStatusMerging   MergeQueueStatus = "merging"   // Currently being merged to main
-	MergeQueueStatusMerged    MergeQueueStatus = "merged"    // Successfully merged
-	MergeQueueStatusConflict  MergeQueueStatus = "conflict"  // Needs manual resolution
-	MergeQueueStatusRebasing  MergeQueueStatus = "rebasing"  // Being rebased after edit
+	MergeQueueStatusQueued   MergeQueueStatus = "queued"   // Waiting in line
+	MergeQueueStatusMerging  MergeQueueStatus = "merging"  // Currently being merged to main
+	MergeQueueStatusMerged   MergeQueueStatus = "merged"   // Successfully merged
+	MergeQueueStatusConflict MergeQueueStatus = "conflict" // Needs manual resolution
+	MergeQueueStatusRebasing MergeQueueStatus = "rebasing" // Being rebased after edit
+	MergeQueueStatusDiverged MergeQueueStatus = "diverged" // Upstream changed; needs reconciliation
 )
 
 // MergeQueueItem represents a worktree in the merge queue.
@@ -66,7 +67,7 @@ func (s *Store) AddToMergeQueue(item *MergeQueueItem) error {
 	var maxPos sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT MAX(position) FROM merge_queue
-		WHERE project = ? AND status IN ('queued', 'rebasing')
+		WHERE project = ? AND status IN ('queued', 'rebasing', 'diverged', 'conflict')
 	`, item.Project).Scan(&maxPos)
 	if err != nil {
 		return fmt.Errorf("failed to get max position: %w", err)
@@ -96,7 +97,7 @@ func (s *Store) GetMergeQueue(project string) ([]*MergeQueueItem, error) {
 	rows, err := s.db.Query(`
 		SELECT id, project, worktree_path, branch, position, status, base_branch, base_commit, head_commit, created_at, updated_at
 		FROM merge_queue
-		WHERE project = ? AND status IN ('queued', 'rebasing', 'merging')
+		WHERE project = ? AND status IN ('queued', 'rebasing', 'merging', 'diverged', 'conflict')
 		ORDER BY position ASC
 	`, project)
 	if err != nil {
@@ -150,29 +151,40 @@ func (s *Store) GetMergeQueueItem(worktreePath string) (*MergeQueueItem, error) 
 }
 
 // GetQueueHead returns the integration HEAD - the branch/commit that new worktrees should base on.
-// This is either the last queued item's branch, or the project's main branch if queue is empty.
+// It walks the queue from the front and returns the last non-diverged item.
 func (s *Store) GetQueueHead(project string) (branch string, commit string, err error) {
-	var baseBranch, baseCommit sql.NullString
-	err = s.db.QueryRow(`
-		SELECT branch, head_commit FROM merge_queue
-		WHERE project = ? AND status IN ('queued', 'rebasing')
-		ORDER BY position DESC
-		LIMIT 1
-	`, project).Scan(&baseBranch, &baseCommit)
-
-	if err == sql.ErrNoRows {
-		// Empty queue - return empty to signal "use main"
-		return "", "", nil
-	}
+	rows, err := s.db.Query(`
+		SELECT branch, head_commit, status
+		FROM merge_queue
+		WHERE project = ? AND status IN ('queued', 'rebasing', 'merging', 'diverged', 'conflict')
+		ORDER BY position ASC
+	`, project)
 	if err != nil {
 		return "", "", err
 	}
+	defer rows.Close()
 
-	if baseBranch.Valid {
-		branch = baseBranch.String
+	for rows.Next() {
+		var itemBranch sql.NullString
+		var headCommit sql.NullString
+		var status MergeQueueStatus
+		if err := rows.Scan(&itemBranch, &headCommit, &status); err != nil {
+			return "", "", err
+		}
+
+		// Divergence means the chain beyond this point is no longer a valid integration base.
+		if status == MergeQueueStatusDiverged || status == MergeQueueStatusConflict {
+			break
+		}
+		if itemBranch.Valid {
+			branch = itemBranch.String
+		}
+		if headCommit.Valid {
+			commit = headCommit.String
+		}
 	}
-	if baseCommit.Valid {
-		commit = baseCommit.String
+	if err := rows.Err(); err != nil {
+		return "", "", err
 	}
 	return branch, commit, nil
 }
@@ -222,8 +234,8 @@ func (s *Store) RemoveFromMergeQueue(worktreePath string) error {
 	return err
 }
 
-// MoveToBackOfQueue moves a worktree to the back of the queue (for when it's edited).
-// This also marks items after the original position as needing rebase.
+// MoveToBackOfQueue records an edited queue item without changing its position.
+// Items behind it are marked as diverged so they can be reconciled.
 func (s *Store) MoveToBackOfQueue(worktreePath string, newBaseCommit string) error {
 	item, err := s.GetMergeQueueItem(worktreePath)
 	if err != nil {
@@ -235,36 +247,20 @@ func (s *Store) MoveToBackOfQueue(worktreePath string, newBaseCommit string) err
 
 	originalPosition := item.Position
 
-	// Get max position
-	var maxPos sql.NullInt64
-	err = s.db.QueryRow(`
-		SELECT MAX(position) FROM merge_queue
-		WHERE project = ? AND status IN ('queued', 'rebasing')
-	`, item.Project).Scan(&maxPos)
-	if err != nil {
-		return err
-	}
-
-	newPos := 1
-	if maxPos.Valid {
-		newPos = int(maxPos.Int64)
-	}
-
-	// Move this item to the back
+	// Keep this item in-place and update its latest head commit.
 	_, err = s.db.Exec(`
 		UPDATE merge_queue
-		SET position = ?, base_commit = ?, status = 'queued', updated_at = CURRENT_TIMESTAMP
+		SET head_commit = ?, status = 'queued', updated_at = CURRENT_TIMESTAMP
 		WHERE worktree_path = ?
-	`, newPos, newBaseCommit, worktreePath)
+	`, newBaseCommit, worktreePath)
 	if err != nil {
 		return err
 	}
 
-	// Decrement positions for items that were after the original position
-	// and mark them as needing rebase
+	// Downstream items no longer cleanly stack and must be reconciled.
 	_, err = s.db.Exec(`
 		UPDATE merge_queue
-		SET position = position - 1, status = 'rebasing', updated_at = CURRENT_TIMESTAMP
+		SET status = 'diverged', updated_at = CURRENT_TIMESTAMP
 		WHERE project = ? AND position > ? AND worktree_path != ?
 	`, item.Project, originalPosition, worktreePath)
 	return err
@@ -275,7 +271,7 @@ func (s *Store) GetItemsNeedingRebase(project string) ([]*MergeQueueItem, error)
 	rows, err := s.db.Query(`
 		SELECT id, project, worktree_path, branch, position, status, base_branch, base_commit, head_commit, created_at, updated_at
 		FROM merge_queue
-		WHERE project = ? AND status = 'rebasing'
+		WHERE project = ? AND status IN ('rebasing', 'diverged')
 		ORDER BY position ASC
 	`, project)
 	if err != nil {
@@ -313,11 +309,21 @@ func (s *Store) MarkQueueItemRebased(worktreePath string, newBaseCommit, newHead
 	return err
 }
 
+// MarkQueueItemsDiverged marks queue items at or after a position as diverged.
+func (s *Store) MarkQueueItemsDiverged(project string, startPosition int) error {
+	_, err := s.db.Exec(`
+		UPDATE merge_queue
+		SET status = 'diverged', updated_at = CURRENT_TIMESTAMP
+		WHERE project = ? AND position >= ? AND status IN ('queued', 'rebasing', 'diverged')
+	`, project, startPosition)
+	return err
+}
+
 // GetActiveQueueProjects returns a list of projects that have items in the merge queue.
 func (s *Store) GetActiveQueueProjects() ([]string, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT project FROM merge_queue
-		WHERE status IN ('queued', 'rebasing', 'merging')
+		WHERE status IN ('queued', 'rebasing', 'merging', 'diverged', 'conflict')
 	`)
 	if err != nil {
 		return nil, err

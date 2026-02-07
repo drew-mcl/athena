@@ -22,7 +22,6 @@ build:
 	go build $(LDFLAGS) -o bin/athena ./cmd/athena
 	go build $(LDFLAGS) -o bin/athenad ./cmd/athenad
 	go build $(LDFLAGS) -o bin/ath ./cmd/ath
-	go build $(LDFLAGS) -o bin/wt ./cmd/wt
 	go build $(LDFLAGS) -o bin/athena-cli ./cmd/athena-cli
 
 # Install all binaries to GOBIN
@@ -30,9 +29,8 @@ install: build
 	cp bin/athena $(GOBIN)/athena
 	cp bin/athenad $(GOBIN)/athenad
 	cp bin/ath $(GOBIN)/ath
-	cp bin/wt $(GOBIN)/wt
 	cp bin/athena-cli $(GOBIN)/athena-cli
-	@echo "Installed: athena, athenad, ath, wt, athena-cli"
+	@echo "Installed: athena, athenad, ath, cli"
 
 clean:
 	rm -rf bin/
@@ -127,7 +125,6 @@ help:
 	@echo "  athena   - TUI dashboard for monitoring agents"
 	@echo "  athenad  - Background daemon managing agent lifecycles"
 	@echo "  ath      - Quick CLI for work items (goals/features/tasks)"
-	@echo "  wt       - Standalone worktree management tool"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make build     Build all binaries"
