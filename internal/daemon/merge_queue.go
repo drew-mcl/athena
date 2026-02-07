@@ -28,6 +28,9 @@ func (d *Daemon) handleGetMergeQueue(params json.RawMessage) (any, error) {
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
 	}
+	if err := d.refreshQueueGraph(req.Project); err != nil {
+		return nil, err
+	}
 
 	items, err := d.store.GetMergeQueue(req.Project)
 	if err != nil {
@@ -50,7 +53,7 @@ func (d *Daemon) handleGetMergeQueueHead(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	branch, commit, err := d.store.GetQueueHead(req.Project)
+	branch, commit, err := d.getIntegrationHead(req.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +191,7 @@ func (d *Daemon) handleBumpMergeQueueItem(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	// Auto-rebase dependent features that were marked as 'rebasing'
+	// Auto-rebase dependent features that were marked as diverged/rebasing.
 	rebaseResults := d.cascadeRebase(originalItem.Project)
 
 	// Get updated item
@@ -210,7 +213,7 @@ func (d *Daemon) handleBumpMergeQueueItem(params json.RawMessage) (any, error) {
 	return mergeQueueItemToInfo(item), nil
 }
 
-// cascadeRebase automatically rebases all items marked as 'rebasing' in the queue.
+// cascadeRebase automatically rebases items marked as rebasing/diverged in the queue.
 // Returns a summary of rebase results.
 func (d *Daemon) cascadeRebase(project string) []map[string]string {
 	var results []map[string]string
@@ -272,6 +275,69 @@ func (d *Daemon) cascadeRebase(project string) []map[string]string {
 	}
 
 	return results
+}
+
+// getIntegrationHead returns the current integration base for spawning new worktrees.
+func (d *Daemon) getIntegrationHead(project string) (string, string, error) {
+	if err := d.refreshQueueGraph(project); err != nil {
+		return "", "", err
+	}
+	return d.store.GetQueueHead(project)
+}
+
+// refreshQueueGraph updates queue head commits from git and marks downstream divergence.
+func (d *Daemon) refreshQueueGraph(project string) error {
+	items, err := d.store.GetMergeQueue(project)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	// First pass: refresh each node's current HEAD commit.
+	for _, item := range items {
+		currentHead, err := getGitHead(item.WorktreePath)
+		if err != nil {
+			continue
+		}
+		if currentHead == item.HeadCommit {
+			continue
+		}
+		if err := d.store.UpdateMergeQueueItem(item.WorktreePath, item.Status, currentHead); err != nil {
+			return err
+		}
+		item.HeadCommit = currentHead
+	}
+
+	// Head of queue is always the root of the integration chain.
+	if items[0].Status == store.MergeQueueStatusDiverged {
+		if err := d.store.UpdateMergeQueueItem(items[0].WorktreePath, store.MergeQueueStatusQueued, items[0].HeadCommit); err != nil {
+			return err
+		}
+		items[0].Status = store.MergeQueueStatusQueued
+	}
+
+	stableHead := items[0].HeadCommit
+	for i := 1; i < len(items); i++ {
+		item := items[i]
+
+		// If base commit no longer matches upstream HEAD, this and descendants diverged.
+		if stableHead != "" && item.BaseCommit != stableHead {
+			return d.store.MarkQueueItemsDiverged(project, item.Position)
+		}
+
+		// If this item was previously diverged and now lines up, clear it.
+		if item.Status == store.MergeQueueStatusDiverged {
+			if err := d.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusQueued, item.HeadCommit); err != nil {
+				return err
+			}
+		}
+
+		stableHead = item.HeadCommit
+	}
+
+	return nil
 }
 
 func (d *Daemon) handleRebaseMergeQueueItem(params json.RawMessage) (any, error) {
