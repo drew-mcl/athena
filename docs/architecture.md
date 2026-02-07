@@ -1,538 +1,257 @@
-# Architecture
+# architecture
 
-## Core Principles
+## how it works
 
-### 1. Data Sovereignty
+you work on multiple features at once. each feature gets its own worktree, its own agent, its own task list. the merge queue keeps them ordered so nothing conflicts.
 
-**Every piece of data flowing through Athena belongs to you.**
+```mermaid
+graph TD
+    subgraph pm ["project management"]
+        Linear["Linear"] --> Goals
+        Jira["Jira"] --> Goals
+        Goals["Goals<br/><i>strategic objectives</i>"]
+    end
 
-When you send a prompt to an agent, Athena captures it. When the agent thinks, calls tools, produces output - Athena captures it all. This data persists in your storage (SQLite locally, optionally replicated to your MySQL/Postgres), not locked in a vendor's proprietary session history.
+    Goals --> F1["Feature A"]
+    Goals --> F2["Feature B"]
+    Goals --> F3["Feature C"]
 
-Why this matters:
-- **Context continuity**: Agent crashes? Swap harnesses? Your conversation history survives.
-- **Auditability**: Full trace of what was asked, what was done, why.
-- **Future-proofing**: Build RAG, memory systems, or whatever comes next on YOUR data.
-- **No lock-in**: Switch between Claude Code, Codex, or the next thing without losing history.
+    subgraph parallel ["parallel development"]
+        direction TB
+        F1 --> W1["Worktree A<br/><code>../repo-feat-a</code>"]
+        F2 --> W2["Worktree B<br/><code>../repo-feat-b</code>"]
+        F3 --> W3["Worktree C<br/><code>../repo-feat-c</code>"]
 
-### 2. Harness Agnosticism
+        W1 --> A1["Agent A<br/><i>working</i>"]
+        W2 --> A2["Agent B<br/><i>PR under review</i>"]
+        W3 --> A3["Agent C<br/><i>done, merged</i>"]
+    end
 
-Athena is not a harness. Claude Code and Codex are harnesses - they're the shovels. Athena is the foreman coordinating which shovel to use where.
+    subgraph queue ["merge queue"]
+        direction TB
+        Q1["#1 Feature C ✓"] --> Main["main"]
+        Q2["#2 Feature B ⏳"] -.-> Main
+        Q3["#3 Feature A 🔨"] -.-> Main
+    end
 
-The harness landscape is racing. New capabilities ship weekly. Athena's job is to:
-- Abstract the common operations (spawn, resume, stream events)
-- Expose harness-specific capabilities when they matter
-- Let you switch harnesses per-task based on their strengths
-
-### 3. Event Sourcing
-
-All agent I/O is an append-only event log. Never mutate, only append. This gives us:
-- Perfect audit trail (what happened, when, in what order)
-- Easy replay (restart agent, replay events to restore context)
-- Snapshots for efficiency (checkpoint + replay from there)
-- Eventual consistency for replication (just replay missing events)
-
-### 4. Context Efficiency and Sharing
-
-**Context should be managed, pruned, and shared to reduce cost and overhead.**
-
-Athena should curate context across agents and sessions: summaries, deduped facts,
-and reusable artifacts (plans, decisions, code pointers). Share context between
-related tasks or projects with explicit export/import so agents do not pay
-repeatedly for the same ground truth.
-
-Why this matters:
-- **Lower spend**: Less repeated token spend for the same background.
-- **Faster ramps**: Agents start with distilled context instead of re-learning.
-- **Lower overhead**: Fewer manual recaps and less prompt rework.
-- **Team leverage**: Share context safely across collaborators or environments.
-
-### 5. Bloomberg-Style Ops Terminal
-
-**Athena should be the command-and-control terminal for engineering.**
-
-The interface should converge project management, CI/CD, agent activity,
-scheduling, and context insights into one ops view, while integrations fan out
-to Jira/Linear and other systems. Context intelligence (summaries, embeddings,
-data signals) should surface inline with operational decisions.
-
-Why this matters:
-- **One console**: Fewer tool hops and less context switching.
-- **Faster ops**: CI/CD, task queues, and agent status in one view.
-- **Automated flow**: Create and update tickets directly from agent output.
-- **Better decisions**: Context and embeddings turn history into insight.
-
----
-
-## System Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         TUI Layer                           │
-│  internal/tui/                                              │
-│  Dashboard, Agent Viewer, Job Management                    │
-└─────────────────────────────────────────────────────────────┘
-                            │ EventBus (pub/sub)
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      Control Plane                          │
-│  internal/spec/, internal/agent/, internal/daemon/          │
-│  ├── AgentSpec (what an agent IS - role, tools, model)      │
-│  ├── Spawner (lifecycle management)                         │
-│  └── Daemon (orchestration, scheduling, health)             │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      Runner Layer                           │
-│  internal/runner/, pkg/claudecode/                          │
-│  ├── ClaudeOptions / CodexOptions (comprehensive CLI maps)  │
-│  ├── Runner.Start(RunSpec) → Session                        │
-│  └── Session.Events() → chan Event                          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       Data Plane                            │
-│  internal/data/, internal/eventlog/                         │
-│  ├── Message (bidirectional I/O unit)                       │
-│  ├── Conversation (ordered message sequence)                │
-│  ├── Pipeline (orchestrates all components below)           │
-│  │   ├── EventLog (append-only, snapshots)                  │
-│  │   ├── ContextCache (LRU, fast restore)                   │
-│  │   ├── EventBus (real-time streaming)                     │
-│  │   └── Replicator (async to external DB)                  │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Storage Layer                           │
-│  internal/store/                                            │
-│  SQLite (hot, local) ──async──▶ MySQL/Postgres (redundant)  │
-└─────────────────────────────────────────────────────────────┘
+    A1 -.-> Q3
+    A2 -.-> Q2
+    A3 --> Q1
 ```
 
----
+## the parallel workflow
 
-## Package Reference
+the key idea: you're never blocked. while one feature is under PR review, another agent is coding, and a third just merged. the queue handles ordering.
 
-### Control Plane: `internal/spec/`
+```mermaid
+sequenceDiagram
+    participant You
+    participant Athena as ath CLI
+    participant D as athenad
+    participant A1 as Agent A
+    participant A2 as Agent B
+    participant GH as GitHub
 
-Defines **what an agent is** semantically, independent of any harness.
+    You->>Athena: ath spawn -f wi-a3f8.1
+    Athena->>D: spawn(feature_id)
+    D->>D: create worktree from queue head
+    D->>D: set CLAUDE_CODE_TASK_LIST_ID
+    D->>A1: launch claude code
+    Note over A1: working on Feature A...
 
-| File | Purpose |
-|------|---------|
-| `spec.go` | AgentSpec, ExecutionMode, ToolSet, ModelPref |
-| `tools.go` | Abstract tool names, harness-specific mappings |
-| `translate.go` | AgentSpec → SpawnOptions translation |
+    You->>Athena: ath spawn -f wi-a3f8.2
+    Athena->>D: spawn(feature_id)
+    D->>D: create worktree from queue head
+    D->>A2: launch claude code
+    Note over A2: working on Feature B...
 
-```go
-// AgentSpec defines agent behavior at a semantic level.
-// Archetypes in config produce these; runner translates to CLI options.
-type AgentSpec struct {
-    Role         string        // "planner", "executor", "reviewer"
-    Description  string        // Human-readable purpose
-    Mode         ExecutionMode // readonly vs readwrite
-    Tools        ToolSet       // abstract tool names
-    Model        ModelPref     // fast/balanced/quality + reasoning flag
-    SystemPrompt string        // Role context
-    TaskPrompt   string        // Specific task
-    MaxBudgetUSD float64       // Spending limit
-}
+    Note over You: both agents working in parallel
 
-type ExecutionMode string
-const (
-    ModeReadOnly  ExecutionMode = "readonly"  // plan mode, observation only
-    ModeReadWrite ExecutionMode = "readwrite" // can modify files
-)
+    You->>Athena: ath tree
+    Note over You: see both features + task progress
+
+    A1->>GH: raises PR
+    A1->>D: marks feature done
+    D->>D: add to merge queue
+
+    Note over GH: PR reviewed + approved
+
+    GH->>D: PR merged (webhook/poll)
+    D->>D: pop from queue, auto-rebase B
 ```
 
-**Tool Abstraction**: Abstract tool names map to harness-specific tools:
+## feature lifecycle
 
-```go
-// Abstract (harness-agnostic)     Claude Code      Codex
-// ─────────────────────────────   ───────────      ─────
-// file.read                       Read             (built-in)
-// file.write                      Edit, Write      (built-in)
-// file.glob                       Glob             (built-in)
-// search.grep                     Grep             (built-in)
-// shell.bash                      Bash             (built-in)
-// web.fetch                       WebFetch         (not available)
-// agent.task                      Task             (not available)
+every feature follows this path. athena manages each step.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: ath f new / linear / jira
+    Created --> Spawned: ath spawn -f
+    Spawned --> InProgress: agent starts working
+
+    state InProgress {
+        [*] --> Coding
+        Coding --> TasksDone: all tasks complete
+    }
+
+    InProgress --> PROpen: agent raises PR
+    PROpen --> InReview: gh/glab plugin
+    InReview --> Queued: ath queue add
+    Queued --> Merged: PR merged, popped from queue
+    Merged --> [*]
 ```
 
----
+## system components
 
-### Runner Layer: `internal/runner/`
+```mermaid
+graph LR
+    subgraph cli ["CLI (ath)"]
+        spawn["ath spawn"]
+        tree["ath tree"]
+        wt["ath wt"]
+        queue["ath queue"]
+        interactive["ath i"]
+    end
 
-Harness abstraction with comprehensive CLI option mapping.
+    subgraph daemon ["athenad"]
+        API["unix socket API"]
+        Spawner["agent spawner"]
+        QueueMgr["queue manager"]
+        TaskWatch["task watcher"]
+        PluginReg["plugin registry"]
+    end
 
-| File | Purpose |
-|------|---------|
-| `options.go` | ClaudeOptions (~40 flags), CodexOptions (~20 flags) |
-| `runner.go` | Runner interface, Session interface |
-| `claude.go` | Claude Code implementation |
-| `codex.go` | Codex implementation (planned) |
+    subgraph plugins ["plugins"]
+        GH["GitHub<br/><i>gh CLI</i>"]
+        GL["GitLab<br/><i>glab CLI</i>"]
+        LN["Linear<br/><i>GraphQL</i>"]
+        JR["Jira<br/><i>REST API</i>"]
+    end
 
-**ClaudeOptions** - comprehensive mapping of all `claude` CLI flags:
+    subgraph agents ["claude code agents"]
+        Agent1["Agent 1<br/>worktree A"]
+        Agent2["Agent 2<br/>worktree B"]
+        Agent3["Agent N<br/>worktree N"]
+    end
 
-```go
-type ClaudeOptions struct {
-    // Session
-    SessionID    string   // --session-id
-    Resume       string   // --resume (session to continue)
-    Continue     bool     // --continue (most recent session)
+    subgraph storage ["storage"]
+        SQLite["SQLite<br/><i>work items, agents,<br/>queue, worktrees</i>"]
+        Tasks["~/.claude/tasks/<br/><i>native task lists</i>"]
+    end
 
-    // Execution
-    Print        bool     // --print (non-interactive)
-    MaxBudgetUSD float64  // --max-budget-usd
-    Plan         bool     // -p (plan mode)
+    cli --> API
+    API --> Spawner
+    API --> QueueMgr
+    API --> TaskWatch
+    API --> PluginReg
 
-    // Model
-    Model        string   // --model (haiku/sonnet/opus)
+    PluginReg --> GH
+    PluginReg --> GL
+    PluginReg --> LN
+    PluginReg --> JR
 
-    // Permissions
-    PermissionMode      string   // --permission-mode (default/plan/bypassPermissions)
-    AllowedTools        []string // --allowedTools
-    DisallowedTools     []string // --disallowedTools
-    MCPAllowedTools     []string // --mcp-allowed-tools
+    Spawner --> Agent1
+    Spawner --> Agent2
+    Spawner --> Agent3
 
-    // Prompts
-    SystemPrompt        string   // --system-prompt
-    AppendSystemPrompt  string   // --append-system-prompt
-    PermissionPromptTool string  // --permission-prompt-tool
+    Agent1 --> Tasks
+    Agent2 --> Tasks
+    Agent3 --> Tasks
 
-    // Input/Output
-    InputFormat  string   // --input-format (text/stream-json)
-    OutputFormat string   // --output-format (text/json/stream-json)
-
-    // MCP Servers
-    MCPServers   []string // --mcp-config (server configs)
-
-    // ... 30+ more options
-}
+    TaskWatch --> Tasks
+    daemon --> SQLite
 ```
 
-**CodexOptions** - mapping of Codex CLI flags:
+## what the agent gets
 
-```go
-type CodexOptions struct {
-    // Model
-    Model        string   // --model
-    Provider     string   // --provider
+when you run `ath spawn -f <feature>`, the agent launches with:
 
-    // Execution
-    FullAuto     bool     // --full-auto (no confirmations)
+```mermaid
+graph TD
+    subgraph injected ["injected into claude code"]
+        SysPrompt["system prompt<br/><i>goal context + feature description<br/>+ available ath commands</i>"]
+        TaskListID["CLAUDE_CODE_TASK_LIST_ID<br/><i>= feature work item ID</i>"]
+        Worktree["working directory<br/><i>isolated git worktree</i>"]
+    end
 
-    // Context
-    Images       []string // --image (vision input)
-
-    // ... additional options
-}
+    subgraph agent ["claude code"]
+        SysPrompt --> Work["does the work"]
+        TaskListID --> TaskList["creates task list<br/><i>visible in ath tree</i>"]
+        Worktree --> Git["isolated branch<br/><i>no conflicts with other features</i>"]
+    end
 ```
 
----
+## merge queue detail
 
-### Data Plane: `internal/data/`
+the queue solves the "multiple features in flight" problem. new features always branch from queue head, so they stack cleanly.
 
-Unified model for **all data flowing through agents** - inputs and outputs.
+```mermaid
+graph LR
+    Main["main"] --> Q1["Feature C<br/><i>merged ✓</i>"]
+    Q1 --> Q2["Feature B<br/><i>PR open ⏳</i>"]
+    Q2 --> Q3["Feature A<br/><i>agent working 🔨</i>"]
 
-| File | Purpose |
-|------|---------|
-| `message.go` | Message, Direction, MessageType, ToolContent, ErrorContent |
-| `conversation.go` | Conversation helpers, filtering, summarization |
-| `adapter.go` | claudecode.Event → Message conversion |
+    Q3 -.-> |"new features<br/>branch from here"| New["Feature D<br/><i>next spawn</i>"]
 
-```go
-// Direction indicates message flow.
-type Direction string
-const (
-    Inbound  Direction = "in"   // To agent (prompts, follow-ups)
-    Outbound Direction = "out"  // From agent (responses, events)
-)
-
-// MessageType categorizes the message content.
-type MessageType string
-const (
-    TypePrompt     MessageType = "prompt"       // Initial/follow-up instruction
-    TypeThinking   MessageType = "thinking"     // Agent reasoning
-    TypeText       MessageType = "text"         // Text output
-    TypeToolCall   MessageType = "tool_call"    // Tool invocation
-    TypeToolResult MessageType = "tool_result"  // Tool response
-    TypeComplete   MessageType = "complete"     // Terminal success
-    TypeError      MessageType = "error"        // Terminal error
-)
-
-// Message is the unified data unit for agent I/O.
-type Message struct {
-    ID        string          `json:"id"`
-    AgentID   string          `json:"agent_id"`
-    Direction Direction       `json:"direction"`
-    Type      MessageType     `json:"type"`
-    Sequence  int64           `json:"sequence"`
-    Timestamp time.Time       `json:"timestamp"`
-    Text      string          `json:"text,omitempty"`
-    Tool      *ToolContent    `json:"tool,omitempty"`
-    Error     *ErrorContent   `json:"error,omitempty"`
-    SessionID string          `json:"session_id,omitempty"`
-    Raw       json.RawMessage `json:"raw,omitempty"`
-}
+    style Q1 fill:#2d5a2d,color:#fff
+    style Q2 fill:#5a5a2d,color:#fff
+    style Q3 fill:#2d2d5a,color:#fff
+    style New fill:#3a3a3a,color:#fff,stroke-dasharray: 5 5
 ```
 
----
+when you edit an earlier feature and run `ath queue bump`, dependents are automatically reconciled.
 
-### Event Sourcing: `internal/eventlog/`
+## data model
 
-Append-only event log with caching, pub/sub, and replication.
+```mermaid
+erDiagram
+    GOAL ||--o{ FEATURE : contains
+    FEATURE ||--o{ TASK : contains
+    FEATURE ||--|| WORKTREE : "1:1"
+    FEATURE ||--|| AGENT : "1:1"
+    FEATURE ||--|| TASK_LIST : "1:1"
+    FEATURE }o--|| MERGE_QUEUE : "position"
 
-| File | Purpose |
-|------|---------|
-| `eventlog.go` | Interfaces: EventLog, ContextCache, EventBus, Replicator, Pipeline |
-| `memory.go` | In-memory implementations for testing |
-| `sqlite.go` | SQLite-backed implementations for production |
+    GOAL {
+        string id "wi-xxxx"
+        string subject
+        string ticket_id "ENG-123"
+        string status
+    }
 
-**Pipeline** orchestrates all event sourcing components:
+    FEATURE {
+        string id "wi-xxxx.N"
+        string subject
+        string parent_id "goal ID"
+        string status
+    }
 
-```go
-type Pipeline struct {
-    Log        EventLog      // Append-only persistence
-    Cache      ContextCache  // Fast context restoration
-    Bus        EventBus      // Real-time pub/sub
-    Replicator Replicator    // Async external replication
-}
+    TASK {
+        string id "wi-xxxx.N.M"
+        string subject
+        string parent_id "feature ID"
+    }
 
-// Ingest processes a message through the full pipeline:
-// 1. Append to EventLog (durable)
-// 2. Update ContextCache (fast access)
-// 3. Publish to EventBus (real-time)
-// 4. Queue for Replicator (redundancy)
-func (p *Pipeline) Ingest(ctx context.Context, msg *data.Message) error
+    WORKTREE {
+        string path
+        string branch
+    }
+
+    AGENT {
+        string id
+        int pid
+        string status
+    }
+
+    TASK_LIST {
+        string id "= feature ID"
+        string path "~/.claude/tasks/"
+    }
+
+    MERGE_QUEUE {
+        int position
+        string status
+        string base_commit
+    }
 ```
-
-**EventLog** - append-only with snapshots:
-
-```go
-type EventLog interface {
-    Append(ctx context.Context, agentID string, msg *data.Message) (int64, error)
-    Read(ctx context.Context, agentID string, fromSeq int64, limit int) ([]*data.Message, error)
-    ReadAll(ctx context.Context, agentID string) ([]*data.Message, error)
-    LastSequence(ctx context.Context, agentID string) (int64, error)
-    Snapshot(ctx context.Context, agentID string) (*Snapshot, error)
-    RestoreFromSnapshot(ctx context.Context, snap *Snapshot) error
-}
-```
-
-**ContextCache** - LRU cache for fast agent restore:
-
-```go
-type ContextCache interface {
-    Get(agentID string) (*CachedContext, bool)
-    Put(agentID string, ctx *CachedContext)
-    Invalidate(agentID string)
-    Update(agentID string, msg *data.Message)  // Incremental update
-}
-```
-
-**EventBus** - real-time streaming to TUI:
-
-```go
-type EventBus interface {
-    Publish(agentID string, msg *data.Message)
-    Subscribe(agentID string) Subscriber
-    SubscribeAll() Subscriber  // All agents
-}
-
-type Subscriber interface {
-    Events() <-chan *data.Message
-    Close()
-}
-```
-
----
-
-### Storage: `internal/store/`
-
-SQLite persistence with optional external replication.
-
-| File | Purpose |
-|------|---------|
-| `sqlite.go` | Database init, schema, core CRUD |
-| `messages.go` | Message table CRUD |
-| `agents.go` | Agent table CRUD |
-
-**Schema**:
-
-```sql
--- Agents (control plane state)
-CREATE TABLE agents (
-    id TEXT PRIMARY KEY,
-    worktree_path TEXT NOT NULL,
-    project_name TEXT NOT NULL,
-    archetype TEXT NOT NULL,
-    status TEXT NOT NULL,
-    prompt TEXT,
-    pid INTEGER,
-    exit_code INTEGER,
-    parent_agent_id TEXT REFERENCES agents(id),
-    claude_session_id TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    heartbeat_at DATETIME
-);
-
--- Messages (data plane - event sourced)
-CREATE TABLE messages (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    direction TEXT NOT NULL,        -- 'in' or 'out'
-    type TEXT NOT NULL,             -- prompt, thinking, text, tool_call, etc.
-    sequence INTEGER NOT NULL,      -- ordering within agent session
-    timestamp DATETIME NOT NULL,
-    text TEXT,
-    tool_name TEXT,
-    tool_input TEXT,                -- JSON
-    tool_output TEXT,
-    error_code TEXT,
-    error_message TEXT,
-    session_id TEXT,
-    raw TEXT,                       -- original JSON for debugging
-    UNIQUE(agent_id, sequence)
-);
-
-CREATE INDEX idx_messages_agent ON messages(agent_id, sequence);
-```
-
----
-
-## Data Flow
-
-### Inbound (Prompt → Agent)
-
-```
-User prompt
-    │
-    ▼
-Spawner.Spawn()
-    │
-    ├──▶ data.NewPromptMessage()
-    │         │
-    │         ▼
-    │    Pipeline.Ingest()
-    │         │
-    │         ├──▶ EventLog.Append()     (persist to SQLite)
-    │         ├──▶ Cache.Update()        (update LRU cache)
-    │         ├──▶ Bus.Publish()         (notify TUI)
-    │         └──▶ Replicator.Queue()    (async to MySQL/Postgres)
-    │
-    └──▶ claudecode.Spawn()  ───▶  Claude Code CLI
-```
-
-### Outbound (Agent → Response)
-
-```
-Claude Code CLI
-    │
-    ▼
-Process.Events()  (streaming JSON)
-    │
-    ▼
-Spawner.handleEvents()
-    │
-    ▼
-data.FromClaudeEvent()  ───▶  Message
-    │
-    ▼
-Pipeline.Ingest()
-    │
-    ├──▶ EventLog.Append()     (persist)
-    ├──▶ Cache.Update()        (cache)
-    ├──▶ Bus.Publish()         (TUI update)
-    └──▶ Replicator.Queue()    (redundancy)
-```
-
----
-
-## Agent Lifecycle
-
-```
-                    ┌─────────────┐
-                    │  SPAWNING   │
-                    └──────┬──────┘
-                           │ Process started
-                           ▼
-                    ┌─────────────┐
-              ┌─────│   RUNNING   │─────┐
-              │     └──────┬──────┘     │
-              │            │            │
-        thinking      tool_use     error/timeout
-              │            │            │
-              ▼            ▼            ▼
-        ┌──────────┐ ┌───────────┐ ┌─────────┐
-        │ PLANNING │ │ EXECUTING │ │ CRASHED │
-        └────┬─────┘ └─────┬─────┘ └─────────┘
-             │             │
-             └──────┬──────┘
-                    │ result event
-                    ▼
-             ┌─────────────┐
-             │  COMPLETED  │
-             └─────────────┘
-
-             ┌─────────────┐
-             │ TERMINATED  │  (user killed)
-             └─────────────┘
-```
-
----
-
-## Configuration Integration
-
-Archetypes in `config.yaml` map to AgentSpec:
-
-```yaml
-archetypes:
-  planner:
-    description: Explores codebase and drafts plans
-    permission_mode: plan
-    model: sonnet
-    allowed_tools: [Glob, Grep, Read, Task]
-    prompt: |
-      You are a planning agent. Analyze the codebase and create
-      detailed implementation plans. Do not modify files.
-
-  executor:
-    description: Implements approved plans
-    permission_mode: default
-    model: sonnet
-    allowed_tools: [all]
-    prompt: |
-      You are an execution agent. Implement the provided plan
-      carefully, following existing code patterns.
-```
-
-Translation flow:
-```
-config.Archetype
-       │
-       │ archetype.ToSpec(taskPrompt)
-       ▼
-spec.AgentSpec
-       │
-       │ agentSpec.ToSpawnOptions(sessionID, workDir)
-       ▼
-claudecode.SpawnOptions
-       │
-       │ claudecode.Spawn()
-       ▼
-Claude Code CLI process
-```
-
----
-
-## Future Directions
-
-- **Context Systems**: Build memory/RAG on top of persisted conversations
-- **Multi-Agent Coordination**: Route tasks to best-fit harness automatically
-- **Cost Tracking**: Per-agent, per-task budget enforcement across harnesses
-- **Replay Debugging**: Step through agent sessions like a debugger
-- **Codex Runner**: Full implementation once Codex CLI stabilizes
-- **MySQL Replicator**: Async replication to external database for redundancy

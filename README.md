@@ -68,13 +68,38 @@ ath plugin             # manage integrations
 
 ## architecture
 
+multiple features run in parallel. each gets its own worktree and agent. the merge queue keeps them ordered.
+
+```mermaid
+graph TD
+    subgraph pm ["project management"]
+        Linear["Linear"] --> Goals
+        Jira["Jira"] --> Goals
+        Goals["Goals"]
+    end
+
+    Goals --> F1["Feature A"]
+    Goals --> F2["Feature B"]
+    Goals --> F3["Feature C"]
+
+    subgraph parallel ["parallel development"]
+        F1 --> W1["Worktree A"] --> A1["Agent A<br/><i>working</i>"]
+        F2 --> W2["Worktree B"] --> A2["Agent B<br/><i>PR review</i>"]
+        F3 --> W3["Worktree C"] --> A3["Agent C<br/><i>done</i>"]
+    end
+
+    subgraph queue ["merge queue → main"]
+        Q1["#1 Feature C ✓"]
+        Q2["#2 Feature B ⏳"]
+        Q3["#3 Feature A 🔨"]
+    end
+
+    A3 --> Q1
+    A2 -.-> Q2
+    A1 -.-> Q3
 ```
-ath CLI ──→ athenad (daemon) ──→ sqlite
-               │
-               ├── spawns agents with CLAUDE_CODE_TASK_LIST_ID
-               ├── watches ~/.claude/tasks/<feature-id>/
-               └── plugins: github, gitlab, linear, jira
-```
+
+see [docs/architecture.md](docs/architecture.md) for detailed diagrams: sequence flows, lifecycle states, data model, and system components.
 
 data stays local. sqlite, not a vendor's session history.
 
