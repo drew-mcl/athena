@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0](https://github.com/drew-mcl/athena/compare/athena-v0.6.0...athena-v1.0.0) (2026-02-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* The Bubble Tea TUI dashboard has been removed. Athena is now a CLI-first tool (`ath`) that wraps Claude Code's native orchestration. The daemon API, work item model, and plugin interfaces have been redesigned around spawn-based workflows with worktrees, merge queue, and PM integration.
+
+### v1.0
+
+* unified spawn, plugins, cleanup ([#51](https://github.com/drew-mcl/athena/issues/51)) ([dc024a0](https://github.com/drew-mcl/athena/commit/dc024a0a7b81cbe586de231efa632ecb0e167ea5))
+
+
+### Features
+
+* **cli:** add ath CLI with beautiful output styling ([#43](https://github.com/drew-mcl/athena/issues/43)) ([f2472ad](https://github.com/drew-mcl/athena/commit/f2472ad5c1d4353eab4c2cf5163128da96280770))
+* **cli:** extract styles, add git status caching and work items API ([#45](https://github.com/drew-mcl/athena/issues/45)) ([71eda8e](https://github.com/drew-mcl/athena/commit/71eda8ef4fd52a9f563c95b5cca2198ba4795e18))
+* **queue:** add merge queue system with plugin architecture ([#47](https://github.com/drew-mcl/athena/issues/47)) ([473780d](https://github.com/drew-mcl/athena/commit/473780dc26cf3b8fe94e5fddb8bd0f35c1acd9c8))
+* **queue:** improve merge queue with queue head and worktree integration ([#50](https://github.com/drew-mcl/athena/issues/50)) ([2771897](https://github.com/drew-mcl/athena/commit/2771897300f440d824aee3c1c028a71faaf0df3b))
+* **wt:** add comprehensive worktree pruning ([#46](https://github.com/drew-mcl/athena/issues/46)) ([8a8a1db](https://github.com/drew-mcl/athena/commit/8a8a1db14e446e7ac9864bee2a9dcfc1f46203d9))
+
 ## [0.6.0](https://github.com/drew-mcl/athena/compare/athena-v0.5.0...athena-v0.6.0) (2026-01-27)
 
 
