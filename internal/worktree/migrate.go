@@ -383,7 +383,7 @@ func (m *Migrator) createTodoFile(worktreePath string, opts CreateWorktreeOption
 	content.WriteString("3. Check queue status: `ath queue`\n\n")
 	content.WriteString("If you need to fix something after adding to queue:\n")
 	content.WriteString("1. Make your changes\n")
-	content.WriteString("2. Run `ath queue bump` to move to back and auto-rebase dependents\n")
+	content.WriteString("2. Run `ath queue bump` to refresh head and reconcile dependents\n")
 	content.WriteString("3. If conflicts occur, resolve them and continue\n")
 
 	content.WriteString("\n---\n")
