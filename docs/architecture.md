@@ -202,6 +202,47 @@ graph LR
 
 when you edit an earlier feature and run `ath queue bump`, dependents are automatically reconciled.
 
+## pm integration
+
+athena maps external PM hierarchies into its work item model. ticket type is detected automatically on spawn.
+
+```mermaid
+graph LR
+    subgraph jira ["Jira"]
+        JE["Epic"] --> JS["Story"]
+        JE --> JT["Task"]
+        JE --> JB["Bug"]
+    end
+
+    subgraph linear ["Linear"]
+        LP["Project"] --> LI["Issue"]
+        LI --> LS["Sub-issue"]
+    end
+
+    subgraph athena ["Athena Work Items"]
+        Goal["Goal<br/><i>strategic objective</i>"]
+        Feature["Feature<br/><i>worktree + agent + PR</i>"]
+        Task["Task<br/><i>claude code native</i>"]
+        Goal --> Feature
+        Feature --> Task
+    end
+
+    JE -.->|"ath spawn PROJ-100"| Goal
+    JS -.->|"ath spawn ENG-456"| Feature
+    JT -.-> Feature
+    JB -.-> Feature
+
+    LP -.-> Goal
+    LI -.-> Feature
+    LS -.-> Task
+
+    style Goal fill:#2d5a2d,color:#fff
+    style Feature fill:#2d2d5a,color:#fff
+    style Task fill:#3a3a3a,color:#fff
+```
+
+spawning an epic creates the goal and a feature for each child story. spawning a story creates a feature and auto-links the parent epic as a goal.
+
 ## data model
 
 ```mermaid

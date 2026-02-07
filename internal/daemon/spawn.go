@@ -273,7 +273,8 @@ func (d *Daemon) findMainRepoPath(project string) (string, error) {
 	return "", fmt.Errorf("no main repo found for project %q", project)
 }
 
-// resolveTicket looks up a ticket via PM plugins and creates a goal work item.
+// resolveTicket looks up a ticket via PM plugins and creates work items based on issue type.
+// Epics become Goals with child Features; Stories/Tasks become Features under their parent Goal.
 func (d *Daemon) resolveTicket(ticketID, project string) (*store.WorkItem, string, error) {
 	// Check if we already have a work item for this ticket
 	existing, err := d.store.GetWorkItemByTicket(ticketID)
@@ -287,40 +288,163 @@ func (d *Daemon) resolveTicket(ticketID, project string) (*store.WorkItem, strin
 
 	// Try PM plugins to fetch ticket details
 	var issue *pm.Issue
+	var provider pm.Provider
 	pmPlugins := d.pluginRegistry().GetEnabledByCategory(plugin.CategoryPM)
 	for _, p := range pmPlugins {
-		provider, ok := p.(pm.Provider)
+		prov, ok := p.(pm.Provider)
 		if !ok {
 			continue
 		}
-		fetched, err := provider.GetIssue(context.Background(), ticketID)
+		fetched, err := prov.GetIssue(context.Background(), ticketID)
 		if err == nil && fetched != nil {
 			issue = fetched
+			provider = prov
 			break
 		}
 	}
 
-	// Build work item from ticket
-	subject := ticketID
-	description := ""
-	ticketContext := fmt.Sprintf("## Ticket: %s\n", ticketID)
+	ticketContext := buildTicketContext(ticketID, issue)
 
-	if issue != nil {
-		subject = issue.Title
-		description = issue.Description
-		ticketContext = fmt.Sprintf("## Ticket: %s\n**Title:** %s\n", issue.Key, issue.Title)
-		if issue.Description != "" {
-			ticketContext += fmt.Sprintf("**Description:** %s\n", issue.Description)
-		}
-		if issue.Priority > 0 {
-			ticketContext += fmt.Sprintf("**Priority:** %d\n", issue.Priority)
-		}
-		if len(issue.Labels) > 0 {
-			ticketContext += fmt.Sprintf("**Labels:** %s\n", strings.Join(issue.Labels, ", "))
+	// Route based on issue type
+	switch {
+	case issue != nil && issue.Type == pm.IssueTypeEpic:
+		return d.resolveEpicTicket(issue, provider, project, ticketContext)
+	case issue != nil && (issue.Type == pm.IssueTypeStory || issue.Type == pm.IssueTypeTask || issue.Type == pm.IssueTypeBug):
+		return d.resolveStoryTicket(issue, provider, project, ticketContext)
+	default:
+		return d.resolveUnknownTicket(ticketID, issue, project, ticketContext)
+	}
+}
+
+// resolveEpicTicket creates a Goal from an epic and Features from its children.
+func (d *Daemon) resolveEpicTicket(issue *pm.Issue, provider pm.Provider, project, ticketContext string) (*store.WorkItem, string, error) {
+	goalID, err := d.store.GenerateWorkItemID("")
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate work item ID: %w", err)
+	}
+
+	ticketRef := issue.Key
+	goal := &store.WorkItem{
+		ID:          goalID,
+		Project:     project,
+		ItemType:    store.WorkItemTypeGoal,
+		Subject:     issue.Title,
+		Description: issue.Description,
+		Status:      store.WorkItemStatusInProgress,
+		TicketID:    &ticketRef,
+	}
+
+	if err := d.store.CreateWorkItem(goal); err != nil {
+		return nil, "", fmt.Errorf("failed to create goal: %w", err)
+	}
+
+	// Create features from children if available
+	if provider != nil && len(issue.Children) > 0 {
+		for _, childKey := range issue.Children {
+			childIssue, err := provider.GetIssue(context.Background(), childKey)
+			if err != nil {
+				logging.Info("skipping child issue", "key", childKey, "error", err)
+				continue
+			}
+
+			featureID, err := d.store.GenerateWorkItemID(goalID)
+			if err != nil {
+				logging.Info("skipping child issue", "key", childKey, "error", err)
+				continue
+			}
+
+			childRef := childKey
+			feature := &store.WorkItem{
+				ID:          featureID,
+				Project:     project,
+				ItemType:    store.WorkItemTypeFeature,
+				ParentID:    &goalID,
+				Subject:     childIssue.Title,
+				Description: childIssue.Description,
+				Status:      store.WorkItemStatusPending,
+				TicketID:    &childRef,
+			}
+			if err := d.store.CreateWorkItem(feature); err != nil {
+				logging.Info("failed to create feature from child", "key", childKey, "error", err)
+			}
 		}
 	}
 
-	// Create goal work item
+	logging.Info("created goal from epic", "ticket", issue.Key, "goal", goalID, "children", len(issue.Children))
+	return goal, ticketContext, nil
+}
+
+// resolveStoryTicket creates a Feature, optionally under a parent Goal from the epic.
+func (d *Daemon) resolveStoryTicket(issue *pm.Issue, provider pm.Provider, project, ticketContext string) (*store.WorkItem, string, error) {
+	var parentGoalID *string
+
+	// If the story has a parent epic, look up or create the Goal
+	if issue.ParentKey != "" && provider != nil {
+		parentGoal, err := d.store.GetWorkItemByTicket(issue.ParentKey)
+		if err == nil && parentGoal != nil {
+			parentGoalID = &parentGoal.ID
+		} else {
+			// Create a goal from the parent epic
+			parentIssue, err := provider.GetIssue(context.Background(), issue.ParentKey)
+			if err == nil && parentIssue != nil {
+				goalID, err := d.store.GenerateWorkItemID("")
+				if err == nil {
+					parentRef := issue.ParentKey
+					goal := &store.WorkItem{
+						ID:          goalID,
+						Project:     project,
+						ItemType:    store.WorkItemTypeGoal,
+						Subject:     parentIssue.Title,
+						Description: parentIssue.Description,
+						Status:      store.WorkItemStatusInProgress,
+						TicketID:    &parentRef,
+					}
+					if err := d.store.CreateWorkItem(goal); err == nil {
+						parentGoalID = &goalID
+						logging.Info("created parent goal from epic", "ticket", issue.ParentKey, "goal", goalID)
+					}
+				}
+			}
+		}
+	}
+
+	featureID, err := d.store.GenerateWorkItemID("")
+	if parentGoalID != nil {
+		featureID, err = d.store.GenerateWorkItemID(*parentGoalID)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate work item ID: %w", err)
+	}
+
+	ticketRef := issue.Key
+	feature := &store.WorkItem{
+		ID:          featureID,
+		Project:     project,
+		ItemType:    store.WorkItemTypeFeature,
+		ParentID:    parentGoalID,
+		Subject:     issue.Title,
+		Description: issue.Description,
+		Status:      store.WorkItemStatusInProgress,
+		TicketID:    &ticketRef,
+	}
+
+	if err := d.store.CreateWorkItem(feature); err != nil {
+		return nil, "", fmt.Errorf("failed to create feature: %w", err)
+	}
+
+	logging.Info("created feature from story", "ticket", issue.Key, "feature", featureID, "parent_goal", parentGoalID)
+	return feature, ticketContext, nil
+}
+
+// resolveUnknownTicket falls back to creating a Goal (original behavior).
+func (d *Daemon) resolveUnknownTicket(ticketID string, issue *pm.Issue, project, ticketContext string) (*store.WorkItem, string, error) {
+	subject := ticketID
+	description := ""
+	if issue != nil {
+		subject = issue.Title
+		description = issue.Description
+	}
+
 	id, err := d.store.GenerateWorkItemID("")
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate work item ID: %w", err)
@@ -343,6 +467,34 @@ func (d *Daemon) resolveTicket(ticketID, project string) (*store.WorkItem, strin
 
 	logging.Info("created goal work item from ticket", "ticket", ticketID, "work_item", id)
 	return workItem, ticketContext, nil
+}
+
+// buildTicketContext builds the markdown context string for a ticket.
+func buildTicketContext(ticketID string, issue *pm.Issue) string {
+	if issue == nil {
+		return fmt.Sprintf("## Ticket: %s\n", ticketID)
+	}
+
+	ctx := fmt.Sprintf("## Ticket: %s\n**Title:** %s\n", issue.Key, issue.Title)
+	if issue.Type != pm.IssueTypeUnknown {
+		ctx += fmt.Sprintf("**Type:** %s\n", issue.Type)
+	}
+	if issue.Description != "" {
+		ctx += fmt.Sprintf("**Description:** %s\n", issue.Description)
+	}
+	if issue.Priority > 0 {
+		ctx += fmt.Sprintf("**Priority:** %d\n", issue.Priority)
+	}
+	if len(issue.Labels) > 0 {
+		ctx += fmt.Sprintf("**Labels:** %s\n", strings.Join(issue.Labels, ", "))
+	}
+	if issue.ParentKey != "" {
+		ctx += fmt.Sprintf("**Parent:** %s\n", issue.ParentKey)
+	}
+	if len(issue.Children) > 0 {
+		ctx += fmt.Sprintf("**Children:** %s\n", strings.Join(issue.Children, ", "))
+	}
+	return ctx
 }
 
 // buildSpawnPrompt constructs the system prompt injected via --append-system-prompt.

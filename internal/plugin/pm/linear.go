@@ -105,18 +105,32 @@ type linearIssueNode struct {
 	Team *struct {
 		Key string `json:"key"`
 	} `json:"team"`
+	Parent *struct {
+		ID         string `json:"id"`
+		Identifier string `json:"identifier"`
+	} `json:"parent"`
+	Project *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"project"`
+	Children struct {
+		Nodes []struct {
+			Identifier string `json:"identifier"`
+		} `json:"nodes"`
+	} `json:"children"`
 }
 
 func (n *linearIssueNode) toIssue() *Issue {
 	issue := &Issue{
-		ID:        n.ID,
-		Key:       n.Identifier,
-		Title:     n.Title,
+		ID:          n.ID,
+		Key:         n.Identifier,
+		Title:       n.Title,
 		Description: n.Description,
-		Priority:  Priority(n.Priority),
-		URL:       n.URL,
-		CreatedAt: n.CreatedAt,
-		UpdatedAt: n.UpdatedAt,
+		Priority:    Priority(n.Priority),
+		URL:         n.URL,
+		CreatedAt:   n.CreatedAt,
+		UpdatedAt:   n.UpdatedAt,
+		Type:        IssueTypeStory, // default: Linear issues map to stories
 	}
 	if n.State != nil {
 		issue.State = linearStateToIssueState(n.State.Name)
@@ -129,6 +143,21 @@ func (n *linearIssueNode) toIssue() *Issue {
 		labels = append(labels, lbl.Name)
 	}
 	issue.Labels = labels
+
+	// Hierarchy: sub-issues have a parent, top-level issues are stories
+	if n.Parent != nil {
+		issue.ParentKey = n.Parent.Identifier
+		issue.Type = IssueTypeTask // child issues are tasks
+	}
+
+	// Collect child identifiers
+	if len(n.Children.Nodes) > 0 {
+		issue.Children = make([]string, len(n.Children.Nodes))
+		for i, child := range n.Children.Nodes {
+			issue.Children[i] = child.Identifier
+		}
+	}
+
 	return issue
 }
 
@@ -146,6 +175,9 @@ const issueFields = `
 	assignee { name }
 	labels { nodes { name } }
 	team { key }
+	parent { id identifier }
+	project { id name }
+	children { nodes { identifier } }
 `
 
 func (l *Linear) GetIssue(ctx context.Context, issueKey string) (*Issue, error) {
@@ -317,6 +349,121 @@ func (l *Linear) UpdateIssueState(ctx context.Context, issueKey string, state Is
 		return fmt.Errorf("linear: state update failed for %s", issueKey)
 	}
 	return nil
+}
+
+// linearProjectNode maps a Linear Project to an Issue with IssueTypeEpic.
+type linearProjectNode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
+	StartDate   string `json:"startDate"`
+	TargetDate  string `json:"targetDate"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
+	Issues      struct {
+		Nodes []struct {
+			Identifier string `json:"identifier"`
+		} `json:"nodes"`
+	} `json:"issues"`
+}
+
+func (p *linearProjectNode) toIssue() *Issue {
+	issue := &Issue{
+		ID:          p.ID,
+		Key:         p.ID, // Linear projects use UUID, not identifiers like ENG-123
+		Title:       p.Name,
+		Description: p.Description,
+		URL:         p.URL,
+		Type:        IssueTypeEpic,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
+	}
+	if len(p.Issues.Nodes) > 0 {
+		issue.Children = make([]string, len(p.Issues.Nodes))
+		for i, child := range p.Issues.Nodes {
+			issue.Children[i] = child.Identifier
+		}
+	}
+	return issue
+}
+
+const projectFields = `
+	id
+	name
+	description
+	url
+	state
+	startDate
+	targetDate
+	createdAt
+	updatedAt
+	issues { nodes { identifier } }
+`
+
+func (l *Linear) GetEpic(ctx context.Context, epicKey string) (*Issue, error) {
+	data, err := l.do(ctx, graphQLRequest{
+		Query: `query($id: String!) {
+			project(id: $id) {` + projectFields + `}
+		}`,
+		Variables: map[string]any{"id": epicKey},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Project *linearProjectNode `json:"project"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("linear: decode project: %w", err)
+	}
+	if result.Project == nil {
+		return nil, fmt.Errorf("linear: project not found: %s", epicKey)
+	}
+	return result.Project.toIssue(), nil
+}
+
+func (l *Linear) ListEpics(ctx context.Context, project string) ([]*Issue, error) {
+	// Resolve team ID from team key to filter projects by team.
+	teamID, err := l.resolveTeamID(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("linear: resolve team for epics: %w", err)
+	}
+
+	data, err := l.do(ctx, graphQLRequest{
+		Query: `query($filter: ProjectFilter) {
+			projects(filter: $filter, first: 50) {
+				nodes {` + projectFields + `}
+			}
+		}`,
+		Variables: map[string]any{
+			"filter": map[string]any{
+				"accessibleTeams": map[string]any{
+					"id": map[string]any{"eq": teamID},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Projects struct {
+			Nodes []linearProjectNode `json:"nodes"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("linear: decode projects: %w", err)
+	}
+
+	issues := make([]*Issue, len(result.Projects.Nodes))
+	for i := range result.Projects.Nodes {
+		issues[i] = result.Projects.Nodes[i].toIssue()
+	}
+	return issues, nil
 }
 
 func (l *Linear) LinkPR(ctx context.Context, issueKey, prURL string) error {

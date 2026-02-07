@@ -103,6 +103,12 @@ type jiraIssue struct {
 				Key string `json:"key"`
 			} `json:"statusCategory"`
 		} `json:"status"`
+		IssueType *struct {
+			Name string `json:"name"`
+		} `json:"issuetype"`
+		Parent *struct {
+			Key string `json:"key"`
+		} `json:"parent"`
 		Priority *struct {
 			Name string `json:"name"`
 		} `json:"priority"`
@@ -122,7 +128,7 @@ func (j *Jira) GetIssue(ctx context.Context, issueKey string) (*Issue, error) {
 	}
 
 	data, err := jiraRequest(ctx, cfg, http.MethodGet,
-		"/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,priority,assignee,labels,created,updated", nil)
+		"/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,issuetype,parent,priority,assignee,labels,created,updated", nil)
 	if err != nil {
 		return nil, fmt.Errorf("get issue %s: %w", issueKey, err)
 	}
@@ -150,7 +156,7 @@ func (j *Jira) ListIssues(ctx context.Context, project string, state IssueState)
 	}
 
 	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
-		"&fields=summary,description,status,priority,assignee,labels,created,updated&maxResults=50"
+		"&fields=summary,description,status,issuetype,parent,priority,assignee,labels,created,updated&maxResults=50"
 
 	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
 	if err != nil {
@@ -184,13 +190,14 @@ func (j *Jira) CreateIssue(ctx context.Context, issue *Issue) (*Issue, error) {
 		return nil, fmt.Errorf("issue Key must be set to the Jira project key (e.g., \"ENG\")")
 	}
 
+	issueTypeName := issueTypeToJiraName(issue.Type)
 	payload := map[string]interface{}{
 		"fields": map[string]interface{}{
 			"project": map[string]string{
 				"key": projectKey,
 			},
 			"summary":   issue.Title,
-			"issuetype": map[string]string{"name": "Task"},
+			"issuetype": map[string]string{"name": issueTypeName},
 		},
 	}
 
@@ -325,6 +332,15 @@ func jiraIssueToIssue(ji *jiraIssue, baseURL string) *Issue {
 		CreatedAt: ji.Fields.Created,
 		UpdatedAt: ji.Fields.Updated,
 		URL:       baseURL + "/browse/" + ji.Key,
+		Type:      IssueTypeUnknown,
+	}
+
+	if ji.Fields.IssueType != nil {
+		issue.Type = jiraIssueTypeToIssueType(ji.Fields.IssueType.Name)
+	}
+
+	if ji.Fields.Parent != nil {
+		issue.ParentKey = ji.Fields.Parent.Key
 	}
 
 	// Extract plain text from ADF description
@@ -377,6 +393,109 @@ func issueStateToJiraCategory(state IssueState) string {
 		return "done"
 	default:
 		return ""
+	}
+}
+
+// GetEpic fetches a Jira issue by key, verifies it's an Epic, and populates its children.
+func (j *Jira) GetEpic(ctx context.Context, epicKey string) (*Issue, error) {
+	issue, err := j.GetIssue(ctx, epicKey)
+	if err != nil {
+		return nil, err
+	}
+	if issue.Type != IssueTypeEpic {
+		return nil, fmt.Errorf("issue %s is a %s, not an epic", epicKey, issue.Type)
+	}
+
+	// Fetch child issues via JQL
+	cfg, err := getJiraConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	jql := fmt.Sprintf(`"Epic Link" = %s ORDER BY created ASC`, epicKey)
+	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
+		"&fields=summary,status,issuetype,parent&maxResults=100"
+
+	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list epic children for %s: %w", epicKey, err)
+	}
+
+	var result struct {
+		Issues []jiraIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	issue.Children = make([]string, len(result.Issues))
+	for i, child := range result.Issues {
+		issue.Children[i] = child.Key
+	}
+
+	return issue, nil
+}
+
+// ListEpics returns all epics in a Jira project.
+func (j *Jira) ListEpics(ctx context.Context, project string) ([]*Issue, error) {
+	cfg, err := getJiraConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	jql := fmt.Sprintf("project = %q AND issuetype = Epic ORDER BY updated DESC", project)
+	path := "/rest/api/3/search?jql=" + strings.ReplaceAll(jql, " ", "+") +
+		"&fields=summary,description,status,issuetype,parent,priority,assignee,labels,created,updated&maxResults=50"
+
+	data, err := jiraRequest(ctx, cfg, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list epics: %w", err)
+	}
+
+	var result struct {
+		Issues []jiraIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	issues := make([]*Issue, len(result.Issues))
+	for i := range result.Issues {
+		issues[i] = jiraIssueToIssue(&result.Issues[i], cfg.baseURL)
+	}
+
+	return issues, nil
+}
+
+// jiraIssueTypeToIssueType maps Jira issue type names to IssueType.
+func jiraIssueTypeToIssueType(name string) IssueType {
+	switch strings.ToLower(name) {
+	case "epic":
+		return IssueTypeEpic
+	case "story":
+		return IssueTypeStory
+	case "task", "sub-task", "subtask":
+		return IssueTypeTask
+	case "bug":
+		return IssueTypeBug
+	default:
+		return IssueTypeUnknown
+	}
+}
+
+// issueTypeToJiraName maps IssueType to a Jira issue type name for creation.
+func issueTypeToJiraName(t IssueType) string {
+	switch t {
+	case IssueTypeEpic:
+		return "Epic"
+	case IssueTypeStory:
+		return "Story"
+	case IssueTypeBug:
+		return "Bug"
+	case IssueTypeTask:
+		return "Task"
+	default:
+		return "Task"
 	}
 }
 

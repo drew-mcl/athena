@@ -188,6 +188,12 @@ func TestJiraIssueToIssue(t *testing.T) {
 	ji.Fields.Assignee = &struct {
 		DisplayName string `json:"displayName"`
 	}{DisplayName: "Alice"}
+	ji.Fields.IssueType = &struct {
+		Name string `json:"name"`
+	}{Name: "Story"}
+	ji.Fields.Parent = &struct {
+		Key string `json:"key"`
+	}{Key: "ENG-100"}
 
 	issue := jiraIssueToIssue(ji, "https://test.atlassian.net")
 
@@ -214,6 +220,12 @@ func TestJiraIssueToIssue(t *testing.T) {
 	}
 	if len(issue.Labels) != 2 {
 		t.Errorf("Labels count = %d, want 2", len(issue.Labels))
+	}
+	if issue.Type != IssueTypeStory {
+		t.Errorf("Type = %q, want %q", issue.Type, IssueTypeStory)
+	}
+	if issue.ParentKey != "ENG-100" {
+		t.Errorf("ParentKey = %q, want %q", issue.ParentKey, "ENG-100")
 	}
 }
 
@@ -372,6 +384,13 @@ func TestLinearIssueNodeToIssue(t *testing.T) {
 	if len(issue.Labels) != 2 {
 		t.Errorf("Labels count = %d, want 2", len(issue.Labels))
 	}
+	// Top-level issue with no parent should be a story
+	if issue.Type != IssueTypeStory {
+		t.Errorf("Type = %q, want %q", issue.Type, IssueTypeStory)
+	}
+	if issue.ParentKey != "" {
+		t.Errorf("ParentKey = %q, want empty", issue.ParentKey)
+	}
 }
 
 func TestJiraGetIssueWithMockServer(t *testing.T) {
@@ -473,6 +492,225 @@ func TestLinearGetIssueWithMockServer(t *testing.T) {
 	}
 	if issue.State != IssueStateInProgress {
 		t.Errorf("State = %q, want %q", issue.State, IssueStateInProgress)
+	}
+}
+
+func TestJiraIssueTypeToIssueType(t *testing.T) {
+	tests := []struct {
+		name string
+		want IssueType
+	}{
+		{"Epic", IssueTypeEpic},
+		{"epic", IssueTypeEpic},
+		{"Story", IssueTypeStory},
+		{"story", IssueTypeStory},
+		{"Task", IssueTypeTask},
+		{"Sub-task", IssueTypeTask},
+		{"subtask", IssueTypeTask},
+		{"Bug", IssueTypeBug},
+		{"bug", IssueTypeBug},
+		{"Something Else", IssueTypeUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jiraIssueTypeToIssueType(tt.name)
+			if got != tt.want {
+				t.Errorf("jiraIssueTypeToIssueType(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIssueTypeToJiraName(t *testing.T) {
+	tests := []struct {
+		issueType IssueType
+		want      string
+	}{
+		{IssueTypeEpic, "Epic"},
+		{IssueTypeStory, "Story"},
+		{IssueTypeTask, "Task"},
+		{IssueTypeBug, "Bug"},
+		{IssueTypeUnknown, "Task"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.issueType), func(t *testing.T) {
+			got := issueTypeToJiraName(tt.issueType)
+			if got != tt.want {
+				t.Errorf("issueTypeToJiraName(%q) = %q, want %q", tt.issueType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJiraIssueToIssueWithType(t *testing.T) {
+	t.Run("epic with no parent", func(t *testing.T) {
+		ji := &jiraIssue{ID: "1", Key: "PROJ-100"}
+		ji.Fields.Summary = "Epic issue"
+		ji.Fields.Status.StatusCategory.Key = "new"
+		ji.Fields.IssueType = &struct {
+			Name string `json:"name"`
+		}{Name: "Epic"}
+
+		issue := jiraIssueToIssue(ji, "https://test.atlassian.net")
+		if issue.Type != IssueTypeEpic {
+			t.Errorf("Type = %q, want %q", issue.Type, IssueTypeEpic)
+		}
+		if issue.ParentKey != "" {
+			t.Errorf("ParentKey = %q, want empty", issue.ParentKey)
+		}
+	})
+
+	t.Run("story with parent epic", func(t *testing.T) {
+		ji := &jiraIssue{ID: "2", Key: "ENG-456"}
+		ji.Fields.Summary = "Story issue"
+		ji.Fields.Status.StatusCategory.Key = "indeterminate"
+		ji.Fields.IssueType = &struct {
+			Name string `json:"name"`
+		}{Name: "Story"}
+		ji.Fields.Parent = &struct {
+			Key string `json:"key"`
+		}{Key: "PROJ-100"}
+
+		issue := jiraIssueToIssue(ji, "https://test.atlassian.net")
+		if issue.Type != IssueTypeStory {
+			t.Errorf("Type = %q, want %q", issue.Type, IssueTypeStory)
+		}
+		if issue.ParentKey != "PROJ-100" {
+			t.Errorf("ParentKey = %q, want %q", issue.ParentKey, "PROJ-100")
+		}
+	})
+
+	t.Run("no issuetype defaults to unknown", func(t *testing.T) {
+		ji := &jiraIssue{ID: "3", Key: "ENG-789"}
+		ji.Fields.Summary = "Unknown type"
+		ji.Fields.Status.StatusCategory.Key = "new"
+
+		issue := jiraIssueToIssue(ji, "https://test.atlassian.net")
+		if issue.Type != IssueTypeUnknown {
+			t.Errorf("Type = %q, want %q", issue.Type, IssueTypeUnknown)
+		}
+	})
+}
+
+func TestLinearIssueNodeToIssueWithHierarchy(t *testing.T) {
+	t.Run("sub-issue has parent and task type", func(t *testing.T) {
+		node := &linearIssueNode{
+			ID:         "uuid-child",
+			Identifier: "ENG-43",
+			Title:      "Sub-issue",
+		}
+		node.Parent = &struct {
+			ID         string `json:"id"`
+			Identifier string `json:"identifier"`
+		}{ID: "uuid-parent", Identifier: "ENG-42"}
+
+		issue := node.toIssue()
+		if issue.Type != IssueTypeTask {
+			t.Errorf("Type = %q, want %q", issue.Type, IssueTypeTask)
+		}
+		if issue.ParentKey != "ENG-42" {
+			t.Errorf("ParentKey = %q, want %q", issue.ParentKey, "ENG-42")
+		}
+	})
+
+	t.Run("issue with children", func(t *testing.T) {
+		node := &linearIssueNode{
+			ID:         "uuid-parent",
+			Identifier: "ENG-42",
+			Title:      "Parent issue",
+		}
+		node.Children.Nodes = []struct {
+			Identifier string `json:"identifier"`
+		}{
+			{Identifier: "ENG-43"},
+			{Identifier: "ENG-44"},
+		}
+
+		issue := node.toIssue()
+		if issue.Type != IssueTypeStory {
+			t.Errorf("Type = %q, want %q", issue.Type, IssueTypeStory)
+		}
+		if len(issue.Children) != 2 {
+			t.Errorf("Children count = %d, want 2", len(issue.Children))
+		}
+		if issue.Children[0] != "ENG-43" {
+			t.Errorf("Children[0] = %q, want %q", issue.Children[0], "ENG-43")
+		}
+	})
+}
+
+func TestLinearProjectNodeToIssue(t *testing.T) {
+	node := &linearProjectNode{
+		ID:          "proj-uuid",
+		Name:        "Q1 Auth Project",
+		Description: "Authentication overhaul",
+		URL:         "https://linear.app/team/project/proj-uuid",
+		State:       "started",
+		CreatedAt:   "2024-01-01T00:00:00Z",
+		UpdatedAt:   "2024-06-01T00:00:00Z",
+	}
+	node.Issues.Nodes = []struct {
+		Identifier string `json:"identifier"`
+	}{
+		{Identifier: "ENG-10"},
+		{Identifier: "ENG-11"},
+		{Identifier: "ENG-12"},
+	}
+
+	issue := node.toIssue()
+
+	if issue.Type != IssueTypeEpic {
+		t.Errorf("Type = %q, want %q", issue.Type, IssueTypeEpic)
+	}
+	if issue.Title != "Q1 Auth Project" {
+		t.Errorf("Title = %q, want %q", issue.Title, "Q1 Auth Project")
+	}
+	if issue.Description != "Authentication overhaul" {
+		t.Errorf("Description = %q, want %q", issue.Description, "Authentication overhaul")
+	}
+	if len(issue.Children) != 3 {
+		t.Errorf("Children count = %d, want 3", len(issue.Children))
+	}
+	if issue.Children[0] != "ENG-10" {
+		t.Errorf("Children[0] = %q, want %q", issue.Children[0], "ENG-10")
+	}
+}
+
+func TestJiraGetIssueWithTypeFromMockServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := jiraIssue{
+			ID:  "10001",
+			Key: "PROJ-100",
+		}
+		resp.Fields.Summary = "Epic issue"
+		resp.Fields.Status.StatusCategory.Key = "new"
+		resp.Fields.IssueType = &struct {
+			Name string `json:"name"`
+		}{Name: "Epic"}
+
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	os.Setenv("JIRA_URL", server.URL)
+	os.Setenv("JIRA_EMAIL", "test@example.com")
+	os.Setenv("JIRA_API_TOKEN", "token123")
+	defer func() {
+		os.Unsetenv("JIRA_URL")
+		os.Unsetenv("JIRA_EMAIL")
+		os.Unsetenv("JIRA_API_TOKEN")
+	}()
+
+	j := NewJira()
+	issue, err := j.GetIssue(context.Background(), "PROJ-100")
+	if err != nil {
+		t.Fatalf("GetIssue() error: %v", err)
+	}
+
+	if issue.Type != IssueTypeEpic {
+		t.Errorf("Type = %q, want %q", issue.Type, IssueTypeEpic)
 	}
 }
 
