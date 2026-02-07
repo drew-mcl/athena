@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,120 +8,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/drewfead/athena/internal/control"
 )
 
-// Scratchpad entry
-type ScratchpadEntry struct {
-	ID        string    `json:"id"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func getScratchpadPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "athena", "scratchpad.json")
-}
-
-func loadScratchpad() ([]ScratchpadEntry, error) {
-	path := getScratchpadPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var entries []ScratchpadEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func saveScratchpad(entries []ScratchpadEntry) error {
-	path := getScratchpadPath()
-	os.MkdirAll(filepath.Dir(path), 0755)
-
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-func runSpList() error {
-	entries, err := loadScratchpad()
-	if err != nil {
-		return err
-	}
-
-	if len(entries) == 0 {
-		fmt.Println(gray + "Scratchpad empty. Add ideas with: ath sp \"your idea\"" + reset)
-		return nil
-	}
-
-	fmt.Println(bold + "Scratchpad" + reset)
-	fmt.Println(gray + strings.Repeat("─", 60) + reset)
-
-	for i, entry := range entries {
-		// Format timestamp
-		ts := entry.CreatedAt.Format("Jan 2 15:04")
-
-		// Print entry number and timestamp
-		fmt.Printf("%s#%d%s  %s%s%s\n", yellow, i+1, reset, gray, ts, reset)
-
-		// Print content with nice formatting
-		lines := strings.Split(entry.Content, "\n")
-		for _, line := range lines {
-			if line != "" {
-				fmt.Printf("  %s\n", line)
-			} else {
-				fmt.Println()
-			}
-		}
-		fmt.Println()
-	}
-
-	return nil
-}
-
-func runSpAdd(text string) error {
-	entries, err := loadScratchpad()
-	if err != nil {
-		return err
-	}
-
-	// Check if input is from pipe (multi-line)
-	stat, _ := os.Stdin.Stat()
-	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		// Reading from pipe
-		scanner := bufio.NewScanner(os.Stdin)
-		var lines []string
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-		}
-		if len(lines) > 0 {
-			text = strings.Join(lines, "\n")
-		}
-	}
-
-	entry := ScratchpadEntry{
-		ID:        fmt.Sprintf("sp-%d", time.Now().UnixNano()),
-		Content:   text,
-		CreatedAt: time.Now(),
-	}
-
-	entries = append(entries, entry)
-
-	if err := saveScratchpad(entries); err != nil {
-		return err
-	}
-
-	fmt.Printf("%sAdded to scratchpad%s (#%d)\n", green, reset, len(entries))
+// runSpawn starts an interactive agent session in the current directory.
+func runSpawn(worktree, prompt string, headless, plan, verbose, dryRun bool) error {
+	fmt.Println(bold + "Starting interactive agent..." + reset)
+	fmt.Println(gray + "(Interactive agent spawning coming soon)" + reset)
 	return nil
 }
 
@@ -861,7 +754,7 @@ var availablePlugins = []struct {
 	{"github", "vcs", "GitHub - PRs, CI/CD via gh CLI"},
 	{"gitlab", "vcs", "GitLab - MRs, CI/CD via glab CLI"},
 	{"linear", "pm", "Linear - Issue tracking"},
-	{"jira", "pm", "Jira - Issue tracking (coming soon)"},
+	{"jira", "pm", "Jira - Issue tracking via REST API"},
 }
 
 // Plugin state stored in config file

@@ -1,11 +1,9 @@
-// Command ath is a CLI for quick work item management.
-// Unlike 'athena' (TUI), 'ath' is optimized for fast terminal commands.
+// Command ath is a CLI for work item management and agent interaction.
 package main
 
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
@@ -36,9 +34,6 @@ var rootCmd = &cobra.Command{
 	Short: "Quick CLI for Athena work items",
 	Long: `ath - Fast work item management for Athena.
 
-Use 'athena' for the full TUI dashboard.
-Use 'ath' for quick CLI commands.
-
 Work Item Hierarchy:
   Goal     □  - Strategic objectives (no worktree)     [blue]
   Feature  ◇  - PR-sized work (has worktree)           [green]
@@ -47,7 +42,7 @@ Work Item Hierarchy:
 Shorthand Commands:
   g  → goal      t  → tsk       tr → tree
   f  → feat      w  → wt        q  → queue
-  s  → sp        p  → plugin
+  i  → interactive              p  → plugin
 
 Display:
   Shape colors indicate item type (blue/green/yellow)
@@ -57,6 +52,7 @@ Display:
 
 Examples:
   ath                           # Status summary
+  ath i                         # Interactive agent in current dir
   ath tr                        # Full work item tree
   ath g new "Auth system"       # Create goal
   ath f new wi-a3f8 "OAuth"     # Create feature under goal
@@ -372,9 +368,6 @@ func init() {
 	// Worktree subcommands
 	wtCmd.AddCommand(wtPruneCmd)
 
-	// Scratchpad flags
-	spCmd.Flags().BoolP("edit", "e", false, "Open scratchpad in editor")
-
 	// Queue flags
 	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
 	queueHeadCmd.Flags().StringP("project", "p", "", "Project name")
@@ -383,32 +376,15 @@ func init() {
 	// Plugin commands
 	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spCmd, queueCmd, pluginCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, queueCmd, pluginCmd, interactiveCmd)
 }
 
-// Scratchpad command
-var spCmd = &cobra.Command{
-	Use:     "sp [text...]",
-	Aliases: []string{"s"},
-	Short:   "Scratchpad for quick ideas",
-	Long: `Quick scratchpad for jotting down ideas.
-
-With no args: show all scratchpad entries
-With text: add a new entry
-
-Examples:
-  ath sp                     # Show scratchpad
-  ath sp "my idea here"      # Add entry
-  ath sp -e                  # Open in editor (coming soon)
-
-Entries can be multi-line. Use quotes for text with spaces.
-Later, use an agent to organize entries into goals/features.`,
+// Interactive command - spawn an interactive agent in the current directory
+var interactiveCmd = &cobra.Command{
+	Use:     "i",
+	Aliases: []string{"interactive"},
+	Short:   "Start an interactive agent in the current directory",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			return runSpList()
-		}
-		// Join all args as one entry
-		text := strings.Join(args, " ")
-		return runSpAdd(text)
+		return runSpawn("", "", false, false, false, false)
 	},
 }
