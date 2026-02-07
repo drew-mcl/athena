@@ -420,6 +420,7 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_agent_logs", d.handleGetAgentLogs)
 	d.server.Handle("spawn_agent", d.handleSpawnAgent)
 	d.server.Handle("spawn_chat", d.handleSpawnChat)
+	d.server.Handle("spawn", d.handleSpawn)
 	d.server.Handle("kill_agent", d.handleKillAgent)
 	d.server.Handle("list_worktrees", d.handleListWorktrees)
 	d.server.Handle("create_worktree", d.handleCreateWorktree)
@@ -1038,7 +1039,7 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 		}
 
 		// Check merge queue for integration HEAD
-		queueBranch, _, err := d.store.GetQueueHead(projectName)
+		queueBranch, _, err := d.getIntegrationHead(projectName)
 		if err == nil && queueBranch != "" {
 			startPoint = queueBranch
 			logging.Info("using queue head as start point", "branch", queueBranch, "project", projectName)

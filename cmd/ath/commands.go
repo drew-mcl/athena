@@ -8,15 +8,123 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/drewfead/athena/internal/control"
 )
 
-// runSpawn starts an interactive agent session in the current directory.
-func runSpawn(worktree, prompt string, headless, plan, verbose, dryRun bool) error {
-	fmt.Println(bold + "Starting interactive agent..." + reset)
-	fmt.Println(gray + "(Interactive agent spawning coming soon)" + reset)
-	return nil
+// ============================================================================
+// Spawn Command
+// ============================================================================
+
+// isTicketID detects ticket-like IDs: letters + hyphen + numbers (e.g. ENG-123, PROJ-45)
+func isTicketID(id string) bool {
+	parts := strings.SplitN(id, "-", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	prefix, number := parts[0], parts[1]
+	if len(prefix) < 2 || len(prefix) > 10 {
+		return false
+	}
+	// Prefix must be all letters
+	for _, c := range prefix {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			return false
+		}
+	}
+	// Number part must start with a digit
+	if len(number) == 0 || number[0] < '0' || number[0] > '9' {
+		return false
+	}
+	return true
+}
+
+// isWorkItemID detects work item IDs: starts with "wi-" (e.g. wi-a3f8, wi-a3f8.1)
+func isWorkItemID(id string) bool {
+	return strings.HasPrefix(id, "wi-")
+}
+
+func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	project := detectProject()
+	cwd, _ := os.Getwd()
+
+	req := control.SpawnRequest{
+		Project:  project,
+		Retrieve: retrieve,
+		Headless: headless,
+		Worktree: worktree,
+		Parallel: parallel,
+		WorkDir:  cwd,
+	}
+
+	// Feature flag takes priority
+	if featureID != "" {
+		req.FeatureID = featureID
+	} else if id != "" {
+		// Classify the positional ID argument
+		if isWorkItemID(id) {
+			req.WorkItemID = id
+		} else {
+			// Treat as ticket ID
+			req.TicketID = strings.ToUpper(id)
+		}
+	}
+
+	resp, err := client.Spawn(req)
+	if err != nil {
+		return err
+	}
+
+	// Print context summary
+	if headless && resp.Agent != nil {
+		fmt.Printf("%s%s%s Spawned agent %s%s%s\n", green, checkMark, reset, magenta, resp.Agent.ID[:8], reset)
+	} else {
+		fmt.Printf("%s%s%s Launching Claude Code\n", green, checkMark, reset)
+	}
+	fmt.Printf("  Work item: %s%s%s  %s\n", magenta, resp.WorkItem.ID, reset, resp.WorkItem.Subject)
+	fmt.Printf("  Task list: %s%s%s\n", gray, resp.TaskListID, reset)
+	if resp.Worktree != nil {
+		fmt.Printf("  Worktree:  %s%s%s\n", cyan, resp.Worktree.Path, reset)
+	}
+	fmt.Println()
+
+	if headless {
+		fmt.Println(dim + "Check progress: ath tree " + resp.WorkItem.ID + reset)
+		return nil
+	}
+
+	if len(resp.ExecArgs) == 0 {
+		return fmt.Errorf("daemon returned no exec args for interactive mode")
+	}
+
+	// Find claude binary
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		return fmt.Errorf("claude not found in PATH: %w", err)
+	}
+
+	// If we have a worktree, chdir into it before exec
+	if resp.Worktree != nil && resp.Worktree.Path != "" {
+		if err := os.Chdir(resp.Worktree.Path); err != nil {
+			return fmt.Errorf("failed to chdir to worktree: %w", err)
+		}
+	}
+
+	// Build environment: inherit current env + add spawn env
+	env := os.Environ()
+	for _, e := range resp.ExecEnv {
+		env = append(env, e)
+	}
+
+	// Replace this process with claude
+	return syscall.Exec(claudePath, resp.ExecArgs, env)
 }
 
 // detectProject tries to determine the current project from git context.
@@ -72,30 +180,6 @@ func getMainWorktreePath() string {
 		}
 	}
 	return ""
-}
-
-// extractBaseProject extracts the base project name from a worktree directory name.
-// Examples: "athena-cli-output-fix" -> "athena", "myapp-eng-123" -> "myapp"
-func extractBaseProject(dirName string) string {
-	// Known worktree suffix patterns (find earliest match)
-	suffixPatterns := []string{
-		"-fix", "-feat", "-feature", "-eng", "-bug",
-		"-wip", "-dev", "-test", "-refactor", "-cli", "-tui",
-	}
-
-	lower := strings.ToLower(dirName)
-	earliestIdx := len(dirName)
-
-	for _, pattern := range suffixPatterns {
-		if idx := strings.Index(lower, pattern); idx > 0 && idx < earliestIdx {
-			earliestIdx = idx
-		}
-	}
-
-	if earliestIdx < len(dirName) {
-		return dirName[:earliestIdx]
-	}
-	return dirName
 }
 
 // runStatus shows a summary of active work.
@@ -608,8 +692,8 @@ func runQueueList(project string) error {
 		)
 		fmt.Printf("      %spath:%s %s\n", gray, reset, displayPath)
 
-		if item.Status == "rebasing" {
-			fmt.Printf("      %sneeds rebase%s\n", yellow, reset)
+		if item.Status == "rebasing" || item.Status == "diverged" {
+			fmt.Printf("      %sneeds reconcile%s\n", yellow, reset)
 		}
 	}
 
@@ -691,8 +775,8 @@ func runQueueBump(path string) error {
 		return err
 	}
 
-	fmt.Printf("%s%s%s Moved to position #%d\n", green, checkMark, reset, item.Position)
-	fmt.Println(yellow + "Dependent features marked for rebase" + reset)
+	fmt.Printf("%s%s%s Updated queue head at position #%d\n", green, checkMark, reset, item.Position)
+	fmt.Println(yellow + "Dependent features were reconciled or marked diverged" + reset)
 
 	return nil
 }
@@ -727,6 +811,8 @@ func getQueueStatusIcon(status string) string {
 		return green + "[M]" + reset
 	case "rebasing":
 		return yellow + "[R]" + reset
+	case "diverged":
+		return yellow + "[D]" + reset
 	case "conflict":
 		return red + "[!]" + reset
 	default:
