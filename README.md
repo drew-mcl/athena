@@ -1,34 +1,92 @@
-# Athena
+# athena
 
-**The Intelligence Orchestrator and Bloomberg Terminal of Engineering**
+bloomberg terminal for engineering.
 
 > [!WARNING]
-> Athena is pre-1.0 and under active development. Expect breaking changes and incomplete functionality until we reach a stable release.
+> pre-1.0. active development. things will break.
 
-The future is not Hephaestus—the IDE fork of building. It’s Athena: the Bloomberg terminal of engineering—one command-and-control platform that condenses everything (project management, CI/CD, IDE context, agent monitoring, ops views, integrations) into a single terminal, fanning out to external APIs but converging back into one unified interface.
+one terminal. tickets, agents, worktrees, task lists. no context switching.
 
-Athena at its core orchestrates AI coding agents (Claude Code, Codex, and whatever comes next) for maximum developer productivity. It's not another harness - it's the control plane that coordinates the racing products in this space while keeping *your* data yours.
+## the flow
 
-![Athena Home](docs/assets/home.png)
-
-More UI views live in [docs/screenshots.md](docs/screenshots.md).
-
-## Philosophy
-
-**Sell shovels, not gold.** The harnesses (Claude Code, Codex) are great and improving fast. Athena doesn't compete - it orchestrates across them, letting you leverage whichever is best for each task.
-
-**Your data, your context.** Every prompt, response, tool call, and decision flows through Athena's data plane and persists in your storage. Not locked in a vendor's session history. This is the foundation for context systems, RAG, memory, and whatever comes next.
-
-## Quick Start
-
-```bash
-make install    # Install athena, athenad, wt
-athenad &       # Start daemon
-athena          # Launch TUI
+```
+idea → goal → feature → worktree → agent → tasks → PR
 ```
 
-See [docs/development.md](docs/development.md) for building from source.
+```bash
+ath g new "Auth system"              # create a goal
+ath f new wi-a3f8 "OAuth login"      # feature under that goal
+ath spawn -f wi-a3f8.1               # worktree + agent + task list, one command
+```
 
-## License
+agent spins up in its own worktree. watch from another tab:
+
+```bash
+ath tree                             # see the whole hierarchy
+ath tree wi-a3f8                     # zoom into one goal
+ath wt                               # worktree status
+```
+
+## spawn
+
+the core command. creates a worktree, sets up the task list, launches claude code.
+
+```bash
+ath spawn -f <feature-id>            # primary flow - worktree + agent
+ath spawn -f <feature-id> --headless # fire-and-forget, runs in background
+ath spawn                            # interactive claude in current dir
+ath spawn ENG-123                    # ticket ID → goal → spawn
+```
+
+the agent gets your goal context, feature description, and available commands injected into its system prompt. its task list maps 1:1 to your feature work item.
+
+## work items
+
+```
+Goal     □  Auth system               ← strategic objective
+  Feature  ◇  OAuth login             ← worktree + agent + PR
+    Task     ○  Add token refresh     ← claude code native task
+    Task     ○  Write tests           ← claude code native task
+  Feature  ◇  Session management
+```
+
+goals are strategic. features are PR-sized. tasks are claude code's own task list - you see exactly what the agent sees.
+
+## quick reference
+
+```bash
+ath                    # status overview
+ath g new "subject"    # create goal
+ath f new <goal> "x"   # create feature under goal
+ath spawn -f <feat>    # spawn agent on feature
+ath tree               # full work item tree
+ath wt                 # list worktrees
+ath wt prune           # clean up merged worktrees
+ath sp "idea"          # scratchpad note
+ath plugin             # manage integrations
+```
+
+## architecture
+
+```
+ath CLI ──→ athenad (daemon) ──→ sqlite
+               │
+               ├── spawns agents with CLAUDE_CODE_TASK_LIST_ID
+               ├── watches ~/.claude/tasks/<feature-id>/
+               └── plugins: github, gitlab, linear, jira
+```
+
+data stays local. sqlite, not a vendor's session history.
+
+## building
+
+```bash
+make install    # ath, athenad, athena-mcp
+athenad &       # start daemon
+```
+
+requires go 1.24+.
+
+## license
 
 MIT
