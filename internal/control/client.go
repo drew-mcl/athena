@@ -1581,7 +1581,7 @@ type MergeQueueItemInfo struct {
 	WorktreePath string `json:"worktree_path"`
 	Branch       string `json:"branch"`
 	Position     int    `json:"position"`
-	Status       string `json:"status"` // queued, merging, merged, conflict, rebasing
+	Status       string `json:"status"` // queued, merging, merged, conflict, rebasing, diverged
 	BaseBranch   string `json:"base_branch"`
 	BaseCommit   string `json:"base_commit"`
 	HeadCommit   string `json:"head_commit,omitempty"`
@@ -1699,6 +1699,45 @@ type PruneWorktreesResult struct {
 	Merged  []string `json:"merged"`  // Merged worktrees that were pruned
 	Orphans []string `json:"orphans"` // Orphaned directories that were removed
 	Stale   []string `json:"stale"`   // Stale database entries that were removed
+}
+
+// SpawnRequest is the request for the unified spawn command.
+type SpawnRequest struct {
+	FeatureID  string `json:"feature_id,omitempty"`   // e.g. wi-a3f8.1 (primary flow: spawn on feature)
+	TicketID   string `json:"ticket_id,omitempty"`    // e.g. ENG-123
+	WorkItemID string `json:"work_item_id,omitempty"` // e.g. wi-a3f8
+	Project    string `json:"project,omitempty"`
+	Retrieve   bool   `json:"retrieve,omitempty"` // -r flag: break down goal first
+	Headless   bool   `json:"headless,omitempty"` // --headless flag: run detached
+	Worktree   bool   `json:"worktree,omitempty"` // -w flag: create worktree
+	Parallel   bool   `json:"parallel,omitempty"` // -p flag: parallel task-worker mode
+	WorkDir    string `json:"work_dir,omitempty"` // current dir for bare mode
+}
+
+// SpawnResponse contains the result of a spawn request.
+type SpawnResponse struct {
+	Agent      *AgentInfo    `json:"agent,omitempty"`     // set for headless spawns
+	WorkItem   *WorkItemInfo `json:"work_item"`           // always set
+	Worktree   *WorktreeInfo `json:"worktree,omitempty"`  // set if worktree created
+	TaskListID string        `json:"task_list_id"`        // work item ID used as task list
+	ExecArgs   []string      `json:"exec_args,omitempty"` // set for interactive spawns
+	ExecEnv    []string      `json:"exec_env,omitempty"`  // env vars for interactive exec
+}
+
+// Spawn initiates the unified spawn flow.
+func (c *Client) Spawn(req SpawnRequest) (*SpawnResponse, error) {
+	resp, err := c.Call("spawn", req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+
+	var result SpawnResponse
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &result)
+	return &result, nil
 }
 
 // PruneWorktrees cleans up merged and orphaned worktrees.
