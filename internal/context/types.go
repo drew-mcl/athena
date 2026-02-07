@@ -96,15 +96,15 @@ const (
 
 // BlackboardSummary provides statistics about blackboard entries.
 type BlackboardSummary struct {
-	WorktreePath     string
-	DecisionCount    int
-	FindingCount     int
-	AttemptCount     int
-	QuestionCount    int // Total questions
-	UnresolvedCount  int // Unresolved questions
-	ArtifactCount    int
-	TotalCount       int
-	LastUpdated      time.Time
+	WorktreePath    string
+	DecisionCount   int
+	FindingCount    int
+	AttemptCount    int
+	QuestionCount   int // Total questions
+	UnresolvedCount int // Unresolved questions
+	ArtifactCount   int
+	TotalCount      int
+	LastUpdated     time.Time
 }
 
 // StateSummary provides statistics about project state entries.

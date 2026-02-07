@@ -31,12 +31,12 @@ type Event struct {
 	Timestamp time.Time       `json:"-"`
 
 	// Result event fields (populated when Type == EventTypeResult)
-	Usage      *EventUsage  `json:"usage,omitempty"`
-	ModelUsage ModelUsage   `json:"model_usage,omitempty"`
-	CostUSD    float64      `json:"total_cost_usd,omitempty"`
-	DurationMS int64        `json:"duration_ms,omitempty"`
-	APITimeMS  int64        `json:"duration_api_ms,omitempty"`
-	NumTurns   int          `json:"num_turns,omitempty"`
+	Usage      *EventUsage `json:"usage,omitempty"`
+	ModelUsage ModelUsage  `json:"model_usage,omitempty"`
+	CostUSD    float64     `json:"total_cost_usd,omitempty"`
+	DurationMS int64       `json:"duration_ms,omitempty"`
+	APITimeMS  int64       `json:"duration_api_ms,omitempty"`
+	NumTurns   int         `json:"num_turns,omitempty"`
 }
 
 // EventUsage contains token usage statistics from Claude.
@@ -95,10 +95,10 @@ type messageWrapper struct {
 
 // contentBlock represents items in message.content array.
 type contentBlock struct {
-	Type    string          `json:"type"`            // "text", "tool_use", or "tool_result"
-	Text    string          `json:"text,omitempty"`  // for text blocks
-	Name    string          `json:"name,omitempty"`  // for tool_use blocks
-	Input   json.RawMessage `json:"input,omitempty"` // for tool_use blocks
+	Type    string          `json:"type"`              // "text", "tool_use", or "tool_result"
+	Text    string          `json:"text,omitempty"`    // for text blocks
+	Name    string          `json:"name,omitempty"`    // for tool_use blocks
+	Input   json.RawMessage `json:"input,omitempty"`   // for tool_use blocks
 	Content json.RawMessage `json:"content,omitempty"` // for tool_result (can be string or array)
 }
 
@@ -120,7 +120,7 @@ func ParseEvent(data []byte) (*Event, error) {
 		Input     json.RawMessage `json:"input,omitempty"`   // for flat format fallback
 		Message   *messageWrapper `json:"message,omitempty"`
 		// Result event fields
-		Result       string     `json:"result,omitempty"`
+		Result       string      `json:"result,omitempty"`
 		Usage        *EventUsage `json:"usage,omitempty"`
 		ModelUsage   ModelUsage  `json:"modelUsage,omitempty"`
 		TotalCostUSD float64     `json:"total_cost_usd,omitempty"`

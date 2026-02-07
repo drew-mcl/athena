@@ -31,16 +31,16 @@ type ContextCacheMetric struct {
 
 // ProjectCacheStats provides aggregated cache statistics for a project.
 type ProjectCacheStats struct {
-	ProjectName         string
-	TotalAgents         int
-	FirstAgentCount     int
-	SubsequentAgentCount int
-	AvgCacheHitRate     float64
-	AvgFirstAgentCacheRate   float64
+	ProjectName                 string
+	TotalAgents                 int
+	FirstAgentCount             int
+	SubsequentAgentCount        int
+	AvgCacheHitRate             float64
+	AvgFirstAgentCacheRate      float64
 	AvgSubsequentAgentCacheRate float64
-	TotalStateTokens    int
-	TotalBlackboardTokens int
-	TotalCacheReads     int
+	TotalStateTokens            int
+	TotalBlackboardTokens       int
+	TotalCacheReads             int
 }
 
 // Store is the main persistence layer for Athena.
@@ -845,9 +845,9 @@ type AgentMetrics struct {
 	SessionID string
 
 	// Token usage
-	InputTokens        int
-	OutputTokens       int
-	CacheReadTokens    int
+	InputTokens         int
+	OutputTokens        int
+	CacheReadTokens     int
 	CacheCreationTokens int
 
 	// Timing

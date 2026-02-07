@@ -268,7 +268,7 @@ func (s *Store) GetProjectMetricsSummary(projectName string) (*ProjectMetricsSum
 
 // MetricsTrend contains aggregate metrics for a time period.
 type MetricsTrend struct {
-	Period             string  // "today", "week", "all"
+	Period             string // "today", "week", "all"
 	TotalSessions      int
 	AvgCacheHitRate    float64
 	AvgTokensPerTask   int

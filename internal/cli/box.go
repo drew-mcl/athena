@@ -25,20 +25,20 @@ const (
 
 // Status indicators
 const (
-	CheckMark   = "✓"
-	Bullet      = "●"
-	Circle      = "○"
-	ArrowDown   = "↓"
-	ArrowUp     = "↑"
+	CheckMark    = "✓"
+	Bullet       = "●"
+	Circle       = "○"
+	ArrowDown    = "↓"
+	ArrowUp      = "↑"
 	QuestionMark = "?"
 )
 
 // Work item shapes
 const (
-	ShapeGoalOpen       = "□"
-	ShapeGoalFilled     = "■"
-	ShapeFeatureOpen    = "◇"
-	ShapeFeatureFilled  = "◆"
-	ShapeTaskOpen       = "○"
-	ShapeTaskFilled     = "●"
+	ShapeGoalOpen      = "□"
+	ShapeGoalFilled    = "■"
+	ShapeFeatureOpen   = "◇"
+	ShapeFeatureFilled = "◆"
+	ShapeTaskOpen      = "○"
+	ShapeTaskFilled    = "●"
 )

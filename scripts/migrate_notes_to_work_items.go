@@ -42,13 +42,13 @@ func main() {
 
 	// Create goals
 	goals := map[string]string{
-		"wi-tui":    "TUI/UX Improvements - Better dashboard, agent views, status displays",
-		"wi-auto":   "Workflow Automation - Auto workflows, merge trains, CI/CD integration",
-		"wi-integ":  "External Integrations - Sentry, Sonar, GitHub, Jira, Docker, K8s",
-		"wi-docs":   "Documentation & Quality - Test coverage, docs, developer experience",
-		"wi-orch":   "Orchestration - Multi-agent coordination, task distribution",
-		"wi-infra":  "Infrastructure - Release workflow, Homebrew, MCP servers",
-		"wi-fixes":  "Bug Fixes - Critical and high priority fixes from code review",
+		"wi-tui":   "TUI/UX Improvements - Better dashboard, agent views, status displays",
+		"wi-auto":  "Workflow Automation - Auto workflows, merge trains, CI/CD integration",
+		"wi-integ": "External Integrations - Sentry, Sonar, GitHub, Jira, Docker, K8s",
+		"wi-docs":  "Documentation & Quality - Test coverage, docs, developer experience",
+		"wi-orch":  "Orchestration - Multi-agent coordination, task distribution",
+		"wi-infra": "Infrastructure - Release workflow, Homebrew, MCP servers",
+		"wi-fixes": "Bug Fixes - Critical and high priority fixes from code review",
 	}
 
 	for id, subject := range goals {

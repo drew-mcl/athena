@@ -152,15 +152,15 @@ func (a *Assembler) Assemble(opts AssembleOptions) (*ContextBlock, error) {
 // Claude caches prompts from the BEGINNING, so we order sections by stability:
 //
 // 1. STABLE (cached across agents working on same project):
-//    - Project State: Architecture, conventions, constraints - rarely changes
-//    - Project Structure: Directory layout and file counts - rarely changes
+//   - Project State: Architecture, conventions, constraints - rarely changes
+//   - Project Structure: Directory layout and file counts - rarely changes
 //
 // 2. SEMI-STABLE (cached within a workflow):
-//    - Relevant Files: Task-specific file suggestions
-//    - Current Workflow: Decisions, findings, attempts - changes during workflow
+//   - Relevant Files: Task-specific file suggestions
+//   - Current Workflow: Decisions, findings, attempts - changes during workflow
 //
 // 3. UNIQUE (never cached - appended separately in BuildPromptWithContext):
-//    - The actual task prompt
+//   - The actual task prompt
 //
 // This ordering maximizes cache hits when multiple agents work on the same
 // project or when the same workflow spawns multiple agent invocations.

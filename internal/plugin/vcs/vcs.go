@@ -22,9 +22,9 @@ type PullRequest struct {
 	Number      int
 	Title       string
 	State       PRState
-	Branch      string   // Source branch
-	BaseBranch  string   // Target branch (usually main)
-	MergeCommit string   // Set when merged
+	Branch      string // Source branch
+	BaseBranch  string // Target branch (usually main)
+	MergeCommit string // Set when merged
 	URL         string
 }
 

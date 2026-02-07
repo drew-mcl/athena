@@ -43,7 +43,7 @@ const (
 // Issue represents a project management issue/ticket.
 type Issue struct {
 	ID          string
-	Key         string     // e.g., "ENG-123"
+	Key         string // e.g., "ENG-123"
 	Title       string
 	Description string
 	State       IssueState

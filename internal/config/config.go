@@ -250,7 +250,7 @@ func DefaultConfig() *Config {
 		},
 		Archetypes: map[string]Archetype{
 			"planner": {
-				Description:    "Planning agent that explores codebases and creates implementation plans",
+				Description: "Planning agent that explores codebases and creates implementation plans",
 				Prompt: `You are a planning agent. Create a detailed implementation plan. Do NOT modify any files.
 
 ## Using the Context Block
@@ -277,7 +277,7 @@ Use markers in your output to help future agents:
 				Model:          "opus",
 			},
 			"executor": {
-				Description:    "Execution agent that implements plans and commits changes",
+				Description: "Execution agent that implements plans and commits changes",
 				Prompt: `You are an execution agent. Follow the provided plan exactly.
 
 ## Using the Context Block
@@ -306,7 +306,7 @@ When you complete your work, you MUST commit all changes:
 				Model:          "sonnet",
 			},
 			"reviewer": {
-				Description:    "Code review agent that analyzes changes",
+				Description: "Code review agent that analyzes changes",
 				Prompt: `You are a code review agent. Analyze changes for bugs, security issues, and style violations.
 
 ## Using the Context Block

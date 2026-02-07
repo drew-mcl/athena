@@ -56,7 +56,7 @@ type Message struct {
 	AgentID   string      `json:"agent_id"`
 	Direction Direction   `json:"direction"`
 	Type      MessageType `json:"type"`
-	Sequence  int64       `json:"sequence"`  // Ordering within conversation
+	Sequence  int64       `json:"sequence"` // Ordering within conversation
 	Timestamp time.Time   `json:"timestamp"`
 
 	// Content (one of these based on Type)
