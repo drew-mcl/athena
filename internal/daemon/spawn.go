@@ -576,7 +576,33 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 	b.WriteString("When your work is complete:\n")
 	b.WriteString("1. Ensure all tasks are marked `completed`\n")
 	b.WriteString("2. Commit your changes with a clear message\n")
-	b.WriteString("3. Run `ath queue add` to add this feature to the merge queue\n")
+	b.WriteString("3. Run `ath queue add` to add this feature to the merge queue\n\n")
+
+	// Actionable task prompt - tell the agent what to do
+	b.WriteString("## Your Task\n\n")
+	if retrieve {
+		b.WriteString("Start by exploring the codebase and creating a plan:\n")
+		b.WriteString("1. Understand the current architecture and relevant patterns\n")
+		b.WriteString("2. Break down the work into specific, trackable tasks\n")
+		b.WriteString("3. Use TaskCreate to document each task with clear descriptions\n\n")
+		if workItem.Description != "" {
+			b.WriteString(fmt.Sprintf("Goal: %s\n", workItem.Description))
+		} else if workItem.Subject != "" {
+			b.WriteString(fmt.Sprintf("Goal: %s\n", workItem.Subject))
+		}
+	} else {
+		// Direct execution mode
+		if workItem.Description != "" {
+			b.WriteString(fmt.Sprintf("%s\n\n", workItem.Description))
+		} else if workItem.Subject != "" {
+			b.WriteString(fmt.Sprintf("%s\n\n", workItem.Subject))
+		}
+		b.WriteString("Begin by:\n")
+		b.WriteString("1. Using TaskCreate to break this into specific implementation tasks\n")
+		b.WriteString("2. Exploring relevant code to understand the current implementation\n")
+		b.WriteString("3. Implementing the changes following existing patterns\n")
+		b.WriteString("4. Marking each task in_progress when starting and completed when done\n")
+	}
 
 	return b.String()
 }
