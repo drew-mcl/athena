@@ -7,6 +7,17 @@ import (
 	"github.com/drewfead/athena/internal/plugin"
 )
 
+// IssueType represents the kind of issue in a PM hierarchy.
+type IssueType string
+
+const (
+	IssueTypeEpic    IssueType = "epic"    // Jira Epic, Linear Project
+	IssueTypeStory   IssueType = "story"   // Jira Story, Linear Issue
+	IssueTypeTask    IssueType = "task"    // Jira Task, Linear sub-issue
+	IssueTypeBug     IssueType = "bug"     // Jira Bug
+	IssueTypeUnknown IssueType = "unknown" // Unmapped or unrecognized type
+)
+
 // IssueState represents the state of an issue.
 type IssueState string
 
@@ -32,7 +43,7 @@ const (
 // Issue represents a project management issue/ticket.
 type Issue struct {
 	ID          string
-	Key         string     // e.g., "ENG-123"
+	Key         string // e.g., "ENG-123"
 	Title       string
 	Description string
 	State       IssueState
@@ -42,6 +53,11 @@ type Issue struct {
 	Labels      []string
 	CreatedAt   string
 	UpdatedAt   string
+
+	// Hierarchy
+	Type      IssueType // epic, story, task, bug, unknown
+	ParentKey string    // parent issue key (e.g., epic key for a story)
+	Children  []string  // child issue keys (for epics/projects)
 }
 
 // Provider defines the PM provider interface.
@@ -53,6 +69,10 @@ type Provider interface {
 	ListIssues(ctx context.Context, project string, state IssueState) ([]*Issue, error)
 	CreateIssue(ctx context.Context, issue *Issue) (*Issue, error)
 	UpdateIssueState(ctx context.Context, issueKey string, state IssueState) error
+
+	// Hierarchy
+	GetEpic(ctx context.Context, epicKey string) (*Issue, error)
+	ListEpics(ctx context.Context, project string) ([]*Issue, error)
 
 	// Linking
 	LinkPR(ctx context.Context, issueKey, prURL string) error

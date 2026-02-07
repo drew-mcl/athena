@@ -145,10 +145,10 @@ func (l *MemoryEventLog) RestoreFromSnapshot(ctx context.Context, snap *store.Sn
 
 // LRUContextCache implements ContextCache with LRU eviction.
 type LRUContextCache struct {
-	mu       sync.RWMutex
-	cache    map[string]*lruEntry
-	order    []string // LRU order (oldest first)
-	maxSize  int
+	mu      sync.RWMutex
+	cache   map[string]*lruEntry
+	order   []string // LRU order (oldest first)
+	maxSize int
 }
 
 type lruEntry struct {
@@ -261,9 +261,9 @@ func (c *LRUContextCache) evictOldest() {
 
 // SimpleEventBus implements EventBus with simple pub/sub.
 type SimpleEventBus struct {
-	mu           sync.RWMutex
-	subscribers  map[string][]Subscriber // agentID -> subscribers
-	globalSubs   []Subscriber            // subscribers to all events
+	mu          sync.RWMutex
+	subscribers map[string][]Subscriber // agentID -> subscribers
+	globalSubs  []Subscriber            // subscribers to all events
 }
 
 // NewSimpleEventBus creates a new simple event bus.

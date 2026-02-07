@@ -19,18 +19,16 @@ all: help
 # Build all binaries
 build:
 	@mkdir -p bin
-	go build $(LDFLAGS) -o bin/athena ./cmd/athena
 	go build $(LDFLAGS) -o bin/athenad ./cmd/athenad
 	go build $(LDFLAGS) -o bin/ath ./cmd/ath
 	go build $(LDFLAGS) -o bin/athena-cli ./cmd/athena-cli
 
 # Install all binaries to GOBIN
 install: build
-	cp bin/athena $(GOBIN)/athena
 	cp bin/athenad $(GOBIN)/athenad
 	cp bin/ath $(GOBIN)/ath
 	cp bin/athena-cli $(GOBIN)/athena-cli
-	@echo "Installed: athena, athenad, ath, cli"
+	@echo "Installed: athenad, ath, athena-cli"
 
 clean:
 	rm -rf bin/
@@ -52,9 +50,7 @@ dev: build stop
 	@echo "Starting daemon..."
 	@./bin/athenad & echo $$! > $(DAEMON_PID)
 	@sleep 0.5
-	@echo "Launching TUI..."
-	@./bin/athena || true
-	@$(MAKE) stop
+	@echo "Daemon running. Use 'ath' CLI to interact."
 
 # Stop the development daemon
 stop:
@@ -122,9 +118,9 @@ help:
 	@echo "Athena - Kubernetes for Claude Code Agents"
 	@echo ""
 	@echo "Binaries:"
-	@echo "  athena   - TUI dashboard for monitoring agents"
-	@echo "  athenad  - Background daemon managing agent lifecycles"
-	@echo "  ath      - Quick CLI for work items (goals/features/tasks)"
+	@echo "  athenad      - Background daemon managing agent lifecycles"
+	@echo "  ath          - CLI for work items and agent management"
+	@echo "  athena-cli   - Lightweight CLI client"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make build     Build all binaries"
@@ -135,7 +131,7 @@ help:
 	@echo "  make fmt       Format code"
 	@echo ""
 	@echo "Development:"
-	@echo "  make dev       Build, start daemon, launch TUI"
+	@echo "  make dev       Build and start daemon"
 	@echo "  make stop      Stop development daemon"
 	@echo "  make daemon    Run daemon in foreground (for debugging)"
 	@echo ""

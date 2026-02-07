@@ -177,9 +177,9 @@ const (
 type CodexLocalProvider string
 
 const (
-	CodexLocalLMStudio    CodexLocalProvider = "lmstudio"
-	CodexLocalOllama      CodexLocalProvider = "ollama"
-	CodexLocalOllamaChat  CodexLocalProvider = "ollama-chat"
+	CodexLocalLMStudio   CodexLocalProvider = "lmstudio"
+	CodexLocalOllama     CodexLocalProvider = "ollama"
+	CodexLocalOllamaChat CodexLocalProvider = "ollama-chat"
 )
 
 // CodexOptions contains all Codex CLI options.
@@ -212,8 +212,8 @@ type CodexOptions struct {
 	Images []string // -i, --image
 
 	// === Output ===
-	JSON              bool   // --json (JSONL output)
-	OutputLastMessage string // -o, --output-last-message
+	JSON              bool           // --json (JSONL output)
+	OutputLastMessage string         // -o, --output-last-message
 	Color             CodexColorMode // --color
 
 	// === Structured Output ===
@@ -299,7 +299,6 @@ func (b *ClaudeOptionsBuilder) WithAppendSystemPrompt(p string) *ClaudeOptionsBu
 	b.opts.AppendSystemPrompt = p
 	return b
 }
-
 
 func (b *ClaudeOptionsBuilder) WithPrint() *ClaudeOptionsBuilder {
 	b.opts.Print = true
@@ -668,13 +667,13 @@ func joinComma(s []string) string {
 
 // SessionMetrics tracks timing for a session.
 type SessionMetrics struct {
-	StartTime       time.Time
-	FirstEventTime  *time.Time
-	LastEventTime   *time.Time
-	EndTime         *time.Time
-	EventCount      int
-	ToolCallCount   int
-	TokensIn        int
-	TokensOut       int
+	StartTime        time.Time
+	FirstEventTime   *time.Time
+	LastEventTime    *time.Time
+	EndTime          *time.Time
+	EventCount       int
+	ToolCallCount    int
+	TokensIn         int
+	TokensOut        int
 	EstimatedCostUSD float64
 }

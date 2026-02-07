@@ -101,7 +101,7 @@ func (s *Store) GetMessages(agentID string, opts GetMessagesOptions) ([]*data.Me
 		ORDER BY sequence ASC
 		LIMIT ? OFFSET ?
 	`
-	rows, err := s.db.Query(query, agentID, opts.Limit, opts.Offset)
+	rows, err := s.db.Query(query, agentID, opts.Limit, opts.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -132,10 +132,10 @@ func (s *Store) GetMessagesBySequence(agentID string, fromSeq int64, limit int) 
 		ORDER BY sequence ASC
 				LIMIT ?
 			`
-			rows, err := s.db.Query(query, agentID, fromSeq, limit)
-			if err != nil {
-				return nil, err
-		
+	rows, err := s.db.Query(query, agentID, fromSeq, limit)
+	if err != nil {
+		return nil, err
+
 	}
 	defer rows.Close()
 
@@ -153,10 +153,10 @@ func (s *Store) GetMessagesByType(agentID string, msgType data.MessageType, limi
 		ORDER BY sequence ASC
 				LIMIT ?
 			`
-			rows, err := s.db.Query(query, agentID, msgType, limit)
-			if err != nil {
-				return nil, err
-		
+	rows, err := s.db.Query(query, agentID, msgType, limit)
+	if err != nil {
+		return nil, err
+
 	}
 	defer rows.Close()
 
@@ -174,10 +174,10 @@ func (s *Store) GetRecentMessages(agentID string, n int) ([]*data.Message, error
 		ORDER BY sequence DESC
 				LIMIT ?
 			`
-			rows, err := s.db.Query(query, agentID, n)
-			if err != nil {
-				return nil, err
-		
+	rows, err := s.db.Query(query, agentID, n)
+	if err != nil {
+		return nil, err
+
 	}
 	defer rows.Close()
 

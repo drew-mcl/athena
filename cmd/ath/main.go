@@ -1,11 +1,9 @@
-// Command ath is a CLI for quick work item management.
-// Unlike 'athena' (TUI), 'ath' is optimized for fast terminal commands.
+// Command ath is a CLI for work item management and agent interaction.
 package main
 
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
@@ -36,9 +34,6 @@ var rootCmd = &cobra.Command{
 	Short: "Quick CLI for Athena work items",
 	Long: `ath - Fast work item management for Athena.
 
-Use 'athena' for the full TUI dashboard.
-Use 'ath' for quick CLI commands.
-
 Work Item Hierarchy:
   Goal     □  - Strategic objectives (no worktree)     [blue]
   Feature  ◇  - PR-sized work (has worktree)           [green]
@@ -47,7 +42,7 @@ Work Item Hierarchy:
 Shorthand Commands:
   g  → goal      t  → tsk       tr → tree
   f  → feat      w  → wt        q  → queue
-  s  → sp        p  → plugin
+  i  → interactive              p  → plugin
 
 Display:
   Shape colors indicate item type (blue/green/yellow)
@@ -56,12 +51,16 @@ Display:
   IDs shown in magenta, text in white
 
 Examples:
-  ath                           # Status summary
-  ath tr                        # Full work item tree
-  ath g new "Auth system"       # Create goal
-  ath f new wi-a3f8 "OAuth"     # Create feature under goal
-  ath t "Update readme"         # Quick task (inbox)
-  ath q                         # Show merge queue`,
+  ath                               # Status summary
+  ath i                             # Interactive agent in current dir
+  ath spawn -f wi-a3f8.1            # Spawn agent on feature (primary)
+  ath spawn -f wi-a3f8.1 --headless # Fire-and-forget on feature
+  ath spawn ENG-123                 # Spawn with ticket context
+  ath tr                            # Full work item tree
+  ath g new "Auth system"           # Create goal
+  ath f new wi-a3f8 "OAuth"         # Create feature under goal
+  ath t "Update readme"             # Quick task (inbox)
+  ath q                             # Show merge queue`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatus()
 	},
@@ -227,15 +226,15 @@ var queueCmd = &cobra.Command{
 	Long: `Manage the local merge queue for coordinating feature branches.
 
 The merge queue maintains ordering between in-flight features so that:
-- New features start from the integration HEAD (last queued feature)
-- When you edit an earlier feature, dependent features are marked for rebase
+- New features start from the integration HEAD (front stable queue node)
+- When you edit an earlier feature, it keeps position and dependents diverge/reconcile
 - Features merge to main in order
 
 Examples:
   ath queue                    # Show queue status
   ath queue add                # Add current worktree to queue
   ath queue head               # Show integration HEAD for new features
-  ath queue bump               # Move current worktree to back (after edits)
+  ath queue bump               # Refresh current queue node and reconcile dependents
   ath queue rm                 # Remove current worktree from queue`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
@@ -372,8 +371,12 @@ func init() {
 	// Worktree subcommands
 	wtCmd.AddCommand(wtPruneCmd)
 
-	// Scratchpad flags
-	spCmd.Flags().BoolP("edit", "e", false, "Open scratchpad in editor")
+	// Spawn flags
+	spawnCmd.Flags().StringP("feature", "f", "", "Feature work item ID to spawn on")
+	spawnCmd.Flags().BoolP("retrieve", "r", false, "Break down goal into features first")
+	spawnCmd.Flags().Bool("headless", false, "Run agent headless in background")
+	spawnCmd.Flags().BoolP("worktree", "w", false, "Create a dedicated worktree")
+	spawnCmd.Flags().BoolP("parallel", "p", false, "Enable parallel task-worker mode")
 
 	// Queue flags
 	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
@@ -383,32 +386,62 @@ func init() {
 	// Plugin commands
 	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spCmd, queueCmd, pluginCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, interactiveCmd)
 }
 
-// Scratchpad command
-var spCmd = &cobra.Command{
-	Use:     "sp [text...]",
-	Aliases: []string{"s"},
-	Short:   "Scratchpad for quick ideas",
-	Long: `Quick scratchpad for jotting down ideas.
+// Spawn command - unified agent launch
+var spawnCmd = &cobra.Command{
+	Use:   "spawn [id]",
+	Short: "Spawn a Claude Code agent",
+	Long: `Spawn a Claude Code agent on a feature, ticket, or work item.
 
-With no args: show all scratchpad entries
-With text: add a new entry
+Primary flow (feature):
+  ath spawn -f <feature-id>     # Create worktree, task list, launch agent
+
+Other modes:
+  ath spawn                     # Interactive Claude Code in current dir
+  ath spawn ENG-123             # Lookup ticket, create goal, spawn
+  ath spawn wi-a3f8             # Spawn against existing work item
+
+Modes:
+  (default)     Interactive - Claude Code opens in your terminal
+  --headless    Headless - agent runs in background autonomously
+
+Flags:
+  -f, --feature    Feature work item ID to spawn on (primary flow)
+  -r, --retrieve   Break down the goal into features before implementing
+  -w, --worktree   Create a dedicated worktree
+  -p, --parallel   Enable parallel task-worker mode
 
 Examples:
-  ath sp                     # Show scratchpad
-  ath sp "my idea here"      # Add entry
-  ath sp -e                  # Open in editor (coming soon)
-
-Entries can be multi-line. Use quotes for text with spaces.
-Later, use an agent to organize entries into goals/features.`,
+  ath spawn -f wi-a3f8.1           # Spawn on feature (creates worktree)
+  ath spawn -f wi-a3f8.1 --headless # Fire-and-forget on feature
+  ath spawn                        # Interactive in current dir
+  ath spawn ENG-123                # Lookup ticket, spawn interactive
+  ath spawn -r ENG-123             # Break down first, then implement`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			return runSpList()
+		featureID, _ := cmd.Flags().GetString("feature")
+		retrieve, _ := cmd.Flags().GetBool("retrieve")
+		headless, _ := cmd.Flags().GetBool("headless")
+		worktree, _ := cmd.Flags().GetBool("worktree")
+		parallel, _ := cmd.Flags().GetBool("parallel")
+
+		id := ""
+		if len(args) > 0 {
+			id = args[0]
 		}
-		// Join all args as one entry
-		text := strings.Join(args, " ")
-		return runSpAdd(text)
+
+		return runSpawn(featureID, id, retrieve, headless, worktree, parallel)
+	},
+}
+
+// Interactive command - spawn an interactive agent in the current directory
+var interactiveCmd = &cobra.Command{
+	Use:     "i",
+	Aliases: []string{"interactive"},
+	Short:   "Start an interactive agent in the current directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSpawn("", "", false, false, false, false)
 	},
 }

@@ -22,10 +22,10 @@ type Server struct {
 }
 
 type clientConn struct {
-	conn           net.Conn
-	writeMu        sync.Mutex
-	streamMode     bool                   // true if this client is a stream subscriber
-	streamFilter   *SubscribeStreamRequest // filter criteria for stream events
+	conn         net.Conn
+	writeMu      sync.Mutex
+	streamMode   bool                    // true if this client is a stream subscriber
+	streamFilter *SubscribeStreamRequest // filter criteria for stream events
 }
 
 func (c *clientConn) write(data []byte) error {

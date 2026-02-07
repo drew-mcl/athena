@@ -300,16 +300,16 @@ func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 		// Try to get stored real-time metrics first
 		if storedMetrics, err := d.store.GetMetricsByAgent(a.ID); err == nil && storedMetrics != nil {
 			info.Metrics = &control.AgentMetrics{
-				DurationMs:     storedMetrics.DurationMS,
-				InputTokens:    storedMetrics.InputTokens,
-				OutputTokens:   storedMetrics.OutputTokens,
-				CacheReads:     storedMetrics.CacheReadTokens,
-				CacheCreation:  storedMetrics.CacheCreationTokens,
-				TotalTokens:    storedMetrics.TotalInputTokens(),
-				CacheHitRate:   storedMetrics.CacheHitRate(),
-				CostCents:      storedMetrics.CostCents,
-				NumTurns:       storedMetrics.NumTurns,
-				ToolUseCount:   storedMetrics.ToolCalls,
+				DurationMs:      storedMetrics.DurationMS,
+				InputTokens:     storedMetrics.InputTokens,
+				OutputTokens:    storedMetrics.OutputTokens,
+				CacheReads:      storedMetrics.CacheReadTokens,
+				CacheCreation:   storedMetrics.CacheCreationTokens,
+				TotalTokens:     storedMetrics.TotalInputTokens(),
+				CacheHitRate:    storedMetrics.CacheHitRate(),
+				CostCents:       storedMetrics.CostCents,
+				NumTurns:        storedMetrics.NumTurns,
+				ToolUseCount:    storedMetrics.ToolCalls,
 				ToolSuccessRate: float64(storedMetrics.ToolSuccesses) / float64(max(storedMetrics.ToolCalls, 1)) * 100,
 			}
 		}
@@ -433,9 +433,9 @@ func (d *Daemon) handleSpawnChat(params json.RawMessage) (any, error) {
 		WithAgent(agentID).
 		WithWorktree(req.WorktreePath).
 		WithPayload(map[string]any{
-			"archetype":    "brainstorm",
-			"project":      wt.Project,
-			"interactive":  true,
+			"archetype":   "brainstorm",
+			"project":     wt.Project,
+			"interactive": true,
 		}))
 
 	return &control.SpawnChatResponse{

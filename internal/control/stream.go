@@ -38,11 +38,11 @@ const (
 	StreamEventAgentAwaiting   StreamEventType = "agent_awaiting"
 
 	// Agent activity events (from claude-code output)
-	StreamEventThinking  StreamEventType = "thinking"      // Claude is thinking
-	StreamEventToolCall  StreamEventType = "tool_call"     // Tool invocation started
-	StreamEventToolResult StreamEventType = "tool_result"  // Tool completed
-	StreamEventMessage   StreamEventType = "message"       // Assistant message
-	StreamEventHeartbeat StreamEventType = "heartbeat"     // Keep-alive / activity ping
+	StreamEventThinking   StreamEventType = "thinking"    // Claude is thinking
+	StreamEventToolCall   StreamEventType = "tool_call"   // Tool invocation started
+	StreamEventToolResult StreamEventType = "tool_result" // Tool completed
+	StreamEventMessage    StreamEventType = "message"     // Assistant message
+	StreamEventHeartbeat  StreamEventType = "heartbeat"   // Keep-alive / activity ping
 
 	// Job lifecycle events
 	StreamEventJobCreated   StreamEventType = "job_created"
@@ -51,20 +51,20 @@ const (
 	StreamEventJobFailed    StreamEventType = "job_failed"
 
 	// Worktree events
-	StreamEventWorktreeCreated  StreamEventType = "worktree_created"
+	StreamEventWorktreeCreated   StreamEventType = "worktree_created"
 	StreamEventWorktreePublished StreamEventType = "worktree_published"
-	StreamEventWorktreeMerged   StreamEventType = "worktree_merged"
-	StreamEventWorktreeCleaned  StreamEventType = "worktree_cleaned"
+	StreamEventWorktreeMerged    StreamEventType = "worktree_merged"
+	StreamEventWorktreeCleaned   StreamEventType = "worktree_cleaned"
 
 	// Plan events
-	StreamEventPlanCreated  StreamEventType = "plan_created"
-	StreamEventPlanApproved StreamEventType = "plan_approved"
+	StreamEventPlanCreated   StreamEventType = "plan_created"
+	StreamEventPlanApproved  StreamEventType = "plan_approved"
 	StreamEventPlanExecuting StreamEventType = "plan_executing"
 
 	// System events
-	StreamEventDaemonStarted StreamEventType = "daemon_started"
+	StreamEventDaemonStarted  StreamEventType = "daemon_started"
 	StreamEventDaemonStopping StreamEventType = "daemon_stopping"
-	StreamEventScanCompleted StreamEventType = "scan_completed"
+	StreamEventScanCompleted  StreamEventType = "scan_completed"
 
 	// API/Control events (for visualizing daemon RPC)
 	StreamEventAPICall     StreamEventType = "api_call"     // RPC request received
@@ -75,11 +75,11 @@ const (
 type StreamSource string
 
 const (
-	StreamSourceDaemon StreamSource = "daemon"   // athenad core
-	StreamSourceAgent  StreamSource = "agent"    // Claude Code process
-	StreamSourceStore  StreamSource = "store"    // SQLite operations
-	StreamSourceAPI    StreamSource = "api"      // Control API
-	StreamSourceClient StreamSource = "client"   // External client
+	StreamSourceDaemon StreamSource = "daemon" // athenad core
+	StreamSourceAgent  StreamSource = "agent"  // Claude Code process
+	StreamSourceStore  StreamSource = "store"  // SQLite operations
+	StreamSourceAPI    StreamSource = "api"    // Control API
+	StreamSourceClient StreamSource = "client" // External client
 )
 
 // SubscribeStreamRequest is sent to initiate a stream subscription.

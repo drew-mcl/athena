@@ -266,11 +266,11 @@ func (s *Spawner) Attach(agentID string) error {
 	// cacheMetricID := ""
 
 	mp := &ManagedProcess{
-		AgentID:       agentID,
-		SessionID:     agent.ClaudeSessionID, // Might be empty if not claude
-		MetricsID:     metricsID,
-		Process:       session,
-		Cancel:        cancel,
+		AgentID:   agentID,
+		SessionID: agent.ClaudeSessionID, // Might be empty if not claude
+		MetricsID: metricsID,
+		Process:   session,
+		Cancel:    cancel,
 	}
 
 	s.mu.Lock()
@@ -341,12 +341,12 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 	if s.contextMgr != nil {
 		opts := agentctx.DefaultAssembleOptions(spec.WorktreePath, spec.ProjectName)
 		opts.TaskPrompt = spec.Prompt
-		
+
 		// Use configured max tokens
 		if s.config.Agents.MaxContextTokens > 0 {
 			opts.MaxTokens = s.config.Agents.MaxContextTokens
 		}
-		
+
 		// Use configured max relevant files
 		if s.config.Agents.MaxRelevantFiles > 0 {
 			opts.MaxRelevantFiles = s.config.Agents.MaxRelevantFiles
@@ -361,15 +361,15 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 	}
 
 	runSpec := runner.RunSpec{
-		SessionID:       sessionID,
-		WorkDir:         spec.WorktreePath,
-		Prompt:          prompt,
-		Model:           archetype.Model,
-		PermissionMode:  archetype.PermissionMode,
-		AllowedTools:    archetype.AllowedTools,
-		SystemPrompt:    archetype.Prompt,
-		GitIdentity:     s.resolveGitIdentity(spec.Archetype),
-		Env:             make(map[string]string),
+		SessionID:      sessionID,
+		WorkDir:        spec.WorktreePath,
+		Prompt:         prompt,
+		Model:          archetype.Model,
+		PermissionMode: archetype.PermissionMode,
+		AllowedTools:   archetype.AllowedTools,
+		SystemPrompt:   archetype.Prompt,
+		GitIdentity:    s.resolveGitIdentity(spec.Archetype),
+		Env:            make(map[string]string),
 	}
 
 	// Populate environment from config
