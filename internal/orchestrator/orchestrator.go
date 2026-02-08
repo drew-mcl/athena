@@ -69,9 +69,14 @@ func New(st *store.Store, sp *agent.Spawner, prov *worktree.Provisioner) *Orches
 
 // Orchestrate decomposes a job using an architect agent, then coordinates workers.
 func (o *Orchestrator) Orchestrate(ctx context.Context, job *store.Job) (*TaskGraph, error) {
+	mainWorktree, err := o.getMainWorktree(job.Project)
+	if err != nil {
+		return nil, err
+	}
+
 	// 1. Spawn architect agent to decompose the task
 	architectSpec := agent.SpawnSpec{
-		WorktreePath: o.getMainWorktree(job.Project),
+		WorktreePath: mainWorktree,
 		ProjectName:  job.Project,
 		Archetype:    "architect",
 		Prompt:       fmt.Sprintf("Decompose this task into independent subtasks:\n\n%s", job.NormalizedInput),
@@ -308,14 +313,17 @@ func (o *Orchestrator) getTask(graph *TaskGraph, id string) *Subtask {
 	return nil
 }
 
-func (o *Orchestrator) getMainWorktree(project string) string {
-	wts, _ := o.store.ListWorktrees(project)
+func (o *Orchestrator) getMainWorktree(project string) (string, error) {
+	wts, err := o.store.ListWorktrees(project)
+	if err != nil {
+		return "", fmt.Errorf("list worktrees for %s: %w", project, err)
+	}
 	for _, wt := range wts {
 		if wt.IsMain {
-			return wt.Path
+			return wt.Path, nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("main worktree not found for project %s", project)
 }
 
 func (o *Orchestrator) waitForArchitectOutput(ctx context.Context, agentID string) (*ArchitectOutput, error) {

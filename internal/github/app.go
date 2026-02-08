@@ -110,7 +110,10 @@ func (c *AppClient) CreatePR(opts PROptions) (*PRResult, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("GitHub API error: %d - %s", resp.StatusCode, string(respBody))
@@ -216,7 +219,10 @@ func (c *AppClient) exchangeForInstallationToken(jwtToken string) (string, time.
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to read response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusCreated {
 		return "", time.Time{}, fmt.Errorf("failed to get installation token: %d - %s", resp.StatusCode, string(body))
@@ -235,9 +241,12 @@ func (c *AppClient) exchangeForInstallationToken(jwtToken string) (string, time.
 
 // parseRSAPrivateKey parses a PEM-encoded RSA private key.
 func parseRSAPrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode(pemData)
+	block, rest := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return nil, fmt.Errorf("unexpected trailing data after PEM block")
 	}
 
 	// Try PKCS#1 format first (RSA PRIVATE KEY)
@@ -312,7 +321,10 @@ func (c *AppClient) GetInstallationID(owner, repo string) (int64, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return 0, fmt.Errorf("failed to get installation: %d (failed to read body: %w)", resp.StatusCode, readErr)
+		}
 		return 0, fmt.Errorf("failed to get installation: %d - %s", resp.StatusCode, string(body))
 	}
 

@@ -136,9 +136,17 @@ func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, erro
 	}
 
 	// Log the spec being executed for debugging
-	specBytes, _ := json.Marshal(runSpec)
-	cmdPayload := fmt.Sprintf(`{"type":"spawn_spec","spec":%s,"provider":"%s"}`, string(specBytes), provider)
-	s.store.LogAgentEvent(agentID, "spawn_spec", cmdPayload)
+	var cmdPayload string
+	specBytes, err := json.Marshal(runSpec)
+	if err != nil {
+		logging.Warn("failed to marshal spawn spec for event log", "agent_id", agentID, "error", err)
+		cmdPayload = fmt.Sprintf(`{"type":"spawn_spec","provider":"%s","marshal_error":%q}`, provider, err.Error())
+	} else {
+		cmdPayload = fmt.Sprintf(`{"type":"spawn_spec","spec":%s,"provider":"%s"}`, string(specBytes), provider)
+	}
+	if err := s.store.LogAgentEvent(agentID, "spawn_spec", cmdPayload); err != nil {
+		logging.Warn("failed to persist spawn spec event", "agent_id", agentID, "error", err)
+	}
 	logging.Debug("spawning agent", "agent_id", agentID, "provider", provider, "workdir", runSpec.WorkDir)
 
 	// Create cancellable context
@@ -457,7 +465,11 @@ func (s *Spawner) handleEvents(mp *ManagedProcess) {
 			// Emit stream event for errors
 			if s.streamEmitter != nil {
 				worktreePath := ""
-				if agent, _ := s.store.GetAgent(mp.AgentID); agent != nil {
+				agent, agentErr := s.store.GetAgent(mp.AgentID)
+				if agentErr != nil {
+					logging.Warn("failed to get agent while emitting crash event", "agent_id", mp.AgentID, "error", agentErr)
+				}
+				if agent != nil {
 					worktreePath = agent.WorktreePath
 				}
 				s.streamEmitter("agent_crashed", mp.AgentID, worktreePath, map[string]any{
@@ -625,7 +637,11 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 	s.store.LogAgentEvent(mp.AgentID, "exit", exitPayload)
 
 	// Get current agent state
-	agent, _ := s.store.GetAgent(mp.AgentID)
+	agent, err := s.store.GetAgent(mp.AgentID)
+	if err != nil {
+		logging.Warn("failed to get agent on exit", "agent_id", mp.AgentID, "error", err)
+		return
+	}
 	if agent == nil {
 		return
 	}

@@ -430,8 +430,14 @@ func (p *Provider) saveTaskFile(listID string, tf *taskFile) error {
 
 // recordToTask converts a storage record to a task.Task.
 func (p *Provider) recordToTask(listID string, tr taskRecord) task.Task {
-	createdAt, _ := time.Parse(time.RFC3339, tr.CreatedAt)
-	updatedAt, _ := time.Parse(time.RFC3339, tr.UpdatedAt)
+	var createdAt time.Time
+	if parsed, err := time.Parse(time.RFC3339, tr.CreatedAt); err == nil {
+		createdAt = parsed
+	}
+	var updatedAt time.Time
+	if parsed, err := time.Parse(time.RFC3339, tr.UpdatedAt); err == nil {
+		updatedAt = parsed
+	}
 
 	return task.Task{
 		ID:          tr.ID,

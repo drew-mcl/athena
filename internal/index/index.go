@@ -166,7 +166,10 @@ func (i *Indexer) computeProjectHash() (string, error) {
 		}
 
 		// Include file path and modification time
-		relPath, _ := filepath.Rel(i.projectPath, file)
+		relPath, err := filepath.Rel(i.projectPath, file)
+		if err != nil {
+			relPath = file
+		}
 		h.Write([]byte(relPath))
 		h.Write([]byte(info.ModTime().Format(time.RFC3339Nano)))
 	}

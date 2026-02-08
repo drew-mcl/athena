@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -16,8 +18,14 @@ func (s *Store) CreateJob(job *Job) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	now := time.Now()
-	historyJSON, _ := json.Marshal(job.AgentHistory)
-	propagationJSON, _ := json.Marshal(job.PropagationResults)
+	historyJSON, err := marshalJSONField(job.AgentHistory, "agent_history")
+	if err != nil {
+		return err
+	}
+	propagationJSON, err := marshalJSONField(job.PropagationResults, "propagation_results")
+	if err != nil {
+		return err
+	}
 
 	// Default job type to feature if not set
 	jobType := job.Type
@@ -25,7 +33,7 @@ func (s *Store) CreateJob(job *Job) error {
 		jobType = JobTypeFeature
 	}
 
-	_, err := s.db.Exec(query,
+	_, err = s.db.Exec(query,
 		job.ID,
 		job.RawInput,
 		job.NormalizedInput,
@@ -131,10 +139,13 @@ func (s *Store) UpdateJobAgent(id string, agentID string) error {
 			history = append(history, *job.CurrentAgentID)
 		}
 	}
-	historyJSON, _ := json.Marshal(history)
+	historyJSON, err := marshalJSONField(history, "agent_history")
+	if err != nil {
+		return err
+	}
 
 	query := `UPDATE jobs SET current_agent_id = ?, agent_history = ?, updated_at = ? WHERE id = ?`
-	_, err = s.db.Exec(query, agentID, string(historyJSON), time.Now(), id)
+	_, err = s.db.Exec(query, agentID, historyJSON, time.Now(), id)
 	return err
 }
 
@@ -168,15 +179,18 @@ func (s *Store) UpdateJobCommit(id string, commitHash string) error {
 
 // UpdateJobPropagation updates the propagation results for a quick job.
 func (s *Store) UpdateJobPropagation(id string, results []PropagationResult) error {
-	resultsJSON, _ := json.Marshal(results)
+	resultsJSON, err := marshalJSONField(results, "propagation_results")
+	if err != nil {
+		return err
+	}
 	query := `UPDATE jobs SET propagation_results = ?, updated_at = ? WHERE id = ?`
-	_, err := s.db.Exec(query, string(resultsJSON), time.Now(), id)
+	_, err = s.db.Exec(query, resultsJSON, time.Now(), id)
 	return err
 }
 
 func scanJob(row *sql.Row) (*Job, error) {
 	var j Job
-	var historyJSON, propagationJSON string
+	var historyJSON, propagationJSON sql.NullString
 	err := row.Scan(
 		&j.ID, &j.RawInput, &j.NormalizedInput, &j.Status, &j.Type, &j.Project, &j.CreatedAt, &j.UpdatedAt,
 		&j.ExternalID, &j.ExternalURL, &j.CurrentAgentID, &historyJSON,
@@ -188,14 +202,18 @@ func scanJob(row *sql.Row) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(historyJSON), &j.AgentHistory)
-	json.Unmarshal([]byte(propagationJSON), &j.PropagationResults)
+	if err := unmarshalOptionalJSONField(historyJSON, "agent_history", &j.AgentHistory); err != nil {
+		return nil, err
+	}
+	if err := unmarshalOptionalJSONField(propagationJSON, "propagation_results", &j.PropagationResults); err != nil {
+		return nil, err
+	}
 	return &j, nil
 }
 
 func scanJobRows(rows *sql.Rows) (*Job, error) {
 	var j Job
-	var historyJSON, propagationJSON string
+	var historyJSON, propagationJSON sql.NullString
 	err := rows.Scan(
 		&j.ID, &j.RawInput, &j.NormalizedInput, &j.Status, &j.Type, &j.Project, &j.CreatedAt, &j.UpdatedAt,
 		&j.ExternalID, &j.ExternalURL, &j.CurrentAgentID, &historyJSON,
@@ -204,7 +222,33 @@ func scanJobRows(rows *sql.Rows) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(historyJSON), &j.AgentHistory)
-	json.Unmarshal([]byte(propagationJSON), &j.PropagationResults)
+	if err := unmarshalOptionalJSONField(historyJSON, "agent_history", &j.AgentHistory); err != nil {
+		return nil, err
+	}
+	if err := unmarshalOptionalJSONField(propagationJSON, "propagation_results", &j.PropagationResults); err != nil {
+		return nil, err
+	}
 	return &j, nil
+}
+
+func marshalJSONField(value any, field string) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal %s: %w", field, err)
+	}
+	return string(encoded), nil
+}
+
+func unmarshalOptionalJSONField(raw sql.NullString, field string, out any) error {
+	if !raw.Valid {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw.String)
+	if trimmed == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(trimmed), out); err != nil {
+		return fmt.Errorf("decode %s: %w", field, err)
+	}
+	return nil
 }

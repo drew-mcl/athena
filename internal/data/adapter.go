@@ -11,7 +11,7 @@ import (
 // FromClaudeEvent converts a claudecode.Event to a Message.
 // This normalizes Claude Code's event stream to the unified Message type.
 func FromClaudeEvent(agentID string, seq int64, evt *claudecode.Event) *Message {
-	raw, _ := json.Marshal(evt)
+	raw := marshalRawEvent(evt)
 
 	return &Message{
 		ID:        uuid.NewString(),
@@ -134,7 +134,7 @@ func (ep *EventProcessor) Sequence() int64 {
 
 // FromRunnerEvent converts a runner.Event to a Message.
 func FromRunnerEvent(agentID string, seq int64, evt runner.Event) *Message {
-	raw, _ := json.Marshal(evt)
+	raw := marshalRawEvent(evt)
 
 	return &Message{
 		ID:        uuid.NewString(),
@@ -219,4 +219,12 @@ func mapRunnerErrorContent(evt runner.Event) *ErrorContent {
 	return &ErrorContent{
 		Message: evt.Content,
 	}
+}
+
+func marshalRawEvent(event any) json.RawMessage {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return json.RawMessage(`{"error":"event_encoding_failed"}`)
+	}
+	return encoded
 }

@@ -37,9 +37,13 @@ func (d *Daemon) handleListWorkItems(params json.RawMessage) (any, error) {
 		info := workItemToInfo(item)
 		// Add progress for goals and features
 		if item.ItemType == store.WorkItemTypeGoal || item.ItemType == store.WorkItemTypeFeature {
-			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
-			info.CompletedCount = completed
-			info.TotalCount = total
+			completed, total, err := d.store.GetWorkItemProgress(item.ID)
+			if err != nil {
+				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
+			} else {
+				info.CompletedCount = completed
+				info.TotalCount = total
+			}
 		}
 		result = append(result, info)
 	}
@@ -65,7 +69,10 @@ func (d *Daemon) handleGetWorkItem(params json.RawMessage) (any, error) {
 	info := workItemToInfo(item)
 
 	// Add progress
-	completed, total, _ := d.store.GetWorkItemProgress(item.ID)
+	completed, total, err := d.store.GetWorkItemProgress(item.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load work item progress: %w", err)
+	}
 	info.CompletedCount = completed
 	info.TotalCount = total
 
@@ -206,12 +213,18 @@ func (d *Daemon) handleGetWorkItemTree(params json.RawMessage) (any, error) {
 
 		// For each goal, get its full tree
 		for _, goal := range goals {
-			tree, _ := d.store.GetWorkItemTree(goal.ID)
+			tree, err := d.store.GetWorkItemTree(goal.ID)
+			if err != nil {
+				return nil, err
+			}
 			items = append(items, tree...)
 		}
 
 		// Also get orphan tasks
-		orphans, _ := d.store.ListOrphanTasks(req.Project)
+		orphans, err := d.store.ListOrphanTasks(req.Project)
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, orphans...)
 	}
 
@@ -224,9 +237,13 @@ func (d *Daemon) handleGetWorkItemTree(params json.RawMessage) (any, error) {
 		info := workItemToInfo(item)
 		// Add progress for non-tasks
 		if item.ItemType != store.WorkItemTypeTask {
-			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
-			info.CompletedCount = completed
-			info.TotalCount = total
+			completed, total, err := d.store.GetWorkItemProgress(item.ID)
+			if err != nil {
+				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
+			} else {
+				info.CompletedCount = completed
+				info.TotalCount = total
+			}
 		}
 		result = append(result, info)
 	}
@@ -252,9 +269,13 @@ func (d *Daemon) handleGetWorkItemChildren(params json.RawMessage) (any, error) 
 		info := workItemToInfo(item)
 		// Add progress for non-tasks
 		if item.ItemType != store.WorkItemTypeTask {
-			completed, total, _ := d.store.GetWorkItemProgress(item.ID)
-			info.CompletedCount = completed
-			info.TotalCount = total
+			completed, total, err := d.store.GetWorkItemProgress(item.ID)
+			if err != nil {
+				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
+			} else {
+				info.CompletedCount = completed
+				info.TotalCount = total
+			}
 		}
 		result = append(result, info)
 	}
@@ -288,7 +309,9 @@ func (d *Daemon) handleGetReadyItems(params json.RawMessage) (any, error) {
 		Project string `json:"project"`
 	}
 	if params != nil {
-		json.Unmarshal(params, &req)
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
 	}
 
 	items, err := d.store.ListReadyItems(req.Project)
@@ -385,7 +408,9 @@ func (d *Daemon) handleTaskEvent(event task.TaskEvent) {
 		// Mark task as deleted (soft delete in work_items)
 		if event.TaskID != "" {
 			taskWorkItemID := fmt.Sprintf("%s.%s", event.ListID, event.TaskID)
-			d.store.DeleteWorkItem(taskWorkItemID)
+			if err := d.store.DeleteWorkItem(taskWorkItemID); err != nil {
+				logging.Debug("failed to delete synced task work item", "id", taskWorkItemID, "error", err)
+			}
 		}
 	}
 
@@ -402,7 +427,11 @@ func (d *Daemon) handleTaskEvent(event task.TaskEvent) {
 func (d *Daemon) syncClaudeTasksToWorkItems(listID string) {
 	// Get the parent work item
 	parent, err := d.store.GetWorkItem(listID)
-	if err != nil || parent == nil {
+	if err != nil {
+		logging.Debug("failed to load work item for task sync", "list_id", listID, "error", err)
+		return
+	}
+	if parent == nil {
 		logging.Debug("work item not found for task sync", "list_id", listID)
 		return
 	}
@@ -428,7 +457,11 @@ func (d *Daemon) syncClaudeTasksToWorkItems(listID string) {
 func (d *Daemon) syncSingleTask(listID string, t *task.Task) {
 	// Get parent work item for project context
 	parent, err := d.store.GetWorkItem(listID)
-	if err != nil || parent == nil {
+	if err != nil {
+		logging.Debug("failed to load parent work item for task sync", "list_id", listID, "error", err)
+		return
+	}
+	if parent == nil {
 		return
 	}
 
@@ -436,7 +469,11 @@ func (d *Daemon) syncSingleTask(listID string, t *task.Task) {
 	taskWorkItemID := fmt.Sprintf("%s.%s", listID, t.ID)
 
 	// Check if task work item exists
-	existing, _ := d.store.GetWorkItem(taskWorkItemID)
+	existing, err := d.store.GetWorkItem(taskWorkItemID)
+	if err != nil {
+		logging.Debug("failed to load existing task work item", "id", taskWorkItemID, "error", err)
+		return
+	}
 
 	// Map task status to work item status
 	status := store.WorkItemStatusPending

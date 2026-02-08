@@ -417,6 +417,23 @@ func TestStreamEventWithNilPayload(t *testing.T) {
 	}
 }
 
+func TestStreamEventWithUnsupportedPayload(t *testing.T) {
+	event := NewStreamEvent(StreamEventHeartbeat, StreamSourceDaemon).
+		WithPayload(func() {})
+
+	if len(event.Payload) == 0 {
+		t.Fatal("payload should contain fallback error data")
+	}
+
+	var decoded map[string]string
+	if err := json.Unmarshal(event.Payload, &decoded); err != nil {
+		t.Fatalf("unmarshal fallback payload: %v", err)
+	}
+	if decoded["error"] != "payload_encoding_failed" {
+		t.Errorf("fallback error = %q", decoded["error"])
+	}
+}
+
 func TestWorkItemInfoSerialization(t *testing.T) {
 	item := WorkItemInfo{
 		ID:          "wi-a3f8",

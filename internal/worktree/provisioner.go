@@ -141,7 +141,10 @@ func (p *Provisioner) Prune(project string) ([]string, error) {
 
 		// Check if an agent is still running
 		if wt.AgentID != nil {
-			agent, _ := p.store.GetAgent(*wt.AgentID)
+			agent, err := p.store.GetAgent(*wt.AgentID)
+			if err != nil {
+				continue // Conservative: don't prune if we can't verify agent state
+			}
 			if agent != nil && isAgentActive(agent.Status) {
 				continue // Don't prune active work
 			}
@@ -236,8 +239,10 @@ func (p *Provisioner) PruneOrphans() ([]string, error) {
 			continue // Log but continue
 		}
 
-		// Also remove from store if it exists
-		_ = p.store.DeleteWorktree(dirPath)
+		// Also remove from store if it exists.
+		if err := p.store.DeleteWorktree(dirPath); err != nil {
+			return pruned, fmt.Errorf("delete orphaned worktree from store %s: %w", dirPath, err)
+		}
 
 		pruned = append(pruned, dirPath)
 	}
@@ -273,7 +278,10 @@ func (p *Provisioner) isValidWorktree(mainGitDir, worktreePath string) bool {
 	}
 
 	// Parse porcelain output looking for "worktree /path"
-	absPath, _ := filepath.Abs(worktreePath)
+	absPath, err := filepath.Abs(worktreePath)
+	if err != nil {
+		absPath = worktreePath
+	}
 	for _, line := range strings.Split(string(output), "\n") {
 		if wtPath, ok := strings.CutPrefix(line, "worktree "); ok {
 			if wtPath == absPath || wtPath == worktreePath {
@@ -464,7 +472,10 @@ func (p *Provisioner) isBranchMerged(mainRepo, branch string) bool {
 		return false
 	}
 	cmd.Dir = mainRepo
-	output, _ := cmd.Output()
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
 
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)

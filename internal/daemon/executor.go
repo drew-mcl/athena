@@ -50,7 +50,10 @@ func (e *JobExecutor) executeQuestion(ctx context.Context, job *store.Job) error
 	e.updateJobStatus(job.ID, store.JobStatusExecuting)
 
 	// Find any worktree for this project to run Claude in context
-	worktrees, _ := e.daemon.store.ListWorktrees(job.Project)
+	worktrees, err := e.daemon.store.ListWorktrees(job.Project)
+	if err != nil {
+		logging.Debug("failed to list worktrees for question job", "project", job.Project, "error", err)
+	}
 	var workDir string
 	for _, wt := range worktrees {
 		if wt.IsMain {
@@ -70,7 +73,10 @@ func (e *JobExecutor) executeQuestion(ctx context.Context, job *store.Job) error
 	}
 
 	// Store the answer
-	e.daemon.store.UpdateJobAnswer(job.ID, answer)
+	if err := e.daemon.store.UpdateJobAnswer(job.ID, answer); err != nil {
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to store job answer: %w", err)
+	}
 
 	e.broadcast("job_completed", job.ID)
 	return nil
@@ -109,7 +115,11 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 		e.updateJobStatus(job.ID, store.JobStatusFailed)
 		return fmt.Errorf("failed to create temp worktree: %w", err)
 	}
-	e.daemon.store.UpdateJobWorktree(job.ID, tempWtPath)
+	if err := e.daemon.store.UpdateJobWorktree(job.ID, tempWtPath); err != nil {
+		e.cleanupTempWorktree(mainRepo, tempWtPath, tempBranch)
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to link temp worktree to job: %w", err)
+	}
 
 	// 4. Run Claude to make the change
 	if err := e.runClaudeQuickChange(ctx, tempWtPath, job.NormalizedInput); err != nil {
@@ -152,7 +162,11 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 		e.updateJobStatus(job.ID, store.JobStatusFailed)
 		return fmt.Errorf("failed to commit: %w", err)
 	}
-	e.daemon.store.UpdateJobCommit(job.ID, commitHash)
+	if err := e.daemon.store.UpdateJobCommit(job.ID, commitHash); err != nil {
+		e.cleanupTempWorktree(mainRepo, tempWtPath, tempBranch)
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to record job commit: %w", err)
+	}
 
 	// 7. Merge to default branch
 	if err := e.mergeToDefault(mainRepo, tempBranch, defaultBranch); err != nil {
@@ -165,8 +179,15 @@ func (e *JobExecutor) executeQuick(ctx context.Context, job *store.Job) error {
 	e.cleanupTempWorktree(mainRepo, tempWtPath, tempBranch)
 
 	// 9. Broadcast to all feature worktrees
-	results := e.broadcastToWorktrees(ctx, job, mainRepo, defaultBranch, commitHash)
-	e.daemon.store.UpdateJobPropagation(job.ID, results)
+	results, err := e.broadcastToWorktrees(ctx, job, mainRepo, defaultBranch, commitHash)
+	if err != nil {
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to propagate quick job changes: %w", err)
+	}
+	if err := e.daemon.store.UpdateJobPropagation(job.ID, results); err != nil {
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to record propagation results: %w", err)
+	}
 
 	// 10. Determine final status based on propagation results
 	hasConflicts := false
@@ -224,7 +245,10 @@ func (e *JobExecutor) executeFeature(ctx context.Context, job *store.Job) error 
 	}
 
 	// Update job with worktree info
-	e.daemon.store.UpdateJobWorktree(job.ID, wtPath)
+	if err := e.daemon.store.UpdateJobWorktree(job.ID, wtPath); err != nil {
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to associate worktree with feature job: %w", err)
+	}
 
 	// 3. Spawn a planning agent
 	planPrompt := fmt.Sprintf(`You are a planning agent. Analyze the following feature request and create a detailed implementation plan.
@@ -265,8 +289,20 @@ Do NOT make any code changes. Only explore and create the plan.`, job.Normalized
 	}
 
 	// 4. Link everything up
-	e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID)
-	e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID)
+	if err := e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID); err != nil {
+		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to rollback feature planner agent after assignment failure", "agent_id", spawnedAgent.ID, "error", killErr)
+		}
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to assign spawned planner to worktree: %w", err)
+	}
+	if err := e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID); err != nil {
+		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to rollback feature planner agent after job linkage failure", "agent_id", spawnedAgent.ID, "error", killErr)
+		}
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to associate planner agent with job: %w", err)
+	}
 
 	// Broadcast events
 	e.daemon.server.Broadcast(control.Event{
@@ -339,8 +375,20 @@ Feature Context: %s`, wt.Branch, job.NormalizedInput)
 	}
 
 	// Link agent
-	e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID)
-	e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID)
+	if err := e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID); err != nil {
+		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to rollback merge resolver agent after assignment failure", "agent_id", spawnedAgent.ID, "error", killErr)
+		}
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to assign resolver to worktree: %w", err)
+	}
+	if err := e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID); err != nil {
+		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to rollback merge resolver agent after job linkage failure", "agent_id", spawnedAgent.ID, "error", killErr)
+		}
+		e.updateJobStatus(job.ID, store.JobStatusFailed)
+		return fmt.Errorf("failed to associate resolver agent with merge job: %w", err)
+	}
 
 	e.daemon.server.Broadcast(control.Event{
 		Type:    "agent_created",
@@ -354,8 +402,11 @@ Feature Context: %s`, wt.Branch, job.NormalizedInput)
 }
 
 // broadcastToWorktrees propagates changes to all feature worktrees.
-func (e *JobExecutor) broadcastToWorktrees(ctx context.Context, job *store.Job, mainRepo, defaultBranch, commitHash string) []store.PropagationResult {
-	worktrees, _ := e.daemon.store.ListWorktrees(job.Project)
+func (e *JobExecutor) broadcastToWorktrees(ctx context.Context, job *store.Job, mainRepo, defaultBranch, commitHash string) ([]store.PropagationResult, error) {
+	worktrees, err := e.daemon.store.ListWorktrees(job.Project)
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees for propagation: %w", err)
+	}
 
 	var results []store.PropagationResult
 	for _, wt := range worktrees {
@@ -370,7 +421,10 @@ func (e *JobExecutor) broadcastToWorktrees(ctx context.Context, job *store.Job, 
 
 		// Check if worktree has an active agent
 		if wt.AgentID != nil {
-			agent, _ := e.daemon.store.GetAgent(*wt.AgentID)
+			agent, err := e.daemon.store.GetAgent(*wt.AgentID)
+			if err != nil {
+				logging.Warn("failed to load agent for propagation decision", "agent_id", *wt.AgentID, "error", err)
+			}
 			if agent != nil && isAgentActive(agent.Status) {
 				// Notify agent instead of auto-merging
 				result.Status = "notified"
@@ -394,7 +448,7 @@ func (e *JobExecutor) broadcastToWorktrees(ctx context.Context, job *store.Job, 
 		results = append(results, result)
 	}
 
-	return results
+	return results, nil
 }
 
 // notifyAgentToMerge sends a message to an agent to merge the latest changes.
@@ -403,7 +457,9 @@ func (e *JobExecutor) notifyAgentToMerge(agent *store.Agent, job *store.Job, com
 	_, maxLogTruncateLen := e.daemon.config.GetTruncateLengths()
 	payload := fmt.Sprintf(`{"commit": "%s", "job_id": "%s", "message": "New changes on main: %s. Please merge when appropriate."}`,
 		commitHash, job.ID, truncateStr(job.NormalizedInput, maxLogTruncateLen))
-	e.daemon.store.LogAgentEvent(agent.ID, "merge_request", payload)
+	if err := e.daemon.store.LogAgentEvent(agent.ID, "merge_request", payload); err != nil {
+		logging.Warn("failed to log merge request event for agent", "agent_id", agent.ID, "job_id", job.ID, "error", err)
+	}
 
 	// Broadcast to TUI
 	e.daemon.server.Broadcast(control.Event{
@@ -421,7 +477,9 @@ func (e *JobExecutor) notifyAgentToMerge(agent *store.Agent, job *store.Job, com
 // Helper methods
 
 func (e *JobExecutor) updateJobStatus(id string, status store.JobStatus) {
-	e.daemon.store.UpdateJobStatus(id, status)
+	if err := e.daemon.store.UpdateJobStatus(id, status); err != nil {
+		logging.Warn("failed to update job status", "job_id", id, "status", status, "error", err)
+	}
 	e.daemon.server.Broadcast(control.Event{
 		Type:    "job_status_changed",
 		Payload: map[string]string{"id": id, "status": string(status)},
@@ -582,6 +640,9 @@ func (e *JobExecutor) commitChanges(repoPath, message string) (string, error) {
 
 	// Commit
 	maxCommitMsgLen, _ := e.daemon.config.GetTruncateLengths()
+	if maxCommitMsgLen <= 0 {
+		maxCommitMsgLen = 200
+	}
 	commitMsg := truncateStr(message, maxCommitMsgLen)
 	cmd, err = executil.Command("git", "commit", "-m", commitMsg)
 	if err != nil {

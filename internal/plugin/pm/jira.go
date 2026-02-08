@@ -296,9 +296,12 @@ func (j *Jira) UpdateIssueState(ctx context.Context, issueKey string, state Issu
 		return fmt.Errorf("no available transition to %q for issue %s", state, issueKey)
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"transition": map[string]string{"id": transitionID},
 	})
+	if err != nil {
+		return fmt.Errorf("encode transition payload: %w", err)
+	}
 
 	_, err = jiraRequest(ctx, cfg, http.MethodPost,
 		"/rest/api/3/issue/"+issueKey+"/transitions", strings.NewReader(string(payload)))
@@ -315,12 +318,15 @@ func (j *Jira) LinkPR(ctx context.Context, issueKey, prURL string) error {
 		return err
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"object": map[string]interface{}{
 			"url":   prURL,
 			"title": "Pull Request",
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("encode remote link payload: %w", err)
+	}
 
 	_, err = jiraRequest(ctx, cfg, http.MethodPost,
 		"/rest/api/3/issue/"+issueKey+"/remotelink", strings.NewReader(string(payload)))

@@ -9,6 +9,7 @@ import (
 
 	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/executil"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 )
 
@@ -52,6 +53,7 @@ func (s *Scanner) Scan() ([]DiscoveredRepo, error) {
 		expanded := expandPath(baseDir)
 		discovered, err := s.scanDirectory(expanded, seen)
 		if err != nil {
+			logging.Debug("failed to scan base directory", "base_dir", expanded, "error", err)
 			continue // Log but don't fail on individual directory errors
 		}
 		repos = append(repos, discovered...)
@@ -133,6 +135,7 @@ func (s *Scanner) ScanAndStore() error {
 				Status:      status,
 			}
 			if err := s.store.UpsertWorktree(wt); err != nil {
+				logging.Debug("failed to upsert discovered worktree", "path", wt.Path, "error", err)
 				continue
 			}
 		}
@@ -142,7 +145,7 @@ func (s *Scanner) ScanAndStore() error {
 	if s.config.Repos.WorktreeDir != "" {
 		if err := s.scanWorktreeDir(); err != nil {
 			// Log but don't fail - worktree dir may not exist yet
-			_ = err
+			logging.Debug("failed to scan dedicated worktree directory", "path", s.config.Repos.WorktreeDir, "error", err)
 		}
 	}
 
@@ -354,7 +357,7 @@ func (s *Scanner) findWorktrees(mainRepoPath string) []DiscoveredWorktree {
 func (s *Scanner) isExcluded(path string) bool {
 	for _, pattern := range s.config.Repos.Exclude {
 		// Simple glob matching - could use filepath.Match for more complex patterns
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+		if matched, err := filepath.Match(pattern, filepath.Base(path)); err == nil && matched {
 			return true
 		}
 		// Check if pattern matches any part of the path
@@ -380,7 +383,10 @@ func getCurrentBranch(repoPath string) string {
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return path
+		}
 		return filepath.Join(home, path[2:])
 	}
 	return path

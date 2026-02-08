@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -35,10 +37,12 @@ func (s *Store) CreateSnapshot(ctx context.Context, snap *Snapshot) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	// Serialize metadata
-	metadataJSON, _ := json.Marshal(snap.Metadata)
+	metadataJSON, err := json.Marshal(snap.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot metadata: %w", err)
+	}
 
-	_, err := s.db.ExecContext(ctx, query,
+	_, err = s.db.ExecContext(ctx, query,
 		snap.ID,
 		snap.AgentID,
 		snap.Sequence,
@@ -131,15 +135,25 @@ func scanSnapshot(scanner interface{ Scan(...interface{}) error }) (*Snapshot, e
 	snap.Checksum = checksum.String
 	snap.Data = []byte(data.String)
 
-	// Parse metadata
-	if metadata.Valid {
-		json.Unmarshal([]byte(metadata.String), &snap.Metadata)
+	// Keep metadata JSON as fallback for legacy rows where denormalized columns are missing.
+	if metadata.Valid && strings.TrimSpace(metadata.String) != "" {
+		if err := json.Unmarshal([]byte(metadata.String), &snap.Metadata); err != nil {
+			return nil, fmt.Errorf("decode snapshot metadata: %w", err)
+		}
 	}
 
-	snap.Metadata.MessageCount = int(messageCount.Int64)
-	snap.Metadata.ToolCallCount = int(toolCallCount.Int64)
-	snap.Metadata.Duration = time.Duration(durationMs.Int64) * time.Millisecond
-	snap.Metadata.IsComplete = isComplete.Bool
+	if messageCount.Valid {
+		snap.Metadata.MessageCount = int(messageCount.Int64)
+	}
+	if toolCallCount.Valid {
+		snap.Metadata.ToolCallCount = int(toolCallCount.Int64)
+	}
+	if durationMs.Valid {
+		snap.Metadata.Duration = time.Duration(durationMs.Int64) * time.Millisecond
+	}
+	if isComplete.Valid {
+		snap.Metadata.IsComplete = isComplete.Bool
+	}
 
 	return &snap, nil
 }
