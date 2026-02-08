@@ -32,22 +32,7 @@ func (d *Daemon) handleListWorkItems(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	var result []*control.WorkItemInfo
-	for _, item := range items {
-		info := workItemToInfo(item)
-		// Add progress for goals and features
-		if item.ItemType == store.WorkItemTypeGoal || item.ItemType == store.WorkItemTypeFeature {
-			completed, total, err := d.store.GetWorkItemProgress(item.ID)
-			if err != nil {
-				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
-			} else {
-				info.CompletedCount = completed
-				info.TotalCount = total
-			}
-		}
-		result = append(result, info)
-	}
-	return result, nil
+	return d.workItemsToInfo(items, includeGoalFeatureProgress), nil
 }
 
 func (d *Daemon) handleGetWorkItem(params json.RawMessage) (any, error) {
@@ -232,23 +217,7 @@ func (d *Daemon) handleGetWorkItemTree(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	var result []*control.WorkItemInfo
-	for _, item := range items {
-		info := workItemToInfo(item)
-		// Add progress for non-tasks
-		if item.ItemType != store.WorkItemTypeTask {
-			completed, total, err := d.store.GetWorkItemProgress(item.ID)
-			if err != nil {
-				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
-			} else {
-				info.CompletedCount = completed
-				info.TotalCount = total
-			}
-		}
-		result = append(result, info)
-	}
-
-	return result, nil
+	return d.workItemsToInfo(items, includeNonTaskProgress), nil
 }
 
 func (d *Daemon) handleGetWorkItemChildren(params json.RawMessage) (any, error) {
@@ -264,23 +233,7 @@ func (d *Daemon) handleGetWorkItemChildren(params json.RawMessage) (any, error) 
 		return nil, err
 	}
 
-	var result []*control.WorkItemInfo
-	for _, item := range items {
-		info := workItemToInfo(item)
-		// Add progress for non-tasks
-		if item.ItemType != store.WorkItemTypeTask {
-			completed, total, err := d.store.GetWorkItemProgress(item.ID)
-			if err != nil {
-				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
-			} else {
-				info.CompletedCount = completed
-				info.TotalCount = total
-			}
-		}
-		result = append(result, info)
-	}
-
-	return result, nil
+	return d.workItemsToInfo(items, includeNonTaskProgress), nil
 }
 
 func (d *Daemon) handleGetWorkItemAncestors(params json.RawMessage) (any, error) {
@@ -296,12 +249,7 @@ func (d *Daemon) handleGetWorkItemAncestors(params json.RawMessage) (any, error)
 		return nil, err
 	}
 
-	var result []*control.WorkItemInfo
-	for _, item := range items {
-		result = append(result, workItemToInfo(item))
-	}
-
-	return result, nil
+	return d.workItemsToInfo(items, nil), nil
 }
 
 func (d *Daemon) handleGetReadyItems(params json.RawMessage) (any, error) {
@@ -319,12 +267,7 @@ func (d *Daemon) handleGetReadyItems(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	var result []*control.WorkItemInfo
-	for _, item := range items {
-		result = append(result, workItemToInfo(item))
-	}
-
-	return result, nil
+	return d.workItemsToInfo(items, nil), nil
 }
 
 // Helper functions
@@ -359,6 +302,32 @@ func workItemToInfo(item *store.WorkItem) *control.WorkItemInfo {
 	}
 
 	return info
+}
+
+func includeGoalFeatureProgress(itemType store.WorkItemType) bool {
+	return itemType == store.WorkItemTypeGoal || itemType == store.WorkItemTypeFeature
+}
+
+func includeNonTaskProgress(itemType store.WorkItemType) bool {
+	return itemType != store.WorkItemTypeTask
+}
+
+func (d *Daemon) workItemsToInfo(items []*store.WorkItem, includeProgress func(store.WorkItemType) bool) []*control.WorkItemInfo {
+	result := make([]*control.WorkItemInfo, 0, len(items))
+	for _, item := range items {
+		info := workItemToInfo(item)
+		if includeProgress != nil && includeProgress(item.ItemType) {
+			completed, total, err := d.store.GetWorkItemProgress(item.ID)
+			if err != nil {
+				logging.Debug("failed to load work item progress", "id", item.ID, "error", err)
+			} else {
+				info.CompletedCount = completed
+				info.TotalCount = total
+			}
+		}
+		result = append(result, info)
+	}
+	return result
 }
 
 func nilIfEmpty(s string) *string {

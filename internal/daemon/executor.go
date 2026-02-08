@@ -281,27 +281,11 @@ Do NOT make any code changes. Only explore and create the plan.`, job.Normalized
 		Prompt:       planPrompt,
 	}
 
-	spawnedAgent, err := e.daemon.spawner.Spawn(ctx, spec)
+	spawnedAgent, err := e.spawnLinkedAgent(ctx, job.ID, wtPath, spec, "planner", "failed to spawn planning agent")
 	if err != nil {
-		logging.Warn("failed to spawn planning agent", "worktree", wtPath, "error", err)
+		logging.Warn("failed to start planning agent", "worktree", wtPath, "error", err)
 		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to spawn agent: %w", err)
-	}
-
-	// 4. Link everything up
-	if err := e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID); err != nil {
-		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
-			logging.Warn("failed to rollback feature planner agent after assignment failure", "agent_id", spawnedAgent.ID, "error", killErr)
-		}
-		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to assign spawned planner to worktree: %w", err)
-	}
-	if err := e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID); err != nil {
-		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
-			logging.Warn("failed to rollback feature planner agent after job linkage failure", "agent_id", spawnedAgent.ID, "error", killErr)
-		}
-		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to associate planner agent with job: %w", err)
+		return err
 	}
 
 	// Broadcast events
@@ -314,11 +298,6 @@ Do NOT make any code changes. Only explore and create the plan.`, job.Normalized
 			WTStatus: "active",
 			AgentID:  spawnedAgent.ID,
 		},
-	})
-
-	e.daemon.server.Broadcast(control.Event{
-		Type:    "agent_created",
-		Payload: e.daemon.agentToInfo(spawnedAgent),
 	})
 
 	e.updateJobStatus(job.ID, store.JobStatusPlanning)
@@ -368,32 +347,10 @@ Feature Context: %s`, wt.Branch, job.NormalizedInput)
 		Prompt:       prompt,
 	}
 
-	spawnedAgent, err := e.daemon.spawner.Spawn(ctx, spec)
-	if err != nil {
+	if _, err := e.spawnLinkedAgent(ctx, job.ID, wtPath, spec, "resolver", "failed to spawn resolver"); err != nil {
 		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to spawn resolver: %w", err)
+		return err
 	}
-
-	// Link agent
-	if err := e.daemon.store.AssignAgentToWorktree(wtPath, spawnedAgent.ID); err != nil {
-		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
-			logging.Warn("failed to rollback merge resolver agent after assignment failure", "agent_id", spawnedAgent.ID, "error", killErr)
-		}
-		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to assign resolver to worktree: %w", err)
-	}
-	if err := e.daemon.store.UpdateJobAgent(job.ID, spawnedAgent.ID); err != nil {
-		if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
-			logging.Warn("failed to rollback merge resolver agent after job linkage failure", "agent_id", spawnedAgent.ID, "error", killErr)
-		}
-		e.updateJobStatus(job.ID, store.JobStatusFailed)
-		return fmt.Errorf("failed to associate resolver agent with merge job: %w", err)
-	}
-
-	e.daemon.server.Broadcast(control.Event{
-		Type:    "agent_created",
-		Payload: e.daemon.agentToInfo(spawnedAgent),
-	})
 
 	// Job status stays Executing until agent finishes?
 	// Or we can mark it Planning/Running to match agent status.
@@ -491,6 +448,49 @@ func (e *JobExecutor) broadcast(eventType, jobID string) {
 		Type:    eventType,
 		Payload: map[string]string{"id": jobID},
 	})
+}
+
+func (e *JobExecutor) linkSpawnedAgent(jobID, worktreePath string, spawnedAgent *store.Agent, role string) error {
+	if err := e.daemon.store.AssignAgentToWorktree(worktreePath, spawnedAgent.ID); err != nil {
+		e.rollbackSpawnedAgent(spawnedAgent, role, "worktree_assignment")
+		return fmt.Errorf("failed to assign %s to worktree: %w", role, err)
+	}
+	if err := e.daemon.store.UpdateJobAgent(jobID, spawnedAgent.ID); err != nil {
+		e.rollbackSpawnedAgent(spawnedAgent, role, "job_link")
+		return fmt.Errorf("failed to associate %s with job: %w", role, err)
+	}
+	return nil
+}
+
+func (e *JobExecutor) spawnLinkedAgent(
+	ctx context.Context,
+	jobID, worktreePath string,
+	spec agent.SpawnSpec,
+	role, spawnErrPrefix string,
+) (*store.Agent, error) {
+	spawnedAgent, err := e.daemon.spawner.Spawn(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", spawnErrPrefix, err)
+	}
+	if err := e.linkSpawnedAgent(jobID, worktreePath, spawnedAgent, role); err != nil {
+		return nil, err
+	}
+	e.daemon.server.Broadcast(control.Event{
+		Type:    "agent_created",
+		Payload: e.daemon.agentToInfo(spawnedAgent),
+	})
+	return spawnedAgent, nil
+}
+
+func (e *JobExecutor) rollbackSpawnedAgent(spawnedAgent *store.Agent, role, stage string) {
+	if killErr := e.daemon.spawner.Kill(spawnedAgent.ID); killErr != nil {
+		logging.Warn("failed to rollback spawned agent",
+			"agent_id", spawnedAgent.ID,
+			"role", role,
+			"stage", stage,
+			"error", killErr,
+		)
+	}
 }
 
 func (e *JobExecutor) findMainRepo(project string) (string, error) {

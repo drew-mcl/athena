@@ -43,82 +43,110 @@ func (f *fakeVCSProvider) ListCIRuns(ctx context.Context, repo, branch string, l
 }
 
 func TestParseRepoFromPRURL(t *testing.T) {
-	t.Run("github", func(t *testing.T) {
-		provider, repo, ok := parseRepoFromPRURL("https://github.com/drew-mcl/athena/pull/51")
-		if !ok {
-			t.Fatal("expected parse to succeed")
-		}
-		if provider != "github" {
-			t.Fatalf("provider = %q, want github", provider)
-		}
-		if repo != "drew-mcl/athena" {
-			t.Fatalf("repo = %q, want drew-mcl/athena", repo)
-		}
-	})
+	tests := []struct {
+		name         string
+		url          string
+		wantProvider string
+		wantRepo     string
+		wantOK       bool
+	}{
+		{
+			name:         "github",
+			url:          "https://github.com/drew-mcl/athena/pull/51",
+			wantProvider: "github",
+			wantRepo:     "drew-mcl/athena",
+			wantOK:       true,
+		},
+		{
+			name:         "github enterprise style host",
+			url:          "https://github.internal.example/org/repo/pull/9",
+			wantProvider: "github",
+			wantRepo:     "org/repo",
+			wantOK:       true,
+		},
+		{
+			name:         "gitlab with subgroup",
+			url:          "https://gitlab.com/group/subgroup/athena/-/merge_requests/12",
+			wantProvider: "gitlab",
+			wantRepo:     "group/subgroup/athena",
+			wantOK:       true,
+		},
+		{
+			name:   "invalid",
+			url:    "not-a-url",
+			wantOK: false,
+		},
+	}
 
-	t.Run("github enterprise style host", func(t *testing.T) {
-		provider, repo, ok := parseRepoFromPRURL("https://github.internal.example/org/repo/pull/9")
-		if !ok {
-			t.Fatal("expected parse to succeed")
-		}
-		if provider != "github" {
-			t.Fatalf("provider = %q, want github", provider)
-		}
-		if repo != "org/repo" {
-			t.Fatalf("repo = %q, want org/repo", repo)
-		}
-	})
-
-	t.Run("gitlab with subgroup", func(t *testing.T) {
-		provider, repo, ok := parseRepoFromPRURL("https://gitlab.com/group/subgroup/athena/-/merge_requests/12")
-		if !ok {
-			t.Fatal("expected parse to succeed")
-		}
-		if provider != "gitlab" {
-			t.Fatalf("provider = %q, want gitlab", provider)
-		}
-		if repo != "group/subgroup/athena" {
-			t.Fatalf("repo = %q, want group/subgroup/athena", repo)
-		}
-	})
-
-	t.Run("invalid", func(t *testing.T) {
-		if _, _, ok := parseRepoFromPRURL("not-a-url"); ok {
-			t.Fatal("expected parse to fail")
-		}
-	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider, repo, ok := parseRepoFromPRURL(test.url)
+			if ok != test.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, test.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if provider != test.wantProvider {
+				t.Fatalf("provider = %q, want %q", provider, test.wantProvider)
+			}
+			if repo != test.wantRepo {
+				t.Fatalf("repo = %q, want %q", repo, test.wantRepo)
+			}
+		})
+	}
 }
 
 func TestResolveVCSProviderAndRepo(t *testing.T) {
 	gh := newFakeVCSProvider("github")
 	gl := newFakeVCSProvider("gitlab")
 	plugins := []plugin.Plugin{gh, gl}
+	tests := []struct {
+		name         string
+		project      string
+		prURL        string
+		wantProvider string
+		wantRepo     string
+		wantOK       bool
+	}{
+		{
+			name:         "selects provider by URL host",
+			project:      "athena",
+			prURL:        "https://github.com/drew-mcl/athena/pull/51",
+			wantProvider: "github",
+			wantRepo:     "drew-mcl/athena",
+			wantOK:       true,
+		},
+		{
+			name:         "falls back for unknown URL",
+			project:      "athena",
+			prURL:        "https://example.com/org/repo/pr/1",
+			wantProvider: "github",
+			wantRepo:     "athena",
+			wantOK:       true,
+		},
+	}
 
-	t.Run("selects provider by URL host", func(t *testing.T) {
-		provider, repo, ok := resolveVCSProviderAndRepo("athena", "https://github.com/drew-mcl/athena/pull/51", plugins)
-		if !ok {
-			t.Fatal("expected provider resolution to succeed")
-		}
-		if provider.Name() != "github" {
-			t.Fatalf("provider = %q, want github", provider.Name())
-		}
-		if repo != "drew-mcl/athena" {
-			t.Fatalf("repo = %q, want drew-mcl/athena", repo)
-		}
-	})
-
-	t.Run("falls back for unknown URL", func(t *testing.T) {
-		provider, repo, ok := resolveVCSProviderAndRepo("athena", "https://example.com/org/repo/pr/1", plugins)
-		if !ok {
-			t.Fatal("expected provider resolution to succeed")
-		}
-		if provider.Name() != "github" {
-			t.Fatalf("provider = %q, want github fallback", provider.Name())
-		}
-		if repo != "athena" {
-			t.Fatalf("repo = %q, want project fallback", repo)
-		}
-	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider, repo, ok := resolveVCSProviderAndRepo(test.project, test.prURL, plugins)
+			if ok != test.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, test.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if provider == nil {
+				t.Fatal("provider = nil, want non-nil")
+			}
+			if provider.Name() != test.wantProvider {
+				t.Fatalf("provider = %q, want %q", provider.Name(), test.wantProvider)
+			}
+			if repo != test.wantRepo {
+				t.Fatalf("repo = %q, want %q", repo, test.wantRepo)
+			}
+		})
+	}
 }
 
 func TestQueueSyncStopIsIdempotent(t *testing.T) {

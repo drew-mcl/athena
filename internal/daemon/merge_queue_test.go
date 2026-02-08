@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/store"
 )
 
@@ -188,7 +188,10 @@ func runGit(t *testing.T, dir string, args ...string) string {
 }
 
 func runGitErr(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd, err := executil.Command("git", args...)
+	if err != nil {
+		return "", err
+	}
 	if dir != "" {
 		cmd.Dir = dir
 	}
