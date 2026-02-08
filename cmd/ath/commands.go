@@ -101,10 +101,18 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 	if resp.Worktree != nil {
 		fmt.Printf("  Worktree:  %s%s%s\n", cyan, resp.Worktree.Path, reset)
 	}
+	if headless && resp.Agent != nil && resp.Agent.ClaudeSessionID != "" {
+		fmt.Printf("  Session:   %s%s%s\n", yellow, resp.Agent.ClaudeSessionID, reset)
+	}
 	fmt.Println()
 
 	if headless {
-		fmt.Println(dim + "Check progress: ath tree " + resp.WorkItem.ID + reset)
+		if resp.Agent != nil {
+			fmt.Printf("%sMonitor:  ath agent %s%s\n", dim, resp.Agent.ID[:8], reset)
+			if resp.Agent.ClaudeSessionID != "" {
+				fmt.Printf("%sResume:   claude --resume %s%s\n", dim, resp.Agent.ClaudeSessionID, reset)
+			}
+		}
 		return nil
 	}
 
@@ -842,6 +850,67 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// ============================================================================
+// Agent Commands
+// ============================================================================
+
+func runAgentList(statusFilter string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	agents, err := client.ListAgents()
+	if err != nil {
+		return err
+	}
+
+	// Apply status filter
+	if statusFilter != "" {
+		var filtered []*control.AgentInfo
+		for _, a := range agents {
+			if a.Status == statusFilter {
+				filtered = append(filtered, a)
+			}
+		}
+		agents = filtered
+	}
+
+	printAgentTable(agents)
+	return nil
+}
+
+func runAgentShow(id string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Support prefix matching - list all and find match
+	agents, err := client.ListAgents()
+	if err != nil {
+		return err
+	}
+
+	var match *control.AgentInfo
+	for _, a := range agents {
+		if a.ID == id || strings.HasPrefix(a.ID, id) {
+			if match != nil {
+				return fmt.Errorf("ambiguous agent ID prefix: %s (matches %s and %s)", id, match.ID[:8], a.ID[:8])
+			}
+			match = a
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("agent not found: %s", id)
+	}
+
+	printAgentDetail(match)
+	return nil
 }
 
 // ============================================================================
