@@ -119,7 +119,10 @@ func newGeminiSession(ctx context.Context, spec RunSpec, resume *ResumeSpec) (*g
 	cs := model.StartChat()
 
 	// Setup history persistence directory
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.TempDir()
+	}
 	historyDir := filepath.Join(home, ".local", "share", "athena", "gemini", "sessions")
 	if err := os.MkdirAll(historyDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create history dir: %w", err)
@@ -334,7 +337,10 @@ func (s *geminiSession) handleFunctionCall(call genai.FunctionCall) error {
 }
 
 func (s *geminiSession) emitToolUse(call genai.FunctionCall) {
-	argsJSON, _ := json.Marshal(call.Args)
+	argsJSON, err := json.Marshal(call.Args)
+	if err != nil {
+		argsJSON = []byte(fmt.Sprintf(`{"error":"tool_args_encoding_failed","details":%q}`, err.Error()))
+	}
 	s.events <- Event{
 		Type:      "tool_use",
 		Name:      call.Name,

@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/drewfead/athena/internal/control"
@@ -19,6 +22,7 @@ type QueueSync struct {
 	server   *control.Server
 	interval time.Duration
 	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewQueueSync creates a new queue sync monitor.
@@ -39,7 +43,9 @@ func (q *QueueSync) Start() {
 
 // Stop halts the sync loop.
 func (q *QueueSync) Stop() {
-	close(q.stopCh)
+	q.stopOnce.Do(func() {
+		close(q.stopCh)
+	})
 }
 
 func (q *QueueSync) loop() {
@@ -61,6 +67,8 @@ func (q *QueueSync) syncAllQueues() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	q.refreshPluginConfig()
+
 	// Get all queued items with PR URLs
 	// For now, get all projects and check their queues
 	projects := q.getActiveProjects()
@@ -76,36 +84,42 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 		return
 	}
 
+	if q.plugins == nil {
+		return
+	}
+
 	// Get enabled VCS plugins
-	vcsPlugins := q.plugins.GetByCategory(plugin.CategoryVCS)
+	vcsPlugins := q.plugins.GetEnabledByCategory(plugin.CategoryVCS)
 	if len(vcsPlugins) == 0 {
 		// No VCS plugins enabled - queue works locally but no PR sync
 		return
 	}
 
-	// Use the first enabled VCS plugin (could be smarter about detection later)
-	var vcsProvider vcs.Provider
-	for _, p := range vcsPlugins {
-		if v, ok := p.(vcs.Provider); ok {
-			vcsProvider = v
-			break
-		}
-	}
-	if vcsProvider == nil {
-		return
-	}
-
 	for _, item := range items {
 		// Skip items without a PR URL
-		wt, _ := q.store.GetWorktree(item.WorktreePath)
+		wt, err := q.store.GetWorktree(item.WorktreePath)
+		if err != nil {
+			logging.Debug("failed to load worktree for queue item", "path", item.WorktreePath, "error", err)
+			continue
+		}
 		if wt == nil || wt.PRURL == nil || *wt.PRURL == "" {
 			continue
 		}
 
+		vcsProvider, repo, ok := resolveVCSProviderAndRepo(project, *wt.PRURL, vcsPlugins)
+		if !ok {
+			logging.Debug("failed to resolve VCS provider from PR URL",
+				"project", project,
+				"branch", item.Branch,
+				"pr_url", *wt.PRURL,
+			)
+			continue
+		}
+
 		// Check PR status
-		pr, err := vcsProvider.GetPR(ctx, project, item.Branch)
+		pr, err := vcsProvider.GetPR(ctx, repo, item.Branch)
 		if err != nil {
-			logging.Debug("failed to get PR status", "branch", item.Branch, "error", err)
+			logging.Debug("failed to get PR status", "repo", repo, "branch", item.Branch, "error", err)
 			continue
 		}
 
@@ -120,7 +134,9 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 			}
 
 			// Update worktree status
-			q.store.UpdateWorktreeStatus(item.WorktreePath, store.WorktreeStatusMerged)
+			if err := q.store.UpdateWorktreeStatus(item.WorktreePath, store.WorktreeStatusMerged); err != nil {
+				logging.Error("failed to update merged worktree status", "path", item.WorktreePath, "error", err)
+			}
 
 			// Broadcast event
 			q.server.Broadcast(control.Event{
@@ -137,8 +153,84 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 		case vcs.PRStateClosed:
 			// PR closed without merge - just update status, don't remove
 			logging.Info("PR closed without merge", "branch", item.Branch)
-			q.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusConflict, "")
+			if err := q.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusConflict, ""); err != nil {
+				logging.Error("failed to mark queue item as conflict", "path", item.WorktreePath, "error", err)
+			}
 		}
+	}
+}
+
+func (q *QueueSync) refreshPluginConfig() {
+	// Re-read plugin enablement each sync cycle so CLI toggles take effect without daemon restart.
+	if err := plugin.RefreshRegistryFromDisk(q.plugins); err != nil {
+		logging.Debug("failed to refresh plugin config in queue sync", "error", err)
+	}
+}
+
+func resolveVCSProviderAndRepo(project, prURL string, vcsPlugins []plugin.Plugin) (vcs.Provider, string, bool) {
+	if providerName, repo, ok := parseRepoFromPRURL(prURL); ok {
+		if provider := findVCSProvider(vcsPlugins, providerName); provider != nil {
+			return provider, repo, true
+		}
+		return nil, "", false
+	}
+
+	// Fallback for non-standard/self-hosted PR URLs: use first enabled provider and project name.
+	for _, p := range vcsPlugins {
+		if provider, ok := p.(vcs.Provider); ok {
+			return provider, project, true
+		}
+	}
+
+	return nil, "", false
+}
+
+func findVCSProvider(vcsPlugins []plugin.Plugin, providerName string) vcs.Provider {
+	for _, p := range vcsPlugins {
+		if !strings.EqualFold(p.Name(), providerName) {
+			continue
+		}
+		if provider, ok := p.(vcs.Provider); ok {
+			return provider
+		}
+	}
+	return nil
+}
+
+func parseRepoFromPRURL(prURL string) (providerName, repo string, ok bool) {
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return "", "", false
+	}
+
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segments) < 2 {
+		return "", "", false
+	}
+
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case strings.Contains(host, "github"):
+		if len(segments) < 4 || segments[2] != "pull" {
+			return "", "", false
+		}
+		return "github", segments[0] + "/" + segments[1], true
+	case strings.Contains(host, "gitlab"):
+		// GitLab merge request URLs look like:
+		// /group/subgroup/repo/-/merge_requests/123
+		dashIdx := -1
+		for i, segment := range segments {
+			if segment == "-" {
+				dashIdx = i
+				break
+			}
+		}
+		if dashIdx < 2 || dashIdx+1 >= len(segments) || segments[dashIdx+1] != "merge_requests" {
+			return "", "", false
+		}
+		return "gitlab", strings.Join(segments[:dashIdx], "/"), true
+	default:
+		return "", "", false
 	}
 }
 

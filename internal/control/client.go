@@ -67,17 +67,10 @@ func (c *Client) StreamEvents() <-chan *StreamEvent {
 // SubscribeStream enables stream mode to receive real-time events.
 // Filter options allow narrowing which events are received.
 func (c *Client) SubscribeStream(req SubscribeStreamRequest) (*SubscribeStreamResponse, error) {
-	resp, err := c.Call("subscribe_stream", req)
-	if err != nil {
+	var result SubscribeStreamResponse
+	if err := c.callAndDecode("subscribe_stream", req, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var result SubscribeStreamResponse
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
 	return &result, nil
 }
 
@@ -123,7 +116,10 @@ func (c *Client) Call(method string, params any) (*Response, error) {
 		c.mu.Unlock()
 	}()
 
-	encoded, _ := json.Marshal(req)
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	c.mu.Lock()
 	_, err = c.conn.Write(append(encoded, '\n'))
 	c.mu.Unlock()
@@ -139,70 +135,74 @@ func (c *Client) Call(method string, params any) (*Response, error) {
 	}
 }
 
+func responseError(resp *Response) error {
+	if resp != nil && resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
+func decodeResponseData(data any, out any) error {
+	if out == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal response data: %w", err)
+	}
+	if err := json.Unmarshal(encoded, out); err != nil {
+		return fmt.Errorf("decode response data: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) callAndDecode(method string, params any, out any) error {
+	resp, err := c.Call(method, params)
+	if err != nil {
+		return err
+	}
+	if err := responseError(resp); err != nil {
+		return err
+	}
+	return decodeResponseData(resp.Data, out)
+}
+
 // ListAgents retrieves all agents from the daemon.
 func (c *Client) ListAgents() ([]*AgentInfo, error) {
-	resp, err := c.Call("list_agents", nil)
-	if err != nil {
+	var agents []*AgentInfo
+	if err := c.callAndDecode("list_agents", nil, &agents); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var agents []*AgentInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &agents)
 	return agents, nil
 }
 
 // GetAgent retrieves a specific agent.
 func (c *Client) GetAgent(id string) (*AgentInfo, error) {
-	resp, err := c.Call("get_agent", map[string]string{"id": id})
-	if err != nil {
+	var agent AgentInfo
+	if err := c.callAndDecode("get_agent", map[string]string{"id": id}, &agent); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var agent AgentInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &agent)
 	return &agent, nil
 }
 
 // GetAgentLogs retrieves events/logs for an agent.
 func (c *Client) GetAgentLogs(agentID string, limit int) ([]*AgentEventInfo, error) {
-	resp, err := c.Call("get_agent_logs", map[string]any{
+	var events []*AgentEventInfo
+	if err := c.callAndDecode("get_agent_logs", map[string]any{
 		"agent_id": agentID,
 		"limit":    limit,
-	})
-	if err != nil {
+	}, &events); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var events []*AgentEventInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &events)
 	return events, nil
 }
 
 // SpawnAgent creates a new agent.
 func (c *Client) SpawnAgent(req SpawnAgentRequest) (*AgentInfo, error) {
-	resp, err := c.Call("spawn_agent", req)
-	if err != nil {
+	var agent AgentInfo
+	if err := c.callAndDecode("spawn_agent", req, &agent); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var agent AgentInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &agent)
 	return &agent, nil
 }
 
@@ -238,165 +238,95 @@ func (c *Client) ListWorktrees() ([]*WorktreeInfo, error) {
 
 // ListWorktreesWithOptions retrieves worktrees with optional fields.
 func (c *Client) ListWorktreesWithOptions(req ListWorktreesRequest) ([]*WorktreeInfo, error) {
-	resp, err := c.Call("list_worktrees", req)
-	if err != nil {
+	var worktrees []*WorktreeInfo
+	if err := c.callAndDecode("list_worktrees", req, &worktrees); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var worktrees []*WorktreeInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &worktrees)
 	return worktrees, nil
 }
 
 // ListJobs retrieves all jobs.
 func (c *Client) ListJobs() ([]*JobInfo, error) {
-	resp, err := c.Call("list_jobs", nil)
-	if err != nil {
+	var jobs []*JobInfo
+	if err := c.callAndDecode("list_jobs", nil, &jobs); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var jobs []*JobInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &jobs)
 	return jobs, nil
 }
 
 // CreateJob creates a new job.
 func (c *Client) CreateJob(req CreateJobRequest) (*JobInfo, error) {
-	resp, err := c.Call("create_job", req)
-	if err != nil {
+	var job JobInfo
+	if err := c.callAndDecode("create_job", req, &job); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var job JobInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &job)
 	return &job, nil
 }
 
 // NormalizePlan returns a plan for normalizing repo structure without making changes.
 func (c *Client) NormalizePlan() (*NormalizePlan, error) {
-	resp, err := c.Call("normalize_plan", nil)
-	if err != nil {
+	var plan NormalizePlan
+	if err := c.callAndDecode("normalize_plan", nil, &plan); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var plan NormalizePlan
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &plan)
 	return &plan, nil
 }
 
 // Normalize reorganizes repos into Athena's standard structure.
 func (c *Client) Normalize() ([]string, error) {
-	resp, err := c.Call("normalize", nil)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
 	var result struct {
 		Moved []string `json:"moved"`
 	}
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
+	if err := c.callAndDecode("normalize", nil, &result); err != nil {
+		return nil, err
+	}
 	return result.Moved, nil
 }
 
 // MigratePlan returns a plan for migrating worktrees to the new structure.
 func (c *Client) MigratePlan() (*MigrationPlan, error) {
-	resp, err := c.Call("migrate_plan", nil)
-	if err != nil {
+	var plan MigrationPlan
+	if err := c.callAndDecode("migrate_plan", nil, &plan); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var plan MigrationPlan
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &plan)
 	return &plan, nil
 }
 
 // MigrateWorktrees moves worktrees to the new structure.
 func (c *Client) MigrateWorktrees(dryRun bool) ([]string, error) {
-	resp, err := c.Call("migrate_worktrees", map[string]bool{"dry_run": dryRun})
-	if err != nil {
-		return nil, err
-	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
 	var result struct {
 		Migrated []string `json:"migrated"`
 	}
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
+	if err := c.callAndDecode("migrate_worktrees", map[string]bool{"dry_run": dryRun}, &result); err != nil {
+		return nil, err
+	}
 	return result.Migrated, nil
 }
 
 // CreateWorktree creates a new worktree in the dedicated worktree directory.
 func (c *Client) CreateWorktree(req CreateWorktreeRequest) (*WorktreeInfo, error) {
-	resp, err := c.Call("create_worktree", req)
-	if err != nil {
+	var wt WorktreeInfo
+	if err := c.callAndDecode("create_worktree", req, &wt); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var wt WorktreeInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &wt)
 	return &wt, nil
 }
 
 // ListNotes retrieves all notes.
 func (c *Client) ListNotes() ([]*NoteInfo, error) {
-	resp, err := c.Call("list_notes", nil)
-	if err != nil {
+	var notes []*NoteInfo
+	if err := c.callAndDecode("list_notes", nil, &notes); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var notes []*NoteInfo
-	json.Unmarshal(data, &notes)
 	return notes, nil
 }
 
 // CreateNote creates a new note.
 func (c *Client) CreateNote(req CreateNoteRequest) (*NoteInfo, error) {
-	resp, err := c.Call("create_note", req)
-	if err != nil {
+	var note NoteInfo
+	if err := c.callAndDecode("create_note", req, &note); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var note NoteInfo
-	json.Unmarshal(data, &note)
 	return &note, nil
 }
 
@@ -426,36 +356,22 @@ func (c *Client) DeleteNote(id string) error {
 
 // ListChangelog retrieves changelog entries.
 func (c *Client) ListChangelog(project string, limit int) ([]*ChangelogInfo, error) {
-	resp, err := c.Call("list_changelog", map[string]any{
+	var entries []*ChangelogInfo
+	if err := c.callAndDecode("list_changelog", map[string]any{
 		"project": project,
 		"limit":   limit,
-	})
-	if err != nil {
+	}, &entries); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var entries []*ChangelogInfo
-	json.Unmarshal(data, &entries)
 	return entries, nil
 }
 
 // CreateChangelog creates a new changelog entry.
 func (c *Client) CreateChangelog(req CreateChangelogRequest) (*ChangelogInfo, error) {
-	resp, err := c.Call("create_changelog", req)
-	if err != nil {
+	var entry ChangelogInfo
+	if err := c.callAndDecode("create_changelog", req, &entry); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var entry ChangelogInfo
-	json.Unmarshal(data, &entry)
 	return &entry, nil
 }
 
@@ -473,20 +389,13 @@ func (c *Client) DeleteChangelog(id string) error {
 
 // GetPlan retrieves the implementation plan for a worktree.
 func (c *Client) GetPlan(worktreePath string, forceRefresh bool) (*PlanInfo, error) {
-	resp, err := c.Call("get_plan", map[string]any{
+	var plan PlanInfo
+	if err := c.callAndDecode("get_plan", map[string]any{
 		"worktree_path": worktreePath,
 		"force_refresh": forceRefresh,
-	})
-	if err != nil {
+	}, &plan); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var plan PlanInfo
-	json.Unmarshal(data, &plan)
 	return &plan, nil
 }
 
@@ -504,49 +413,28 @@ func (c *Client) ApprovePlan(worktreePath string) error {
 
 // SpawnExecutor spawns an executor agent with the plan as context.
 func (c *Client) SpawnExecutor(worktreePath string) (*AgentInfo, error) {
-	resp, err := c.Call("spawn_executor", SpawnExecutorRequest{WorktreePath: worktreePath})
-	if err != nil {
+	var agent AgentInfo
+	if err := c.callAndDecode("spawn_executor", SpawnExecutorRequest{WorktreePath: worktreePath}, &agent); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var agent AgentInfo
-	json.Unmarshal(data, &agent)
 	return &agent, nil
 }
 
 // PublishPR pushes a worktree branch and creates a PR.
 func (c *Client) PublishPR(worktreePath string) (*PublishResult, error) {
-	resp, err := c.Call("publish_pr", PublishPRRequest{WorktreePath: worktreePath})
-	if err != nil {
+	var result PublishResult
+	if err := c.callAndDecode("publish_pr", PublishPRRequest{WorktreePath: worktreePath}, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var result PublishResult
-	json.Unmarshal(data, &result)
 	return &result, nil
 }
 
 // MergeLocal merges a worktree branch into main locally.
 func (c *Client) MergeLocal(worktreePath string) (*MergeLocalResult, error) {
-	resp, err := c.Call("merge_local", map[string]string{"worktree_path": worktreePath})
-	if err != nil {
+	var result MergeLocalResult
+	if err := c.callAndDecode("merge_local", map[string]string{"worktree_path": worktreePath}, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	data, _ := json.Marshal(resp.Data)
-	var result MergeLocalResult
-	json.Unmarshal(data, &result)
 	return &result, nil
 }
 
@@ -582,33 +470,19 @@ func (c *Client) AbandonWorktree(worktreePath string) error {
 
 // GetBlackboard retrieves all blackboard entries for a worktree.
 func (c *Client) GetBlackboard(worktreePath string) ([]*BlackboardEntryInfo, error) {
-	resp, err := c.Call("get_blackboard", map[string]string{"worktree_path": worktreePath})
-	if err != nil {
+	var entries []*BlackboardEntryInfo
+	if err := c.callAndDecode("get_blackboard", map[string]string{"worktree_path": worktreePath}, &entries); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var entries []*BlackboardEntryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &entries)
 	return entries, nil
 }
 
 // PostBlackboard posts a new entry to the blackboard.
 func (c *Client) PostBlackboard(req PostBlackboardRequest) (*BlackboardEntryInfo, error) {
-	resp, err := c.Call("post_blackboard", req)
-	if err != nil {
+	var entry BlackboardEntryInfo
+	if err := c.callAndDecode("post_blackboard", req, &entry); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var entry BlackboardEntryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &entry)
 	return &entry, nil
 }
 
@@ -626,102 +500,60 @@ func (c *Client) ClearBlackboard(worktreePath string) error {
 
 // GetBlackboardSummary retrieves statistics for a worktree's blackboard.
 func (c *Client) GetBlackboardSummary(worktreePath string) (*BlackboardSummaryInfo, error) {
-	resp, err := c.Call("get_blackboard_summary", map[string]string{"worktree_path": worktreePath})
-	if err != nil {
+	var summary BlackboardSummaryInfo
+	if err := c.callAndDecode("get_blackboard_summary", map[string]string{"worktree_path": worktreePath}, &summary); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var summary BlackboardSummaryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &summary)
 	return &summary, nil
 }
 
 // GetProjectState retrieves all state entries for a project.
 func (c *Client) GetProjectState(project string) ([]*StateEntryInfo, error) {
-	resp, err := c.Call("get_project_state", map[string]string{"project": project})
-	if err != nil {
+	var entries []*StateEntryInfo
+	if err := c.callAndDecode("get_project_state", map[string]string{"project": project}, &entries); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var entries []*StateEntryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &entries)
 	return entries, nil
 }
 
 // SetProjectState creates or updates a project state entry.
 func (c *Client) SetProjectState(req SetStateRequest) (*StateEntryInfo, error) {
-	resp, err := c.Call("set_project_state", req)
-	if err != nil {
+	var entry StateEntryInfo
+	if err := c.callAndDecode("set_project_state", req, &entry); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var entry StateEntryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &entry)
 	return &entry, nil
 }
 
 // GetStateSummary retrieves statistics for a project's state.
 func (c *Client) GetStateSummary(project string) (*StateSummaryInfo, error) {
-	resp, err := c.Call("get_state_summary", map[string]string{"project": project})
-	if err != nil {
+	var summary StateSummaryInfo
+	if err := c.callAndDecode("get_state_summary", map[string]string{"project": project}, &summary); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var summary StateSummaryInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &summary)
 	return &summary, nil
 }
 
 // GetContextPreview retrieves a formatted preview of context an agent would see.
 func (c *Client) GetContextPreview(worktreePath, projectName string) (string, error) {
-	resp, err := c.Call("get_context_preview", map[string]string{
-		"worktree_path": worktreePath,
-		"project_name":  projectName,
-	})
-	if err != nil {
-		return "", err
-	}
-	if resp.Error != "" {
-		return "", errors.New(resp.Error)
-	}
-
 	var result struct {
 		Context string `json:"context"`
 	}
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
+	if err := c.callAndDecode("get_context_preview", map[string]string{
+		"worktree_path": worktreePath,
+		"project_name":  projectName,
+	}, &result); err != nil {
+		return "", err
+	}
 	return result.Context, nil
 }
 
 // GetCacheStats retrieves cross-agent cache hit rate statistics for a project.
 func (c *Client) GetCacheStats(projectName string) (*ProjectCacheStatsInfo, error) {
-	resp, err := c.Call("get_cache_stats", map[string]string{"project_name": projectName})
-	if err != nil {
+	var stats ProjectCacheStatsInfo
+	if err := c.callAndDecode("get_cache_stats", map[string]string{"project_name": projectName}, &stats); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var stats ProjectCacheStatsInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &stats)
 	return &stats, nil
 }
 
@@ -1193,103 +1025,61 @@ type ExecuteTaskRequest struct {
 
 // ListTaskProviders retrieves all registered task providers.
 func (c *Client) ListTaskProviders() ([]string, error) {
-	resp, err := c.Call("list_task_providers", nil)
-	if err != nil {
+	var providers []string
+	if err := c.callAndDecode("list_task_providers", nil, &providers); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var providers []string
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &providers)
 	return providers, nil
 }
 
 // ListTaskLists retrieves all task lists.
 func (c *Client) ListTaskLists() ([]*TaskListInfo, error) {
-	resp, err := c.Call("list_task_lists", nil)
-	if err != nil {
+	var lists []*TaskListInfo
+	if err := c.callAndDecode("list_task_lists", nil, &lists); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var lists []*TaskListInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &lists)
 	return lists, nil
 }
 
 // ListTasks retrieves tasks from a list.
 func (c *Client) ListTasks(listID string, status string) ([]*TaskInfo, error) {
-	resp, err := c.Call("list_tasks", map[string]any{
+	var tasks []*TaskInfo
+	if err := c.callAndDecode("list_tasks", map[string]any{
 		"list_id": listID,
 		"status":  status,
-	})
-	if err != nil {
+	}, &tasks); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var tasks []*TaskInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &tasks)
 	return tasks, nil
 }
 
 // GetTask retrieves a specific task.
 func (c *Client) GetTask(listID, taskID string) (*TaskInfo, error) {
-	resp, err := c.Call("get_task", map[string]string{
+	var task TaskInfo
+	if err := c.callAndDecode("get_task", map[string]string{
 		"list_id": listID,
 		"task_id": taskID,
-	})
-	if err != nil {
+	}, &task); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var task TaskInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &task)
 	return &task, nil
 }
 
 // CreateTask creates a new task in a list.
 func (c *Client) CreateTask(req CreateTaskRequest) (*TaskInfo, error) {
-	resp, err := c.Call("create_task", req)
-	if err != nil {
+	var task TaskInfo
+	if err := c.callAndDecode("create_task", req, &task); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var task TaskInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &task)
 	return &task, nil
 }
 
 // UpdateTask updates an existing task.
 func (c *Client) UpdateTask(req UpdateTaskRequest) (*TaskInfo, error) {
-	resp, err := c.Call("update_task", req)
-	if err != nil {
+	var task TaskInfo
+	if err := c.callAndDecode("update_task", req, &task); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var task TaskInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &task)
 	return &task, nil
 }
 
@@ -1310,17 +1100,10 @@ func (c *Client) DeleteTask(listID, taskID string) error {
 
 // ExecuteTask spawns an agent to execute a task.
 func (c *Client) ExecuteTask(req ExecuteTaskRequest) (*AgentInfo, error) {
-	resp, err := c.Call("execute_task", req)
-	if err != nil {
+	var agent AgentInfo
+	if err := c.callAndDecode("execute_task", req, &agent); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var agent AgentInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &agent)
 	return &agent, nil
 }
 
@@ -1356,17 +1139,10 @@ type SpawnChatResponse struct {
 // SpawnChat creates an interactive chat session for brainstorming.
 // The returned command should be executed in a new terminal tab.
 func (c *Client) SpawnChat(req SpawnChatRequest) (*SpawnChatResponse, error) {
-	resp, err := c.Call("spawn_chat", req)
-	if err != nil {
+	var result SpawnChatResponse
+	if err := c.callAndDecode("spawn_chat", req, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var result SpawnChatResponse
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
 	return &result, nil
 }
 
@@ -1429,65 +1205,37 @@ type UpdateWorkItemRequest struct {
 
 // ListWorkItems retrieves work items with optional filters.
 func (c *Client) ListWorkItems(req ListWorkItemsRequest) ([]*WorkItemInfo, error) {
-	resp, err := c.Call("list_work_items", req)
-	if err != nil {
+	var items []*WorkItemInfo
+	if err := c.callAndDecode("list_work_items", req, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
 // GetWorkItem retrieves a work item by ID.
 func (c *Client) GetWorkItem(id string) (*WorkItemInfo, error) {
-	resp, err := c.Call("get_work_item", map[string]string{"id": id})
-	if err != nil {
+	var item WorkItemInfo
+	if err := c.callAndDecode("get_work_item", map[string]string{"id": id}, &item); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var item WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &item)
 	return &item, nil
 }
 
 // CreateWorkItem creates a new work item.
 func (c *Client) CreateWorkItem(req CreateWorkItemRequest) (*WorkItemInfo, error) {
-	resp, err := c.Call("create_work_item", req)
-	if err != nil {
+	var item WorkItemInfo
+	if err := c.callAndDecode("create_work_item", req, &item); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var item WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &item)
 	return &item, nil
 }
 
 // UpdateWorkItem updates an existing work item.
 func (c *Client) UpdateWorkItem(req UpdateWorkItemRequest) (*WorkItemInfo, error) {
-	resp, err := c.Call("update_work_item", req)
-	if err != nil {
+	var item WorkItemInfo
+	if err := c.callAndDecode("update_work_item", req, &item); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var item WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &item)
 	return &item, nil
 }
 
@@ -1505,68 +1253,40 @@ func (c *Client) DeleteWorkItem(id string) error {
 
 // GetWorkItemTree retrieves a work item and all its descendants.
 func (c *Client) GetWorkItemTree(rootID, project string) ([]*WorkItemInfo, error) {
-	resp, err := c.Call("get_work_item_tree", map[string]string{
+	var items []*WorkItemInfo
+	if err := c.callAndDecode("get_work_item_tree", map[string]string{
 		"root_id": rootID,
 		"project": project,
-	})
-	if err != nil {
+	}, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
 // GetWorkItemChildren retrieves direct children of a work item.
 func (c *Client) GetWorkItemChildren(parentID string) ([]*WorkItemInfo, error) {
-	resp, err := c.Call("get_work_item_children", map[string]string{"parent_id": parentID})
-	if err != nil {
+	var items []*WorkItemInfo
+	if err := c.callAndDecode("get_work_item_children", map[string]string{"parent_id": parentID}, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
 // GetWorkItemAncestors retrieves all ancestors of a work item.
 func (c *Client) GetWorkItemAncestors(id string) ([]*WorkItemInfo, error) {
-	resp, err := c.Call("get_work_item_ancestors", map[string]string{"id": id})
-	if err != nil {
+	var items []*WorkItemInfo
+	if err := c.callAndDecode("get_work_item_ancestors", map[string]string{"id": id}, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
 // GetReadyItems retrieves unblocked work items ready to be worked on.
 func (c *Client) GetReadyItems(project string) ([]*WorkItemInfo, error) {
-	resp, err := c.Call("get_ready_items", map[string]string{"project": project})
-	if err != nil {
+	var items []*WorkItemInfo
+	if err := c.callAndDecode("get_ready_items", map[string]string{"project": project}, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*WorkItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
@@ -1604,49 +1324,28 @@ type AddToMergeQueueRequest struct {
 
 // GetMergeQueue retrieves all items in the merge queue for a project.
 func (c *Client) GetMergeQueue(project string) ([]*MergeQueueItemInfo, error) {
-	resp, err := c.Call("get_merge_queue", map[string]string{"project": project})
-	if err != nil {
+	var items []*MergeQueueItemInfo
+	if err := c.callAndDecode("get_merge_queue", map[string]string{"project": project}, &items); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var items []*MergeQueueItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &items)
 	return items, nil
 }
 
 // GetMergeQueueHead returns the integration HEAD - what new worktrees should base on.
 func (c *Client) GetMergeQueueHead(project string) (*MergeQueueHeadInfo, error) {
-	resp, err := c.Call("get_merge_queue_head", map[string]string{"project": project})
-	if err != nil {
+	var head MergeQueueHeadInfo
+	if err := c.callAndDecode("get_merge_queue_head", map[string]string{"project": project}, &head); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var head MergeQueueHeadInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &head)
 	return &head, nil
 }
 
 // AddToMergeQueue adds a worktree to the merge queue.
 func (c *Client) AddToMergeQueue(req AddToMergeQueueRequest) (*MergeQueueItemInfo, error) {
-	resp, err := c.Call("add_to_merge_queue", req)
-	if err != nil {
+	var item MergeQueueItemInfo
+	if err := c.callAndDecode("add_to_merge_queue", req, &item); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var item MergeQueueItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &item)
 	return &item, nil
 }
 
@@ -1664,17 +1363,10 @@ func (c *Client) RemoveFromMergeQueue(worktreePath string) error {
 
 // BumpMergeQueueItem moves a worktree to the back of the queue (after editing).
 func (c *Client) BumpMergeQueueItem(worktreePath string) (*MergeQueueItemInfo, error) {
-	resp, err := c.Call("bump_merge_queue_item", map[string]string{"worktree_path": worktreePath})
-	if err != nil {
+	var item MergeQueueItemInfo
+	if err := c.callAndDecode("bump_merge_queue_item", map[string]string{"worktree_path": worktreePath}, &item); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var item MergeQueueItemInfo
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &item)
 	return &item, nil
 }
 
@@ -1726,32 +1418,17 @@ type SpawnResponse struct {
 
 // Spawn initiates the unified spawn flow.
 func (c *Client) Spawn(req SpawnRequest) (*SpawnResponse, error) {
-	resp, err := c.Call("spawn", req)
-	if err != nil {
+	var result SpawnResponse
+	if err := c.callAndDecode("spawn", req, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-
-	var result SpawnResponse
-	data, _ := json.Marshal(resp.Data)
-	json.Unmarshal(data, &result)
 	return &result, nil
 }
 
 // PruneWorktrees cleans up merged and orphaned worktrees.
 func (c *Client) PruneWorktrees() (*PruneWorktreesResult, error) {
-	resp, err := c.Call("prune_worktrees", nil)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
-	}
-	data, _ := json.Marshal(resp.Data)
 	var result PruneWorktreesResult
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := c.callAndDecode("prune_worktrees", nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

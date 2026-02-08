@@ -95,8 +95,8 @@ func (s *Scorer) scoreFile(filePath, projectPath string, keywords []string) Scor
 	var reasons []string
 
 	// Compute relative path for matching
-	relPath, _ := filepath.Rel(projectPath, filePath)
-	if relPath == "" {
+	relPath, err := filepath.Rel(projectPath, filePath)
+	if err != nil || relPath == "" {
 		relPath = filePath
 	}
 

@@ -301,6 +301,20 @@ func (s *Store) GetItemsNeedingRebase(project string) ([]*MergeQueueItem, error)
 
 // MarkQueueItemRebased updates a queue item after successful rebase.
 func (s *Store) MarkQueueItemRebased(worktreePath string, newBaseCommit, newHeadCommit string) error {
+	return s.MarkQueueItemRebasedWithBase(worktreePath, "", newBaseCommit, newHeadCommit)
+}
+
+// MarkQueueItemRebasedWithBase updates queue metadata after successful rebase.
+func (s *Store) MarkQueueItemRebasedWithBase(worktreePath, newBaseBranch, newBaseCommit, newHeadCommit string) error {
+	if newBaseBranch != "" {
+		_, err := s.db.Exec(`
+		UPDATE merge_queue
+		SET status = 'queued', base_branch = ?, base_commit = ?, head_commit = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE worktree_path = ?
+	`, newBaseBranch, newBaseCommit, newHeadCommit, worktreePath)
+		return err
+	}
+
 	_, err := s.db.Exec(`
 		UPDATE merge_queue
 		SET status = 'queued', base_commit = ?, head_commit = ?, updated_at = CURRENT_TIMESTAMP

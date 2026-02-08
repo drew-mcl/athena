@@ -106,7 +106,9 @@ func (l *SQLiteEventLog) Snapshot(ctx context.Context, agentID string) (*store.S
 		},
 	}
 
-	// TODO: Persist snapshot to snapshots table
+	if err := l.store.CreateSnapshot(ctx, snap); err != nil {
+		return nil, fmt.Errorf("create snapshot: %w", err)
+	}
 	return snap, nil
 }
 

@@ -1,49 +1,59 @@
 # Codebase Map
 
-This document maps high-level system functionality to specific source files and key symbols. It is designed to help agents and developers quickly locate the code responsible for specific features.
+This document maps high-level system functionality to specific files and symbols in the current CLI-first architecture.
 
-## 🧠 Core Orchestration (Daemon)
-
-| Feature | File Path | Key Symbols | Description |
-|:---|:---|:---|:---|
-| **Daemon Entrypoint** | `internal/daemon/daemon.go` | `Daemon`, `New`, `Run` | Main service struct, lifecycle management, and signal handling. |
-| **Agent Reconciliation** | `internal/daemon/daemon.go` | `reconcileAgents` | Restores agent state on daemon restart (reattaches to processes). |
-| **Job Execution** | `internal/daemon/executor.go` | `JobExecutor`, `executeFeature` | Handles high-level flows: `Feature`, `Quick`, `Question`. |
-| **API Server** | `internal/control/api.go` | `RegisterHandlers` | Maps Unix socket commands to daemon methods. |
-| **Task Registry** | `internal/task/registry.go` | `Registry` | Manages available tasks (e.g., from Claude Code). |
-
-## 🖥️ Terminal UI (TUI)
+## Core Runtime (Daemon)
 
 | Feature | File Path | Key Symbols | Description |
 |:---|:---|:---|:---|
-| **Main Model** | `internal/tui/dashboard/model.go` | `Model`, `NewModel` | The root Bubble Tea model holding all UI state. |
-| **Event Loop** | `internal/tui/dashboard/model.go` | `Update` | Handles keypresses and incoming system messages. |
-| **Project View** | `internal/tui/dashboard/view_project.go` | `viewProject` | Renders the project detail screen. |
-| **Agent Logs** | `internal/tui/dashboard/view_dashboard.go` | `viewLogs` | Renders the real-time agent log stream. |
-| **Styling** | `internal/tui/styles.go` | `Styles` | Lip Gloss definitions for UI theming. |
+| Daemon lifecycle | `internal/daemon/daemon.go` | `Daemon`, `New`, `Run` | Main background service, signal handling, worker loops. |
+| Control API registration | `internal/daemon/daemon.go` | `registerHandlers` | Wires RPC-style methods exposed over the Unix socket. |
+| Spawn orchestration | `internal/daemon/spawn.go` | `handleSpawn`, `resolveSpawnTarget`, `buildSpawnPrompt` | Unified agent launch flow for feature/ticket/work-item/bare modes. |
+| Merge queue engine | `internal/daemon/merge_queue.go` | `getIntegrationHead`, `refreshQueueGraph`, `cascadeRebase` | Queue head tracking, divergence detection, and rebase cascade. |
+| Queue background sync | `internal/daemon/queue_sync.go` | `QueueSync`, `syncProject` | Polls enabled VCS plugins and auto-removes merged queue items. |
+| Job execution | `internal/daemon/executor.go` | `JobExecutor`, `ExecuteJob` | Executes planned jobs against agents/worktrees. |
 
-## 🏃 Agent Runner Layer
-
-| Feature | File Path | Key Symbols | Description |
-|:---|:---|:---|:---|
-| **Runner Interface** | `internal/runner/runner.go` | `Runner`, `Session` | Abstract interface for any AI agent harness. |
-| **Claude Implementation** | `internal/runner/claude.go` | `ClaudeRunner` | Implementation for `claudecode` CLI. |
-| **Harness Options** | `internal/runner/options.go` | `ClaudeOptions` | Maps internal config to CLI flags (strict typing). |
-| **Process Spawning** | `internal/agent/spawner.go` | `Spawn` | Orchestrates the actual creation of agent processes. |
-
-## 💾 Data & Persistence
+## CLI Surface
 
 | Feature | File Path | Key Symbols | Description |
 |:---|:---|:---|:---|
-| **SQLite Store** | `internal/store/sqlite.go` | `Store`, `New` | Main database access point. |
-| **Event Bus** | `internal/eventlog/eventlog.go` | `EventBus`, `Pipeline` | Pub/Sub system for streaming agent events to TUI. |
-| **Message Types** | `internal/data/message.go` | `Message`, `Type` | Unified data structure for all agent I/O. |
-| **Worktree State** | `internal/store/worktrees.go` | `GetWorktree`, `ListWorktrees` | DB methods for managing git worktrees. |
+| Main command tree | `cmd/ath/main.go` | `rootCmd`, `spawnCmd`, `pluginCmd`, `interactiveCmd` | User-facing command graph and flag wiring. |
+| Command handlers | `cmd/ath/commands.go` | `runSpawn`, `runQueueList`, `runPluginEnable` | Implements CLI behavior via daemon control client. |
+| Terminal rendering | `cmd/ath/output.go` | `printStatusBox`, `printQueueTable`, `printWorkItemTree` | Pretty terminal output for work items, queue, agents, worktrees. |
+| Interactive browser | `cmd/ath/interactive.go` | `runInteractive` | Keyboard-driven work item/agent navigation. |
 
-## 🛠️ Utilities & Safety
+## Integrations & Plugins
 
 | Feature | File Path | Key Symbols | Description |
 |:---|:---|:---|:---|
-| **Safe Execution** | `internal/executil/executil.go` | `Command`, `SafeEnv` | Sanitized command execution (PATH cleaning). |
-| **Panic Recovery** | `internal/daemon/daemon.go` | `safeGo`, `safeLoop` | Wrappers to prevent daemon crashes from goroutines. |
-| **Structured Logging** | `internal/logging/logging.go` | `Info`, `Error` | Standardized logging wrapper (slog + Sentry). |
+| Plugin primitives | `internal/plugin/plugin.go` | `Plugin`, `Registry` | Shared plugin interface and in-memory registry. |
+| Plugin config | `internal/plugin/config.go` | `LoadConfig`, `SaveConfig`, `ApplyConfig` | Shared persisted plugin enable/disable state (`~/.config/athena/plugins.json`). |
+| GitHub/GitLab VCS plugins | `internal/plugin/vcs/github.go`, `internal/plugin/vcs/gitlab.go` | `GitHub`, `GitLab` | PR and CI status integration via `gh` and `glab`. |
+| Linear/Jira PM plugins | `internal/plugin/pm/linear.go`, `internal/plugin/pm/jira.go` | `Linear`, `Jira` | Ticket lookup and issue lifecycle integrations. |
+
+## Data & Domain
+
+| Feature | File Path | Key Symbols | Description |
+|:---|:---|:---|:---|
+| Control client/server types | `internal/control/client.go`, `internal/control/types.go` | `Client`, `SpawnRequest`, `MergeQueueItemInfo` | RPC request/response contracts used by CLI and daemon. |
+| SQLite store | `internal/store/sqlite.go` | `Store`, `New` | Core persistence entrypoint. |
+| Work items | `internal/store/work_items.go` | `CreateWorkItem`, `GetWorkItemTree` | Goal/feature/task hierarchy storage. |
+| Merge queue storage | `internal/store/merge_queue.go` | `GetQueueHead`, `MarkQueueItemsDiverged` | Queue ordering and integration-head persistence. |
+| Worktree storage | `internal/store/worktrees.go` | `ListWorktrees`, `UpsertWorktree` | Worktree metadata and lifecycle state. |
+
+## Agent Execution Layer
+
+| Feature | File Path | Key Symbols | Description |
+|:---|:---|:---|:---|
+| Agent process spawning | `internal/agent/spawner.go` | `Spawner`, `Spawn` | Launches and supervises Claude Code subprocesses. |
+| Runner abstraction | `internal/runner/runner.go` | `Runner`, `Session` | Runner interface for harness implementations. |
+| Claude runner | `internal/runner/claude.go` | `ClaudeRunner` | Claude CLI-specific run/stream logic. |
+| Task providers | `internal/task/registry.go`, `internal/task/claude/provider.go` | `Registry`, `Provider` | Task list integration layer used by spawn flow. |
+
+## Safety & Platform Utilities
+
+| Feature | File Path | Key Symbols | Description |
+|:---|:---|:---|:---|
+| Safe subprocess utilities | `internal/executil/executil.go` | `Command`, `SafeEnv` | Guardrails for process execution environment. |
+| Logging/Sentry | `internal/logging/logging.go` | `Info`, `Warn`, `CapturePanic` | Structured logs and panic/error reporting hooks. |
+| Worktree operations | `internal/worktree/migrate.go`, `internal/worktree/provision.go` | `Migrator`, `Provisioner` | Git worktree creation, validation, and status collection. |

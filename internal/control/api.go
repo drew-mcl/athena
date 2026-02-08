@@ -323,12 +323,21 @@ func (s *Server) handleConnection(client *clientConn) {
 
 func (s *Server) sendResponse(client *clientConn, id string, data any) {
 	resp := Response{Data: data, ID: id}
-	encoded, _ := json.Marshal(resp)
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		s.sendError(client, id, "failed to encode response: "+err.Error())
+		return
+	}
 	client.write(append(encoded, '\n'))
 }
 
 func (s *Server) sendError(client *clientConn, id, errMsg string) {
 	resp := Response{Error: errMsg, ID: id}
-	encoded, _ := json.Marshal(resp)
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		// Marshal should never fail for this payload shape; emit a minimal fallback if it does.
+		client.write([]byte("{\"error\":\"internal server error\"}\n"))
+		return
+	}
 	client.write(append(encoded, '\n'))
 }

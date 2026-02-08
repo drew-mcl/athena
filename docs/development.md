@@ -1,104 +1,67 @@
 # Development Guide
 
-## Building
+## Build
 
 ```bash
-go build ./...           # Build all
-go build ./cmd/athena    # Build TUI
-go build ./cmd/athenad   # Build daemon
-go build ./cmd/wt        # Build worktree tool
+go build ./...               # Build all packages
+go build ./cmd/ath           # Primary CLI
+go build ./cmd/athenad       # Daemon
+go build ./cmd/athena-cli    # Legacy CLI shim
+go build ./cmd/athena-mcp    # MCP server
 ```
 
-Or use make:
+Or use Make:
 
 ```bash
-make build    # Build all binaries to ./bin
-make install  # Install to $GOPATH/bin
-make test     # Run tests
+make build
+make install
+make test
 ```
 
-## Running
+## Run
 
-### Development Mode
+### Development mode
 
 ```bash
-make dev      # Build, start daemon, launch TUI
+make dev      # Build + start daemon in background
 make stop     # Stop development daemon
-make daemon   # Run daemon in foreground (for debugging)
+make daemon   # Run daemon in foreground
 ```
 
 ### Production (macOS)
 
 ```bash
-make launchd-install    # Install as macOS service
-make launchd-uninstall  # Remove service
+make launchd-install
+make launchd-uninstall
+make launchd-restart
 ```
 
 ## Binaries
 
 | Binary | Purpose |
 |--------|---------|
-| `athena` | TUI dashboard |
-| `athenad` | Background daemon (manages agents, worktrees) |
-| `wt` | Worktree management CLI |
+| `ath` | Primary CLI for goals/features/tasks/spawn/queue/plugins |
+| `athenad` | Background daemon (worktrees, agents, queue, task sync) |
+| `athena-cli` | Legacy standalone CLI compatibility binary |
+| `athena-mcp` | MCP server for agent/tool integration |
 
-## Usage
-
-### athena (TUI)
+## CLI Usage
 
 ```bash
-athena              # Launch TUI (requires daemon running)
-athena view <id>    # View live agent output
+ath                          # Status summary
+ath spawn -f wi-a3f8.1       # Spawn feature agent (primary flow)
+ath i                        # Interactive agent in current directory
+ath tree                     # Work item hierarchy
+ath queue                    # Merge queue
+ath plugin                   # Plugin status and management
+ath wt                       # Worktree status
 ```
 
-**Keybindings:**
-
-| Key | Action |
-|-----|--------|
-| `j/k` | Navigate |
-| `e` | Open nvim in worktree |
-| `s` | Open shell in worktree |
-| `a` | Attach to agent session |
-| `v` | View agent live output |
-| `n` | New job |
-| `x` | Kill agent |
-| `r` | Refresh |
-| `?` | Help |
-| `q` | Quit |
-
-### wt (Worktree Management)
+## Daemon Logs
 
 ```bash
-wt                       # List all worktrees
-wt add <project> <name>  # Create worktree
-wt remove <path>         # Remove worktree
-wt prune [project]       # Clean up merged worktrees
-```
-
-### athenad (Daemon)
-
-Runs in background managing agent lifecycles.
-
-```bash
-athenad             # Run in foreground
-athenad --debug     # With debug logging
-```
-
-**Logs:**
-
-Daemon logs to file (doesn't interfere with TUI):
-```bash
-# View logs in real-time
 tail -f ~/.local/share/athena/athena.log
-
-# View with syntax highlighting
-bat -f ~/.local/share/athena/athena.log
-
-# Log format: timestamp level source msg key=value...
-# 2026-01-17T20:22:35.123-05:00 level=INFO source=daemon.go:97 msg="control server listening" socket=/tmp/athena.sock
 ```
-
-Agent stderr and crash info are stored in the database and viewable via `L` key in the TUI.
 
 ## Configuration
 
@@ -108,25 +71,16 @@ Config file: `~/.config/athena/config.yaml`
 repos:
   base_dirs:
     - ~/repos
-    - ~/work
 
 agents:
   restart_policy: on-failure
   max_restarts: 3
-  model: sonnet
 
 archetypes:
   planner:
-    description: Explores codebase and drafts plans
     permission_mode: plan
-    allowed_tools: [Glob, Grep, Read, Task]
   executor:
-    description: Implements approved plans
     permission_mode: default
-    allowed_tools: [all]
-
-terminal:
-  provider: ghostty
 
 daemon:
   socket: /tmp/athena.sock
@@ -134,43 +88,24 @@ daemon:
   log_file: ~/.local/share/athena/athena.log
 ```
 
-## Editor Integration
-
-### Neovim Live Reload
-
-For live reload when agents edit files:
-
-```lua
-vim.o.autoread = true
-
-vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold" }, {
-  callback = function()
-    if vim.fn.getcmdwintype() == "" then
-      vim.cmd("checktime")
-    end
-  end,
-})
-```
-
 ## Project Structure
 
-```
+```text
 cmd/
-  athena/       # TUI client
-  athenad/      # Daemon
-  wt/           # Worktree CLI
+  ath/           # Primary CLI
+  athenad/       # Daemon
+  athena-cli/    # Legacy CLI shim
+  athena-mcp/    # MCP server
 internal/
-  agent/        # Agent lifecycle management
-  config/       # Configuration loading
-  control/      # Unix socket API
-  daemon/       # Core daemon logic
-  data/         # Data plane (Message, Conversation)
-  eventlog/     # Event sourcing, caching, pub/sub
-  runner/       # Harness abstraction (Claude, Codex)
-  spec/         # Agent specifications (control plane)
-  store/        # SQLite persistence
-  tui/          # Bubble Tea components
-  worktree/     # Git worktree management
+  agent/         # Agent spawning/lifecycle
+  config/        # Configuration loading
+  control/       # Unix socket API client/server types
+  daemon/        # Core orchestration and queue sync
+  eventlog/      # Event sourcing and snapshots
+  plugin/        # VCS/PM plugin system
+  runner/        # Harness abstraction
+  store/         # SQLite persistence
+  worktree/      # Worktree management
 pkg/
-  claudecode/   # Claude Code CLI wrapper
+  claudecode/    # Claude Code wrapper
 ```

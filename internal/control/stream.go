@@ -167,7 +167,11 @@ func (e *StreamEvent) WithWorktree(path string) *StreamEvent {
 // WithPayload sets the payload on the event.
 func (e *StreamEvent) WithPayload(payload any) *StreamEvent {
 	if payload != nil {
-		data, _ := json.Marshal(payload)
+		data, err := json.Marshal(payload)
+		if err != nil {
+			e.Payload = json.RawMessage(`{"error":"payload_encoding_failed"}`)
+			return e
+		}
 		e.Payload = data
 	}
 	return e

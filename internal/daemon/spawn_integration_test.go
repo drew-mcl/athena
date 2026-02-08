@@ -45,6 +45,15 @@ func newTestDaemon(t *testing.T) *Daemon {
 	}
 }
 
+func mustMarshalSpawnRequest(t *testing.T, req control.SpawnRequest) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal spawn request: %v", err)
+	}
+	return encoded
+}
+
 // --- resolveSpawnTarget tests ---
 
 func TestResolveSpawnTarget_BareMode(t *testing.T) {
@@ -434,7 +443,7 @@ func TestResolveFeatureSpawn_NeedsWorktree(t *testing.T) {
 func TestHandleSpawn_BareMode(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		WorkDir: "/tmp/some-dir",
 	})
 
@@ -497,7 +506,7 @@ func TestHandleSpawn_BareMode_DefaultProject(t *testing.T) {
 	d := newTestDaemon(t)
 
 	// No project specified - should default to "default"
-	reqJSON, _ := json.Marshal(control.SpawnRequest{})
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{})
 
 	result, err := d.handleSpawn(reqJSON)
 	if err != nil {
@@ -526,7 +535,7 @@ func TestHandleSpawn_WorkItemMode(t *testing.T) {
 		t.Fatalf("failed to create work item: %v", err)
 	}
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		WorkItemID: "wi-handle-test",
 	})
 
@@ -555,7 +564,7 @@ func TestHandleSpawn_WorkItemMode(t *testing.T) {
 func TestHandleSpawn_FeatureNotFound(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		FeatureID: "wi-nonexistent",
 	})
 
@@ -582,7 +591,7 @@ func TestHandleSpawn_FeatureWrongType(t *testing.T) {
 		t.Fatalf("failed to create goal: %v", err)
 	}
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		FeatureID: "wi-wrong-type",
 	})
 
@@ -598,7 +607,7 @@ func TestHandleSpawn_FeatureWrongType(t *testing.T) {
 func TestHandleSpawn_TicketMode(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		TicketID: "ENG-456",
 		Project:  "myproject",
 	})
@@ -625,7 +634,7 @@ func TestHandleSpawn_TicketMode(t *testing.T) {
 func TestHandleSpawn_HeadlessNoWorkDir(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		Headless: true,
 		// No WorkDir and no WorktreePath on work item
 	})
@@ -642,7 +651,7 @@ func TestHandleSpawn_HeadlessNoWorkDir(t *testing.T) {
 func TestHandleSpawn_RetrieveMode(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		Retrieve: true,
 	})
 
@@ -950,7 +959,7 @@ func TestResolveWorkItemSpawn_NotFound(t *testing.T) {
 func TestHandleSpawn_EndToEnd_BareInteractive(t *testing.T) {
 	d := newTestDaemon(t)
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		Project: "e2e-project",
 		WorkDir: t.TempDir(),
 	})
@@ -1072,7 +1081,7 @@ func TestHandleSpawn_EndToEnd_FeatureWithWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reqJSON, _ := json.Marshal(control.SpawnRequest{
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
 		FeatureID: "wi-e2e-goal.1",
 	})
 

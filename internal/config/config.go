@@ -226,7 +226,7 @@ type UIConfig struct {
 
 // DefaultConfig returns a config with sensible defaults.
 func DefaultConfig() *Config {
-	homeDir, _ := os.UserHomeDir()
+	homeDir := resolveHomeDir()
 
 	return &Config{
 		Repos: ReposConfig{
@@ -405,8 +405,18 @@ func DefaultConfigPath() string {
 	if p := os.Getenv("ATHENA_CONFIG"); p != "" {
 		return p
 	}
-	homeDir, _ := os.UserHomeDir()
+	homeDir := resolveHomeDir()
 	return filepath.Join(homeDir, ".config/athena/config.yaml")
+}
+
+func resolveHomeDir() string {
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		return homeDir
+	}
+	if homeDir := os.Getenv("HOME"); homeDir != "" {
+		return homeDir
+	}
+	return "."
 }
 
 // Load loads the configuration from the default path.

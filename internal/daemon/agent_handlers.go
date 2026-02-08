@@ -111,7 +111,12 @@ func (d *Daemon) handleSpawnAgent(params json.RawMessage) (any, error) {
 	}
 
 	// Associate agent with worktree
-	d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)
+	if err := d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID); err != nil {
+		if killErr := d.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to rollback spawned agent after worktree assignment failure", "agent_id", spawnedAgent.ID, "error", killErr)
+		}
+		return nil, fmt.Errorf("failed to assign spawned agent to worktree: %w", err)
+	}
 
 	// Broadcast event
 	d.server.Broadcast(control.Event{
@@ -166,12 +171,18 @@ func (d *Daemon) handleKillAgent(params json.RawMessage) (any, error) {
 		if err := d.store.DeleteAgentCascade(req.ID); err != nil {
 			logging.Warn("cascade delete failed", "agent_id", req.ID, "error", err)
 			// Fall back to just marking as terminated
-			d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
+			if statusErr := d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated); statusErr != nil {
+				logging.Warn("failed to mark agent terminated after cascade delete failure", "agent_id", req.ID, "error", statusErr)
+			}
 		}
 	} else {
 		// Just update status, keep records
-		d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated)
-		d.store.ClearWorktreeAgent(agentRecord.WorktreePath)
+		if err := d.store.UpdateAgentStatus(req.ID, store.AgentStatusTerminated); err != nil {
+			logging.Warn("failed to mark agent terminated", "agent_id", req.ID, "error", err)
+		}
+		if err := d.store.ClearWorktreeAgent(agentRecord.WorktreePath); err != nil {
+			logging.Warn("failed to clear worktree agent link", "worktree", agentRecord.WorktreePath, "error", err)
+		}
 	}
 
 	// Broadcast event
@@ -196,13 +207,19 @@ func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
 
 	// Get worktree
 	wt, err := d.store.GetWorktree(req.WorktreePath)
-	if err != nil || wt == nil {
+	if err != nil {
+		return nil, fmt.Errorf("failed to load worktree: %w", err)
+	}
+	if wt == nil {
 		return nil, fmt.Errorf("worktree not found: %s", req.WorktreePath)
 	}
 
 	// Find planner agent for parent link and session ID
 	var plannerAgent *store.Agent
-	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
+	agents, err := d.store.ListAgentsByWorktree(req.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agents for worktree: %w", err)
+	}
 	for _, a := range agents {
 		if a.Archetype == "planner" {
 			plannerAgent = a
@@ -212,7 +229,10 @@ func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
 
 	// Get plan content - try DB cache first, then Claude's storage
 	var planContent string
-	plan, _ := d.store.GetPlan(req.WorktreePath)
+	plan, err := d.store.GetPlan(req.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load plan cache: %w", err)
+	}
 	if plan != nil && plan.Content != "" {
 		planContent = plan.Content
 	} else if plannerAgent != nil && plannerAgent.ClaudeSessionID != "" {
@@ -224,7 +244,9 @@ func (d *Daemon) handleSpawnExecutor(params json.RawMessage) (any, error) {
 		planContent = content
 		// Cache it for future use
 		if plan != nil {
-			d.store.UpdatePlanContent(req.WorktreePath, content)
+			if err := d.store.UpdatePlanContent(req.WorktreePath, content); err != nil {
+				logging.Warn("failed to cache plan content after read", "worktree", req.WorktreePath, "error", err)
+			}
 		}
 	}
 
@@ -260,7 +282,12 @@ Execute this plan precisely. After each step, report what you did.`, planContent
 	}
 
 	// Associate with worktree
-	d.store.AssignAgentToWorktree(req.WorktreePath, spawned.ID)
+	if err := d.store.AssignAgentToWorktree(req.WorktreePath, spawned.ID); err != nil {
+		if killErr := d.spawner.Kill(spawned.ID); killErr != nil {
+			logging.Warn("failed to rollback executor spawn after assignment failure", "agent_id", spawned.ID, "error", killErr)
+		}
+		return nil, fmt.Errorf("failed to assign executor to worktree: %w", err)
+	}
 
 	// Broadcast event
 	d.server.Broadcast(control.Event{

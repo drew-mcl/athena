@@ -118,3 +118,58 @@ func TestGetQueueHeadStopsAtDivergence(t *testing.T) {
 		t.Fatalf("expected head to stop at first item (%s,a1), got (%s,%s)", branches[0], branch, commit)
 	}
 }
+
+func TestMarkQueueItemRebasedWithBasePersistsMetadata(t *testing.T) {
+	st, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	project := "proj"
+	path := "/tmp/rebase-a"
+	branch := "feat/a"
+
+	if err := st.UpsertWorktree(&Worktree{
+		Path:    path,
+		Project: project,
+		Branch:  branch,
+		IsMain:  false,
+		Status:  WorktreeStatusActive,
+	}); err != nil {
+		t.Fatalf("failed to seed worktree: %v", err)
+	}
+
+	if err := st.AddToMergeQueue(&MergeQueueItem{
+		ID:           "ra",
+		Project:      project,
+		WorktreePath: path,
+		Branch:       branch,
+		BaseBranch:   "main",
+		BaseCommit:   "main0",
+		HeadCommit:   "a1",
+	}); err != nil {
+		t.Fatalf("failed to add queue item: %v", err)
+	}
+
+	if err := st.MarkQueueItemRebasedWithBase(path, "feat/root", "r1", "a2"); err != nil {
+		t.Fatalf("MarkQueueItemRebasedWithBase failed: %v", err)
+	}
+
+	item, err := st.GetMergeQueueItem(path)
+	if err != nil {
+		t.Fatalf("GetMergeQueueItem failed: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected queue item")
+	}
+	if item.Status != MergeQueueStatusQueued {
+		t.Fatalf("status = %s, want queued", item.Status)
+	}
+	if item.BaseBranch != "feat/root" {
+		t.Fatalf("base branch = %s, want feat/root", item.BaseBranch)
+	}
+	if item.BaseCommit != "r1" {
+		t.Fatalf("base commit = %s, want r1", item.BaseCommit)
+	}
+	if item.HeadCommit != "a2" {
+		t.Fatalf("head commit = %s, want a2", item.HeadCommit)
+	}
+}
