@@ -1166,6 +1166,9 @@ type WorkItemInfo struct {
 	// Assignment
 	AgentID string `json:"agent_id,omitempty"` // current agent
 
+	// State
+	Blocked bool `json:"blocked,omitempty"` // True when task has unresolved blockers
+
 	// Progress (for goals/features)
 	CompletedCount int `json:"completed_count,omitempty"` // completed descendants
 	TotalCount     int `json:"total_count,omitempty"`     // total descendants
@@ -1399,6 +1402,7 @@ type SpawnRequest struct {
 	FeatureID  string `json:"feature_id,omitempty"`   // e.g. wi-a3f8.1 (primary flow: spawn on feature)
 	TicketID   string `json:"ticket_id,omitempty"`    // e.g. ENG-123
 	WorkItemID string `json:"work_item_id,omitempty"` // e.g. wi-a3f8
+	Goal       string `json:"goal,omitempty"`         // Free-form goal text (e.g. "implement user auth")
 	Project    string `json:"project,omitempty"`
 	Retrieve   bool   `json:"retrieve,omitempty"` // -r flag: break down goal first
 	Headless   bool   `json:"headless,omitempty"` // --headless flag: run detached
