@@ -1,4 +1,14 @@
 // Package claude provides a task provider for Claude Code's task storage.
+//
+// Claude Code stores tasks in a directory-per-list format:
+//
+//	~/.claude/tasks/{listID}/1.json
+//	~/.claude/tasks/{listID}/2.json
+//	~/.claude/tasks/{listID}/.lock
+//	~/.claude/tasks/{listID}/.highwatermark
+//
+// Each .json file is a single task object (not wrapped in an array).
+// Task IDs are numeric, assigned from a highwatermark counter.
 package claude
 
 import (
@@ -7,6 +17,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +32,6 @@ const (
 	// ProviderName is the identifier for this provider.
 	ProviderName = "claude"
 )
-
-// taskFile represents the structure of a Claude Code task list file.
-type taskFile struct {
-	Tasks []taskRecord `json:"tasks"`
-}
 
 // taskRecord represents a single task in Claude Code's storage format.
 type taskRecord struct {
@@ -44,7 +52,7 @@ type taskRecord struct {
 type Provider struct {
 	tasksDir string
 	mu       sync.RWMutex
-	cache    map[string]*taskFile // listID -> cached file contents
+	cache    map[string][]taskRecord // listID -> cached task records
 }
 
 // NewProvider creates a new Claude Code task provider.
@@ -63,7 +71,7 @@ func NewProvider() (*Provider, error) {
 
 	return &Provider{
 		tasksDir: tasksDir,
-		cache:    make(map[string]*taskFile),
+		cache:    make(map[string][]taskRecord),
 	}, nil
 }
 
@@ -71,7 +79,7 @@ func NewProvider() (*Provider, error) {
 func NewProviderWithPath(tasksDir string) *Provider {
 	return &Provider{
 		tasksDir: tasksDir,
-		cache:    make(map[string]*taskFile),
+		cache:    make(map[string][]taskRecord),
 	}
 }
 
@@ -92,31 +100,32 @@ func (p *Provider) ListTaskLists() ([]task.TaskList, error) {
 
 	var lists []task.TaskList
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		if !entry.IsDir() {
 			continue
 		}
 
-		listID := entry.Name()[:len(entry.Name())-5] // Remove .json extension
-		filePath := filepath.Join(p.tasksDir, entry.Name())
+		listID := entry.Name()
+		listDir := filepath.Join(p.tasksDir, listID)
 
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
-		// Load the file to count tasks
-		tasks, err := p.loadTaskFile(listID)
-		if err != nil {
-			continue
-		}
+		// Count .json task files in the directory
+		taskCount := countTaskFiles(listDir)
+
+		// .lock file means an agent is actively working on this list
+		active := hasLockFile(listDir)
 
 		lists = append(lists, task.TaskList{
 			ID:        listID,
-			Name:      listID, // Use ID as name if no metadata
+			Name:      listID,
 			Provider:  ProviderName,
-			Path:      filePath,
-			TaskCount: len(tasks.Tasks),
-			CreatedAt: info.ModTime(), // Use file mod time as approximation
+			Path:      listDir,
+			TaskCount: taskCount,
+			Active:    active,
+			CreatedAt: info.ModTime(),
 			UpdatedAt: info.ModTime(),
 		})
 	}
@@ -126,16 +135,15 @@ func (p *Provider) ListTaskLists() ([]task.TaskList, error) {
 
 // ListTasks implements task.Provider.
 func (p *Provider) ListTasks(listID string, filters task.TaskFilters) ([]task.Task, error) {
-	tf, err := p.loadTaskFile(listID)
+	records, err := p.loadTaskDir(listID)
 	if err != nil {
 		return nil, err
 	}
 
 	var result []task.Task
-	for _, tr := range tf.Tasks {
-		t := p.recordToTask(listID, tr)
+	for _, tr := range records {
+		t := recordToTask(listID, tr)
 
-		// Apply filters
 		if filters.Status != nil && t.Status != *filters.Status {
 			continue
 		}
@@ -157,14 +165,14 @@ func (p *Provider) ListTasks(listID string, filters task.TaskFilters) ([]task.Ta
 
 // GetTask implements task.Provider.
 func (p *Provider) GetTask(listID, taskID string) (*task.Task, error) {
-	tf, err := p.loadTaskFile(listID)
+	records, err := p.loadTaskDir(listID)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, tr := range tf.Tasks {
+	for _, tr := range records {
 		if tr.ID == taskID {
-			t := p.recordToTask(listID, tr)
+			t := recordToTask(listID, tr)
 			return &t, nil
 		}
 	}
@@ -177,24 +185,24 @@ func (p *Provider) CreateTask(listID string, create *task.TaskCreate) (*task.Tas
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tf, err := p.loadTaskFileUnsafe(listID)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	listDir := filepath.Join(p.tasksDir, listID)
+
+	// Ensure the list directory exists
+	if err := os.MkdirAll(listDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create task list directory: %w", err)
 	}
-	if tf == nil {
-		tf = &taskFile{Tasks: []taskRecord{}}
-	}
+
+	// Determine next ID from highwatermark
+	nextID := p.nextTaskID(listDir)
 
 	now := time.Now()
-	id := fmt.Sprintf("task-%d", now.UnixNano())
-
 	status := create.Status
 	if status == "" {
 		status = task.StatusPending
 	}
 
 	tr := taskRecord{
-		ID:          id,
+		ID:          strconv.Itoa(nextID),
 		Subject:     create.Subject,
 		Description: create.Description,
 		Status:      string(status),
@@ -206,13 +214,17 @@ func (p *Provider) CreateTask(listID string, create *task.TaskCreate) (*task.Tas
 		UpdatedAt:   now.Format(time.RFC3339),
 	}
 
-	tf.Tasks = append(tf.Tasks, tr)
-
-	if err := p.saveTaskFile(listID, tf); err != nil {
+	if err := writeTaskFile(listDir, tr); err != nil {
 		return nil, err
 	}
 
-	t := p.recordToTask(listID, tr)
+	// Update highwatermark
+	writeHighwatermark(listDir, nextID)
+
+	// Invalidate cache
+	delete(p.cache, listID)
+
+	t := recordToTask(listID, tr)
 	return &t, nil
 }
 
@@ -221,64 +233,66 @@ func (p *Provider) UpdateTask(listID, taskID string, update *task.TaskUpdate) (*
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tf, err := p.loadTaskFileUnsafe(listID)
+	listDir := filepath.Join(p.tasksDir, listID)
+	filePath := filepath.Join(listDir, taskID+".json")
+
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, err
-	}
-
-	var found *taskRecord
-	for i := range tf.Tasks {
-		if tf.Tasks[i].ID == taskID {
-			found = &tf.Tasks[i]
-			break
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("task %s not found in list %s", taskID, listID)
 		}
+		return nil, fmt.Errorf("failed to read task file: %w", err)
 	}
 
-	if found == nil {
-		return nil, fmt.Errorf("task %s not found in list %s", taskID, listID)
+	var tr taskRecord
+	if err := json.Unmarshal(data, &tr); err != nil {
+		return nil, fmt.Errorf("failed to parse task file %s: %w", filePath, err)
 	}
 
 	// Apply updates
 	if update.Subject != nil {
-		found.Subject = *update.Subject
+		tr.Subject = *update.Subject
 	}
 	if update.Description != nil {
-		found.Description = *update.Description
+		tr.Description = *update.Description
 	}
 	if update.Status != nil {
-		found.Status = string(*update.Status)
+		tr.Status = string(*update.Status)
 	}
 	if update.ActiveForm != nil {
-		found.ActiveForm = *update.ActiveForm
+		tr.ActiveForm = *update.ActiveForm
 	}
 	if update.Owner != nil {
-		found.Owner = *update.Owner
+		tr.Owner = *update.Owner
 	}
 	if len(update.AddBlocks) > 0 {
-		found.Blocks = appendUnique(found.Blocks, update.AddBlocks...)
+		tr.Blocks = appendUnique(tr.Blocks, update.AddBlocks...)
 	}
 	if len(update.AddBlockedBy) > 0 {
-		found.BlockedBy = appendUnique(found.BlockedBy, update.AddBlockedBy...)
+		tr.BlockedBy = appendUnique(tr.BlockedBy, update.AddBlockedBy...)
 	}
 	if update.Metadata != nil {
-		if found.Metadata == nil {
-			found.Metadata = make(map[string]any)
+		if tr.Metadata == nil {
+			tr.Metadata = make(map[string]any)
 		}
 		for k, v := range update.Metadata {
 			if v == nil {
-				delete(found.Metadata, k)
+				delete(tr.Metadata, k)
 			} else {
-				found.Metadata[k] = v
+				tr.Metadata[k] = v
 			}
 		}
 	}
-	found.UpdatedAt = time.Now().Format(time.RFC3339)
+	tr.UpdatedAt = time.Now().Format(time.RFC3339)
 
-	if err := p.saveTaskFile(listID, tf); err != nil {
+	if err := writeTaskFile(listDir, tr); err != nil {
 		return nil, err
 	}
 
-	t := p.recordToTask(listID, *found)
+	// Invalidate cache
+	delete(p.cache, listID)
+
+	t := recordToTask(listID, tr)
 	return &t, nil
 }
 
@@ -287,27 +301,19 @@ func (p *Provider) DeleteTask(listID, taskID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tf, err := p.loadTaskFileUnsafe(listID)
-	if err != nil {
-		return err
-	}
+	filePath := filepath.Join(p.tasksDir, listID, taskID+".json")
 
-	newTasks := make([]taskRecord, 0, len(tf.Tasks))
-	found := false
-	for _, t := range tf.Tasks {
-		if t.ID == taskID {
-			found = true
-			continue
-		}
-		newTasks = append(newTasks, t)
-	}
-
-	if !found {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return fmt.Errorf("task %s not found in list %s", taskID, listID)
 	}
 
-	tf.Tasks = newTasks
-	return p.saveTaskFile(listID, tf)
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("failed to delete task file %s: %w", filePath, err)
+	}
+
+	// Invalidate cache
+	delete(p.cache, listID)
+	return nil
 }
 
 // Watch implements task.Provider.
@@ -317,9 +323,25 @@ func (p *Provider) Watch(ctx context.Context) (<-chan task.TaskEvent, error) {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
 	}
 
+	// Watch the top-level tasks directory for new list directories
 	if err := watcher.Add(p.tasksDir); err != nil {
 		watcher.Close()
 		return nil, fmt.Errorf("failed to watch tasks directory: %w", err)
+	}
+
+	// Watch all existing list subdirectories for task file changes
+	entries, err := os.ReadDir(p.tasksDir)
+	if err != nil && !os.IsNotExist(err) {
+		watcher.Close()
+		return nil, fmt.Errorf("failed to read tasks directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			subDir := filepath.Join(p.tasksDir, entry.Name())
+			if err := watcher.Add(subDir); err != nil {
+				logging.Debug("failed to watch task list directory", "dir", subDir, "error", err)
+			}
+		}
 	}
 
 	events := make(chan task.TaskEvent, 100)
@@ -338,30 +360,7 @@ func (p *Provider) Watch(ctx context.Context) (<-chan task.TaskEvent, error) {
 					return
 				}
 
-				// Only handle .json files
-				if filepath.Ext(event.Name) != ".json" {
-					continue
-				}
-
-				listID := filepath.Base(event.Name)
-				listID = listID[:len(listID)-5] // Remove .json
-
-				// Invalidate cache
-				p.mu.Lock()
-				delete(p.cache, listID)
-				p.mu.Unlock()
-
-				// Send a list sync event
-				taskEvent := task.TaskEvent{
-					Type:   task.EventTypeListSync,
-					ListID: listID,
-				}
-
-				select {
-				case events <- taskEvent:
-				case <-ctx.Done():
-					return
-				}
+				p.handleFSEvent(ctx, watcher, event, events)
 
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -375,8 +374,64 @@ func (p *Provider) Watch(ctx context.Context) (<-chan task.TaskEvent, error) {
 	return events, nil
 }
 
-// loadTaskFile loads and caches a task file.
-func (p *Provider) loadTaskFile(listID string) (*taskFile, error) {
+// handleFSEvent processes a filesystem event and emits task events.
+func (p *Provider) handleFSEvent(ctx context.Context, watcher *fsnotify.Watcher, event fsnotify.Event, events chan<- task.TaskEvent) {
+	rel, err := filepath.Rel(p.tasksDir, event.Name)
+	if err != nil {
+		return
+	}
+
+	parts := strings.SplitN(rel, string(filepath.Separator), 2)
+
+	switch len(parts) {
+	case 1:
+		// Event in top-level tasks dir — a new list directory appeared
+		if event.Has(fsnotify.Create) {
+			subDir := filepath.Join(p.tasksDir, parts[0])
+			info, err := os.Stat(subDir)
+			if err == nil && info.IsDir() {
+				// Watch the new subdirectory
+				if err := watcher.Add(subDir); err != nil {
+					logging.Debug("failed to watch new task list directory", "dir", subDir, "error", err)
+				}
+				// Emit a sync event for the new list
+				listID := parts[0]
+				p.invalidateCache(listID)
+				select {
+				case events <- task.TaskEvent{Type: task.EventTypeListSync, ListID: listID}:
+				case <-ctx.Done():
+				}
+			}
+		}
+
+	case 2:
+		// Event inside a list subdirectory — a task file changed
+		listID := parts[0]
+		fileName := parts[1]
+
+		// Only handle .json task files
+		if filepath.Ext(fileName) != ".json" {
+			return
+		}
+
+		p.invalidateCache(listID)
+
+		select {
+		case events <- task.TaskEvent{Type: task.EventTypeListSync, ListID: listID}:
+		case <-ctx.Done():
+		}
+	}
+}
+
+// invalidateCache removes a list from the cache.
+func (p *Provider) invalidateCache(listID string) {
+	p.mu.Lock()
+	delete(p.cache, listID)
+	p.mu.Unlock()
+}
+
+// loadTaskDir loads all tasks from a list directory, using cache when available.
+func (p *Provider) loadTaskDir(listID string) ([]taskRecord, error) {
 	p.mu.RLock()
 	if cached, ok := p.cache[listID]; ok {
 		p.mu.RUnlock()
@@ -386,50 +441,131 @@ func (p *Provider) loadTaskFile(listID string) (*taskFile, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.loadTaskFileUnsafe(listID)
+	return p.loadTaskDirUnsafe(listID)
 }
 
-// loadTaskFileUnsafe loads a task file without locking (caller must hold lock).
-func (p *Provider) loadTaskFileUnsafe(listID string) (*taskFile, error) {
-	// Check cache again in case another goroutine loaded it
+// loadTaskDirUnsafe loads all tasks from a list directory without locking.
+func (p *Provider) loadTaskDirUnsafe(listID string) ([]taskRecord, error) {
 	if cached, ok := p.cache[listID]; ok {
 		return cached, nil
 	}
 
-	filePath := filepath.Join(p.tasksDir, listID+".json")
-	data, err := os.ReadFile(filePath)
+	listDir := filepath.Join(p.tasksDir, listID)
+	entries, err := os.ReadDir(listDir)
 	if err != nil {
-		return nil, err
+		if os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("failed to read task list directory %s: %w", listDir, err)
 	}
 
-	var tf taskFile
-	if err := json.Unmarshal(data, &tf); err != nil {
-		return nil, fmt.Errorf("failed to parse task file %s: %w", filePath, err)
+	var records []taskRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		filePath := filepath.Join(listDir, entry.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			logging.Debug("failed to read task file", "path", filePath, "error", err)
+			continue
+		}
+
+		var tr taskRecord
+		if err := json.Unmarshal(data, &tr); err != nil {
+			logging.Debug("failed to parse task file", "path", filePath, "error", err)
+			continue
+		}
+
+		records = append(records, tr)
 	}
 
-	p.cache[listID] = &tf
-	return &tf, nil
+	// Sort by numeric ID for consistent ordering
+	sort.Slice(records, func(i, j int) bool {
+		ni, _ := strconv.Atoi(records[i].ID)
+		nj, _ := strconv.Atoi(records[j].ID)
+		return ni < nj
+	})
+
+	p.cache[listID] = records
+	return records, nil
 }
 
-// saveTaskFile writes a task file to disk and updates the cache.
-func (p *Provider) saveTaskFile(listID string, tf *taskFile) error {
-	filePath := filepath.Join(p.tasksDir, listID+".json")
-
-	data, err := json.MarshalIndent(tf, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal task file: %w", err)
+// nextTaskID reads the highwatermark or counts files to determine the next task ID.
+func (p *Provider) nextTaskID(listDir string) int {
+	hwPath := filepath.Join(listDir, ".highwatermark")
+	data, err := os.ReadFile(hwPath)
+	if err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && n > 0 {
+			return n + 1
+		}
 	}
+
+	// Fallback: find the highest numeric ID in existing files
+	entries, err := os.ReadDir(listDir)
+	if err != nil {
+		return 1
+	}
+
+	maxID := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		name := entry.Name()[:len(entry.Name())-5]
+		if n, err := strconv.Atoi(name); err == nil && n > maxID {
+			maxID = n
+		}
+	}
+	return maxID + 1
+}
+
+// writeTaskFile writes a single task record to its file.
+func writeTaskFile(listDir string, tr taskRecord) error {
+	filePath := filepath.Join(listDir, tr.ID+".json")
+	data, err := json.MarshalIndent(tr, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal task: %w", err)
+	}
+	data = append(data, '\n')
 
 	if err := os.WriteFile(filePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write task file %s: %w", filePath, err)
 	}
-
-	p.cache[listID] = tf
 	return nil
 }
 
+// writeHighwatermark updates the highwatermark file.
+func writeHighwatermark(listDir string, id int) {
+	hwPath := filepath.Join(listDir, ".highwatermark")
+	_ = os.WriteFile(hwPath, []byte(strconv.Itoa(id)), 0600)
+}
+
+// hasLockFile checks if a .lock file exists in the directory,
+// indicating an agent is actively working on this task list.
+func hasLockFile(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".lock"))
+	return err == nil
+}
+
+// countTaskFiles counts .json task files in a directory.
+func countTaskFiles(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+			count++
+		}
+	}
+	return count
+}
+
 // recordToTask converts a storage record to a task.Task.
-func (p *Provider) recordToTask(listID string, tr taskRecord) task.Task {
+func recordToTask(listID string, tr taskRecord) task.Task {
 	var createdAt time.Time
 	if parsed, err := time.Parse(time.RFC3339, tr.CreatedAt); err == nil {
 		createdAt = parsed

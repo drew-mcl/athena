@@ -975,6 +975,7 @@ type TaskListInfo struct {
 	Provider  string `json:"provider"`
 	Path      string `json:"path,omitempty"`
 	TaskCount int    `json:"task_count"`
+	Active    bool   `json:"active"` // True when agent is actively working (.lock present)
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
