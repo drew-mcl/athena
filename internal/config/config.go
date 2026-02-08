@@ -69,10 +69,11 @@ type AgentsConfig struct {
 	Model             string        `yaml:"model"`
 	Budget            BudgetConfig  `yaml:"budget"`
 	ContextRetention  time.Duration `yaml:"context_retention"`
-	MaxContextTokens  int           `yaml:"max_context_tokens"` // Max tokens for context block
-	MaxRelevantFiles  int           `yaml:"max_relevant_files"` // Max relevant files to include
+	MaxContextTokens  int           `yaml:"max_context_tokens"`  // Max tokens for context block
+	MaxRelevantFiles  int           `yaml:"max_relevant_files"`  // Max relevant files to include
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
+	SkipPermissions   *bool         `yaml:"skip_permissions"`    // Skip all permission checks (default: true)
 }
 
 // BackoffConfig defines exponential backoff parameters.
@@ -247,6 +248,7 @@ func DefaultConfig() *Config {
 			MaxRelevantFiles:  50,
 			HeartbeatInterval: 30 * time.Second,
 			HeartbeatTimeout:  2 * time.Minute,
+			SkipPermissions:   boolPtr(true),
 		},
 		Archetypes: map[string]Archetype{
 			"planner": {
@@ -407,6 +409,19 @@ func DefaultConfigPath() string {
 	}
 	homeDir := resolveHomeDir()
 	return filepath.Join(homeDir, ".config/athena/config.yaml")
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// ShouldSkipPermissions returns whether agents should skip permission checks.
+// Defaults to true when not explicitly configured.
+func (c *AgentsConfig) ShouldSkipPermissions() bool {
+	if c.SkipPermissions == nil {
+		return true
+	}
+	return *c.SkipPermissions
 }
 
 func resolveHomeDir() string {

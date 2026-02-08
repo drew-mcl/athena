@@ -826,6 +826,32 @@ func runQueueRemove(path string) error {
 	return nil
 }
 
+func runQueueGraph(project string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	if project == "" {
+		project = detectProject()
+	}
+
+	items, err := client.GetMergeQueue(project)
+	if err != nil {
+		return err
+	}
+
+	// Determine base branch from first item or default to "main"
+	baseBranch := "main"
+	if len(items) > 0 && items[0].BaseBranch != "" {
+		baseBranch = items[0].BaseBranch
+	}
+
+	printQueueGraph(items, baseBranch)
+	return nil
+}
+
 // Helper functions for queue display
 
 func getQueueStatusIcon(status string) string {

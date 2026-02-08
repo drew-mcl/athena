@@ -15,15 +15,16 @@ func (r *ClaudeRunner) Provider() string {
 
 func (r *ClaudeRunner) Capabilities() Capabilities {
 	return Capabilities{
-		JSONInput:    true,
-		JSONOutput:   true,
-		SessionID:    true,
-		Resume:       true,
-		ForkSession:  true,
-		Plan:         true,
-		AllowedTools: true,
-		SystemPrompt: true,
-		MaxTurns:     true,
+		JSONInput:       true,
+		JSONOutput:      true,
+		SessionID:       true,
+		Resume:          true,
+		ForkSession:     true,
+		Plan:            true,
+		SkipPermissions: true,
+		AllowedTools:    true,
+		SystemPrompt:    true,
+		MaxTurns:        true,
 	}
 }
 
@@ -39,14 +40,15 @@ func (r *ClaudeRunner) Start(ctx context.Context, spec RunSpec) (Session, error)
 
 func (r *ClaudeRunner) Resume(ctx context.Context, spec ResumeSpec) (Session, error) {
 	opts := buildClaudeOptions(RunSpec{
-		SessionID:      spec.SessionID,
-		WorkDir:        spec.WorkDir,
-		Model:          spec.Model,
-		PermissionMode: spec.PermissionMode,
-		AllowedTools:   spec.AllowedTools,
-		SystemPrompt:   spec.SystemPrompt,
-		MaxBudgetUSD:   spec.MaxBudgetUSD,
-		Plan:           spec.Plan,
+		SessionID:       spec.SessionID,
+		WorkDir:         spec.WorkDir,
+		Model:           spec.Model,
+		PermissionMode:  spec.PermissionMode,
+		SkipPermissions: spec.SkipPermissions,
+		AllowedTools:    spec.AllowedTools,
+		SystemPrompt:    spec.SystemPrompt,
+		MaxBudgetUSD:    spec.MaxBudgetUSD,
+		Plan:            spec.Plan,
 	}, true)
 	opts.LogFile = spec.LogFile
 	proc, err := claudecode.Spawn(ctx, opts)
@@ -182,6 +184,8 @@ func buildClaudeOptions(spec RunSpec, resume bool) *claudecode.SpawnOptions {
 		MaxBudgetUSD:   spec.MaxBudgetUSD,
 		Resume:         resume,
 	}
+
+	opts.DangerouslySkipPermissions = spec.SkipPermissions
 
 	// Map git identity from runner spec to claudecode options
 	if spec.GitIdentity != nil {

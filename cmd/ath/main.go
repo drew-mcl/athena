@@ -294,6 +294,16 @@ var queueRmCmd = &cobra.Command{
 	},
 }
 
+var queueGraphCmd = &cobra.Command{
+	Use:     "graph",
+	Aliases: []string{"g"},
+	Short:   "Visual pipeline view of the merge queue",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runQueueGraph(project)
+	},
+}
+
 // Plugin commands - manage integrations
 var pluginCmd = &cobra.Command{
 	Use:     "plugin",
@@ -413,7 +423,8 @@ func init() {
 	// Queue flags
 	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
 	queueHeadCmd.Flags().StringP("project", "p", "", "Project name")
-	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd)
+	queueGraphCmd.Flags().StringP("project", "p", "", "Filter by project")
+	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd, queueGraphCmd)
 
 	// Agent flags
 	agentCmd.Flags().StringP("status", "s", "", "Filter by status (running, completed, crashed)")
