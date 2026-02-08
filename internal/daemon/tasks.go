@@ -377,6 +377,7 @@ func taskListToInfo(l *task.TaskList) *control.TaskListInfo {
 		Provider:  l.Provider,
 		Path:      l.Path,
 		TaskCount: l.TaskCount,
+		Active:    l.Active,
 		CreatedAt: l.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: l.UpdatedAt.Format(time.RFC3339),
 	}
