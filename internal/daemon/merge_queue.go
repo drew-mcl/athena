@@ -3,10 +3,10 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/executil"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/google/uuid"
 )
@@ -437,7 +437,10 @@ func mergeQueueItemToInfo(item *store.MergeQueueItem) *control.MergeQueueItemInf
 }
 
 func getGitHead(path string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd, err := executil.Command("git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {
@@ -452,7 +455,10 @@ func getGitMergeBase(path, branch string) (baseBranch string, baseCommit string,
 		return "", "", err
 	}
 
-	cmd := exec.Command("git", "merge-base", baseRef, branch)
+	cmd, err := executil.Command("git", "merge-base", baseRef, branch)
+	if err != nil {
+		return "", "", err
+	}
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err == nil {
@@ -465,16 +471,20 @@ func getGitMergeBase(path, branch string) (baseBranch string, baseCommit string,
 // gitRebase performs a git rebase onto the specified branch.
 // Returns nil on success, error on conflict or failure.
 func gitRebase(worktreePath, ontoBranch string) error {
-	cmd := exec.Command("git", "rebase", ontoBranch)
+	cmd, err := executil.Command("git", "rebase", ontoBranch)
+	if err != nil {
+		return fmt.Errorf("rebase failed: %w", err)
+	}
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if it's a conflict
 		if strings.Contains(string(output), "CONFLICT") || strings.Contains(string(output), "could not apply") {
 			// Abort the rebase to leave clean state
-			abortCmd := exec.Command("git", "rebase", "--abort")
-			abortCmd.Dir = worktreePath
-			abortCmd.Run() // Ignore error from abort
+			if abortCmd, abortErr := executil.Command("git", "rebase", "--abort"); abortErr == nil {
+				abortCmd.Dir = worktreePath
+				abortCmd.Run() // Ignore error from abort
+			}
 
 			return fmt.Errorf("rebase conflict: %s", strings.TrimSpace(string(output)))
 		}
@@ -570,7 +580,10 @@ func getGitRevParse(path, ref string) (string, error) {
 }
 
 func gitOutput(path string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd, err := executil.Command("git", args...)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {
