@@ -42,7 +42,8 @@ Work Item Hierarchy:
 Shorthand Commands:
   g  → goal      t  → tsk       tr → tree
   f  → feat      w  → wt        q  → queue
-  i  → interactive              p  → plugin
+  a  → agent     i  → interactive
+  p  → plugin
 
 Display:
   Shape colors indicate item type (blue/green/yellow)
@@ -56,6 +57,8 @@ Examples:
   ath spawn -f wi-a3f8.1            # Spawn agent on feature (primary)
   ath spawn -f wi-a3f8.1 --headless # Fire-and-forget on feature
   ath spawn ENG-123                 # Spawn with ticket context
+  ath agent                         # List running agents
+  ath agent <id>                    # Show agent detail + session ID
   ath tr                            # Full work item tree
   ath g new "Auth system"           # Create goal
   ath f new wi-a3f8 "OAuth"         # Create feature under goal
@@ -346,6 +349,35 @@ var pluginPMCmd = &cobra.Command{
 	},
 }
 
+// Agent commands
+var agentCmd = &cobra.Command{
+	Use:     "agent [id]",
+	Aliases: []string{"a"},
+	Short:   "List and inspect agents",
+	Long: `List running agents and inspect their details.
+
+With no args: list all agents (most recent first)
+With ID:      show agent detail including session ID
+
+The session ID can be used with 'claude --resume <session-id>' to
+attach to the agent's Claude Code session interactively.
+
+Flags:
+  -s, --status   Filter by status (running, completed, crashed, etc.)
+
+Examples:
+  ath agent                    # List all agents
+  ath agent -s running         # List running agents only
+  ath agent a3f8b2c1           # Show agent detail (prefix match)`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return runAgentShow(args[0])
+		}
+		status, _ := cmd.Flags().GetString("status")
+		return runAgentList(status)
+	},
+}
+
 func init() {
 	// Goal flags
 	goalNewCmd.Flags().StringP("description", "d", "", "Goal description")
@@ -383,10 +415,13 @@ func init() {
 	queueHeadCmd.Flags().StringP("project", "p", "", "Project name")
 	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd)
 
+	// Agent flags
+	agentCmd.Flags().StringP("status", "s", "", "Filter by status (running, completed, crashed)")
+
 	// Plugin commands
 	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, interactiveCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd)
 }
 
 // Spawn command - unified agent launch

@@ -345,6 +345,205 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// AGENT TABLE - Boxed table showing agents with session IDs
+// ═══════════════════════════════════════════════════════════════════════════
+
+func printAgentTable(agents []*control.AgentInfo) {
+	if len(agents) == 0 {
+		fmt.Println(dim + "No agents found" + reset)
+		fmt.Println(dim + "Spawn one with: ath spawn -f <feature-id> --headless" + reset)
+		return
+	}
+
+	// Column widths
+	const idWidth = 8
+	const statusWidth = 12
+	const archetypeWidth = 10
+	const worktreeWidth = 22
+	const sessionWidth = 10
+	const innerWidth = 1 + idWidth + 2 + statusWidth + 2 + archetypeWidth + 2 + worktreeWidth + 2 + sessionWidth + 1
+
+	// Header
+	titleText := "Agents"
+	rightDashes := innerWidth - 2 - len(titleText) - 1
+	fmt.Printf("%s%s%s %s%s%s %s%s\n",
+		gray, boxTopLeft, boxHorizontal,
+		dim+cyan, titleText, reset,
+		gray+strings.Repeat(boxHorizontal, rightDashes)+boxTopRight, reset)
+
+	// Column headers
+	fmt.Printf("%s%s%s %s%s  %s  %s  %s  %s %s%s%s\n",
+		gray, boxVertical, reset,
+		dim, padRight("ID", idWidth),
+		padRight("STATUS", statusWidth),
+		padRight("TYPE", archetypeWidth),
+		padRight("WORKTREE", worktreeWidth),
+		padRight("SESSION", sessionWidth),
+		reset+gray, boxVertical, reset)
+
+	// Separator
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxTeeRight,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxTeeLeft, reset)
+
+	// Stats
+	runningCount, completedCount, crashedCount := 0, 0, 0
+
+	for _, a := range agents {
+		shortID := a.ID
+		if len(shortID) > idWidth {
+			shortID = shortID[:idWidth]
+		}
+
+		// Status with color
+		statusColor := gray
+		switch a.Status {
+		case "running", "planning", "executing", "spawning":
+			statusColor = green
+			runningCount++
+		case "completed":
+			completedCount++
+		case "crashed":
+			statusColor = red
+			crashedCount++
+		case "awaiting", "interactive":
+			statusColor = yellow
+			runningCount++
+		case "terminated":
+			completedCount++
+		default:
+			completedCount++
+		}
+
+		archetype := truncate(a.Archetype, archetypeWidth)
+		wtName := truncate(extractWorktreeName(a.WorktreePath), worktreeWidth)
+
+		shortSession := ""
+		if a.ClaudeSessionID != "" {
+			shortSession = a.ClaudeSessionID
+			if len(shortSession) > sessionWidth {
+				shortSession = shortSession[:sessionWidth]
+			}
+		}
+
+		fmt.Printf("%s%s%s %s%s%s  %s%s%s  %s%s%s  %s%s%s  %s%s%s %s%s%s\n",
+			gray, boxVertical, reset,
+			magenta, padRight(shortID, idWidth), reset,
+			statusColor, padRight(a.Status, statusWidth), reset,
+			dim, padRight(archetype, archetypeWidth), reset,
+			cyan, padRight(wtName, worktreeWidth), reset,
+			yellow, padRight(shortSession, sessionWidth), reset,
+			gray, boxVertical, reset)
+	}
+
+	// Footer
+	fmt.Printf("%s%s%s%s%s\n",
+		gray, boxBottomLeft,
+		strings.Repeat(boxHorizontal, innerWidth),
+		boxBottomRight, reset)
+
+	// Summary
+	var parts []string
+	if runningCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", runningCount))
+	}
+	if completedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d completed", completedCount))
+	}
+	if crashedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d crashed", crashedCount))
+	}
+
+	fmt.Printf("\n%s%d agents%s", dim, len(agents), reset)
+	if len(parts) > 0 {
+		fmt.Printf(" %s(%s)%s", dim, strings.Join(parts, ", "), reset)
+	}
+	fmt.Println()
+}
+
+func printAgentDetail(a *control.AgentInfo) {
+	shortID := a.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+
+	// Status color
+	statusColor := gray
+	switch a.Status {
+	case "running", "planning", "executing", "spawning":
+		statusColor = green
+	case "crashed":
+		statusColor = red
+	case "awaiting", "interactive":
+		statusColor = yellow
+	}
+
+	fmt.Printf("%sAgent %s%s%s\n\n", bold, magenta, shortID, reset)
+	fmt.Printf("  %sID:%s         %s\n", dim, reset, a.ID)
+	fmt.Printf("  %sStatus:%s     %s%s%s\n", dim, reset, statusColor, a.Status, reset)
+	fmt.Printf("  %sArchetype:%s  %s\n", dim, reset, a.Archetype)
+	fmt.Printf("  %sProject:%s    %s\n", dim, reset, a.ProjectName)
+	fmt.Printf("  %sWorktree:%s   %s%s%s\n", dim, reset, cyan, a.WorktreePath, reset)
+	fmt.Printf("  %sCreated:%s    %s\n", dim, reset, a.CreatedAt)
+
+	if a.ClaudeSessionID != "" {
+		fmt.Printf("  %sSession:%s    %s%s%s\n", dim, reset, yellow, a.ClaudeSessionID, reset)
+	}
+	if a.PlanStatus != "" {
+		fmt.Printf("  %sPlan:%s       %s\n", dim, reset, a.PlanStatus)
+	}
+	if a.RestartCount > 0 {
+		fmt.Printf("  %sRestarts:%s   %d\n", dim, reset, a.RestartCount)
+	}
+
+	// Metrics
+	if a.Metrics != nil {
+		fmt.Println()
+		fmt.Printf("  %sMetrics:%s\n", bold, reset)
+		if a.Metrics.NumTurns > 0 {
+			fmt.Printf("    Turns:      %d\n", a.Metrics.NumTurns)
+		}
+		if a.Metrics.ToolUseCount > 0 {
+			fmt.Printf("    Tool calls: %d\n", a.Metrics.ToolUseCount)
+		}
+		if a.Metrics.FilesRead > 0 || a.Metrics.FilesWritten > 0 {
+			fmt.Printf("    Files:      %d read, %d written\n", a.Metrics.FilesRead, a.Metrics.FilesWritten)
+		}
+		if a.Metrics.InputTokens > 0 {
+			fmt.Printf("    Tokens:     %dk in, %dk out", a.Metrics.InputTokens/1000, a.Metrics.OutputTokens/1000)
+			if a.Metrics.CacheHitRate > 0 {
+				fmt.Printf(" (%.0f%% cache hit)", a.Metrics.CacheHitRate)
+			}
+			fmt.Println()
+		}
+		if a.Metrics.CostCents > 0 {
+			fmt.Printf("    Cost:       $%.2f\n", float64(a.Metrics.CostCents)/100)
+		}
+		if a.Metrics.DurationMs > 0 {
+			secs := a.Metrics.DurationMs / 1000
+			if secs < 60 {
+				fmt.Printf("    Duration:   %ds\n", secs)
+			} else {
+				fmt.Printf("    Duration:   %dm%ds\n", secs/60, secs%60)
+			}
+		}
+	}
+
+	// Resume hint
+	if a.ClaudeSessionID != "" {
+		fmt.Println()
+		isActive := a.Status == "running" || a.Status == "planning" || a.Status == "executing" || a.Status == "awaiting" || a.Status == "interactive"
+		if isActive {
+			fmt.Printf("  %sResume interactively:%s\n", dim, reset)
+		} else {
+			fmt.Printf("  %sContinue this session:%s\n", dim, reset)
+		}
+		fmt.Printf("    claude --resume %s\n", a.ClaudeSessionID)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // WORK ITEM TREE - Clean tree with connectors, no box
 // ═══════════════════════════════════════════════════════════════════════════
 
