@@ -868,6 +868,98 @@ func getShapeForItem(item *control.WorkItemInfo) string {
 	return color + shape + reset
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// QUEUE GRAPH - Visual pipeline from main through queue items
+// ═══════════════════════════════════════════════════════════════════════════
+
+func printQueueGraph(items []*control.MergeQueueItemInfo, baseBranch string) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	if len(items) == 0 {
+		fmt.Printf("  %s●%s %s%s%s\n", green, reset, bold, baseBranch, reset)
+		fmt.Println()
+		fmt.Println(dim + "  Queue empty - new worktrees branch from " + baseBranch + reset)
+		return
+	}
+
+	// Header
+	fmt.Printf("  %s≡%s %sMerge Queue%s %s(%d)%s\n\n",
+		cyan, reset, bold, reset, dim, len(items), reset)
+
+	// Root node: main
+	fmt.Printf("  %s●%s %s%s%s\n", green, reset, bold, baseBranch, reset)
+
+	for i, item := range items {
+		isLast := i == len(items)-1
+		branchShort := item.Branch
+		statusIcon := queueGraphStatusIcon(item.Status)
+
+		// Connector line
+		fmt.Printf("  %s│%s\n", gray, reset)
+
+		// Node connector
+		connector := "├"
+		if isLast {
+			connector = "└"
+		}
+
+		// Position + branch
+		fmt.Printf("  %s%s── %s%s#%d%s %s%s%s  %s\n",
+			gray, connector, reset,
+			yellow, item.Position, reset,
+			cyan, branchShort, reset,
+			statusIcon)
+
+		// Path (dimmed, indented)
+		indent := "│"
+		if isLast {
+			indent = " "
+		}
+		displayPath := item.WorktreePath
+		if len(displayPath) > 50 {
+			displayPath = "..." + displayPath[len(displayPath)-47:]
+		}
+		fmt.Printf("  %s%s%s       %s%s%s\n",
+			gray, indent, reset,
+			dim, displayPath, reset)
+	}
+
+	fmt.Println()
+
+	// Legend
+	var statusCounts = map[string]int{}
+	for _, item := range items {
+		statusCounts[item.Status]++
+	}
+
+	var parts []string
+	for status, count := range statusCounts {
+		parts = append(parts, fmt.Sprintf("%d %s", count, status))
+	}
+	fmt.Printf("  %s%s%s\n", dim, strings.Join(parts, ", "), reset)
+}
+
+func queueGraphStatusIcon(status string) string {
+	switch status {
+	case "queued":
+		return cyan + "queued" + reset
+	case "merging":
+		return green + bold + "merging" + reset
+	case "merged":
+		return green + "merged" + reset
+	case "rebasing":
+		return yellow + "rebasing" + reset
+	case "diverged":
+		return yellow + "diverged" + reset
+	case "conflict":
+		return red + bold + "conflict" + reset
+	default:
+		return dim + status + reset
+	}
+}
+
 func printSuccess(msg string) {
 	fmt.Printf("%s%s %s%s\n", green, checkMark, msg, reset)
 }
