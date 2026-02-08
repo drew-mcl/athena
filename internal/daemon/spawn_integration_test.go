@@ -904,9 +904,21 @@ func TestBuildInteractiveExec_UnknownArchetype(t *testing.T) {
 	if len(args) == 0 || args[0] != "claude" {
 		t.Fatalf("expected first arg 'claude', got %v", args)
 	}
-	// Should only have: claude --append-system-prompt <prompt>
-	if len(args) != 3 {
-		t.Errorf("expected 3 args for unknown archetype (claude + --append-system-prompt + prompt), got %d: %v", len(args), args)
+	// Should have: claude --dangerously-skip-permissions --append-system-prompt <prompt>
+	if len(args) != 4 {
+		t.Errorf("expected 4 args for unknown archetype (claude + --dangerously-skip-permissions + --append-system-prompt + prompt), got %d: %v", len(args), args)
+	}
+
+	// Should have --dangerously-skip-permissions (default behavior)
+	foundSkip := false
+	for _, arg := range args {
+		if arg == "--dangerously-skip-permissions" {
+			foundSkip = true
+			break
+		}
+	}
+	if !foundSkip {
+		t.Error("expected --dangerously-skip-permissions in exec args (default on)")
 	}
 }
 

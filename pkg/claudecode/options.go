@@ -45,6 +45,10 @@ type SpawnOptions struct {
 	// GitIdentity configures the git author/committer identity for this agent.
 	// When set, the agent's commits will show as this identity.
 	GitIdentity *GitIdentityConfig
+
+	// DangerouslySkipPermissions bypasses all permission checks.
+	// When true, passes --dangerously-skip-permissions to Claude Code.
+	DangerouslySkipPermissions bool
 }
 
 // GitIdentityConfig configures git identity for agent commits.
@@ -160,6 +164,10 @@ func (o *SpawnOptions) Args() []string {
 
 	if o.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(o.MaxBudgetUSD, 'f', 2, 64))
+	}
+
+	if o.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	// Prompt is sent via stdin when using stream-json input format

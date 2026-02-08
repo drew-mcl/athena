@@ -636,6 +636,10 @@ func (d *Daemon) buildInteractiveExec(prompt, archetype, taskListID string) ([]s
 		}
 	}
 
+	if d.config.Agents.ShouldSkipPermissions() {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+
 	args = append(args, "--append-system-prompt", prompt)
 
 	env := []string{

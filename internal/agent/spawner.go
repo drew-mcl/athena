@@ -19,6 +19,7 @@ import (
 	"github.com/drewfead/athena/internal/runner"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/worktree"
+	"github.com/drewfead/athena/pkg/claudecode"
 	"github.com/google/uuid"
 )
 
@@ -104,6 +105,14 @@ func (s *Spawner) agentLogPath(agentID string) string {
 
 // Spawn creates and starts a new Claude Code agent.
 func (s *Spawner) Spawn(ctx context.Context, spec SpawnSpec) (*store.Agent, error) {
+	// Auto-trust the workspace so Claude doesn't prompt for trust confirmation
+	if spec.WorktreePath != "" {
+		if err := claudecode.EnsureWorkspaceTrusted(spec.WorktreePath); err != nil {
+			logging.Warn("failed to auto-trust workspace", "path", spec.WorktreePath, "error", err)
+			// Non-fatal: agent can still be spawned, user may just see a trust prompt
+		}
+	}
+
 	// Generate IDs
 	agentID := uuid.NewString()
 	sessionID := uuid.NewString()
@@ -369,15 +378,16 @@ func (s *Spawner) buildRunSpec(spec SpawnSpec, sessionID string) (runner.RunSpec
 	}
 
 	runSpec := runner.RunSpec{
-		SessionID:      sessionID,
-		WorkDir:        spec.WorktreePath,
-		Prompt:         prompt,
-		Model:          archetype.Model,
-		PermissionMode: archetype.PermissionMode,
-		AllowedTools:   archetype.AllowedTools,
-		SystemPrompt:   archetype.Prompt,
-		GitIdentity:    s.resolveGitIdentity(spec.Archetype),
-		Env:            make(map[string]string),
+		SessionID:       sessionID,
+		WorkDir:         spec.WorktreePath,
+		Prompt:          prompt,
+		Model:           archetype.Model,
+		PermissionMode:  archetype.PermissionMode,
+		SkipPermissions: s.config.Agents.ShouldSkipPermissions(),
+		AllowedTools:    archetype.AllowedTools,
+		SystemPrompt:    archetype.Prompt,
+		GitIdentity:     s.resolveGitIdentity(spec.Archetype),
+		Env:             make(map[string]string),
 	}
 
 	// Populate environment from config
