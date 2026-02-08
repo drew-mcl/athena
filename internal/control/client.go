@@ -1387,6 +1387,20 @@ func (c *Client) RebaseMergeQueueItem(worktreePath, newBaseCommit, newHeadCommit
 	return nil
 }
 
+// ReconcileQueueResult contains the results of reconciling diverged queue items.
+type ReconcileQueueResult struct {
+	Results []map[string]string `json:"results"`
+}
+
+// ReconcileQueue refreshes the queue graph and rebases any diverged items.
+func (c *Client) ReconcileQueue(project string) (*ReconcileQueueResult, error) {
+	var result ReconcileQueueResult
+	if err := c.callAndDecode("reconcile_queue", map[string]string{"project": project}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // PruneWorktreesResult contains the results of pruning worktrees.
 type PruneWorktreesResult struct {
 	Merged  []string `json:"merged"`  // Merged worktrees that were pruned
@@ -1399,6 +1413,7 @@ type SpawnRequest struct {
 	FeatureID  string `json:"feature_id,omitempty"`   // e.g. wi-a3f8.1 (primary flow: spawn on feature)
 	TicketID   string `json:"ticket_id,omitempty"`    // e.g. ENG-123
 	WorkItemID string `json:"work_item_id,omitempty"` // e.g. wi-a3f8
+	Goal       string `json:"goal,omitempty"`         // Free-form goal text (e.g. "implement user auth")
 	Project    string `json:"project,omitempty"`
 	Retrieve   bool   `json:"retrieve,omitempty"` // -r flag: break down goal first
 	Headless   bool   `json:"headless,omitempty"` // --headless flag: run detached

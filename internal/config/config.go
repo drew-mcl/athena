@@ -69,11 +69,11 @@ type AgentsConfig struct {
 	Model             string        `yaml:"model"`
 	Budget            BudgetConfig  `yaml:"budget"`
 	ContextRetention  time.Duration `yaml:"context_retention"`
-	MaxContextTokens  int           `yaml:"max_context_tokens"`  // Max tokens for context block
-	MaxRelevantFiles  int           `yaml:"max_relevant_files"`  // Max relevant files to include
+	MaxContextTokens  int           `yaml:"max_context_tokens"` // Max tokens for context block
+	MaxRelevantFiles  int           `yaml:"max_relevant_files"` // Max relevant files to include
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
-	SkipPermissions   *bool         `yaml:"skip_permissions"`    // Skip all permission checks (default: true)
+	SkipPermissions   *bool         `yaml:"skip_permissions"` // Skip all permission checks (default: true)
 }
 
 // BackoffConfig defines exponential backoff parameters.

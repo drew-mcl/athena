@@ -852,6 +852,26 @@ func runQueueGraph(project string) error {
 	return nil
 }
 
+func runQueueReconcile(project string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	if project == "" {
+		project = detectProject()
+	}
+
+	result, err := client.ReconcileQueue(project)
+	if err != nil {
+		return err
+	}
+
+	printReconcileResults(result.Results)
+	return nil
+}
+
 // Helper functions for queue display
 
 func getQueueStatusIcon(status string) string {
