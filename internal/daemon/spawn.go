@@ -79,11 +79,13 @@ func (d *Daemon) handleSpawn(params json.RawMessage) (any, error) {
 }
 
 // resolveSpawnTarget determines the work item, parent goal, and ticket context
-// based on the spawn request mode (feature, ticket, work item, or bare).
+// based on the spawn request mode (feature, ticket, work item, goal, or bare).
 func (d *Daemon) resolveSpawnTarget(req control.SpawnRequest, project string) (*store.WorkItem, *store.WorkItem, string, error) {
 	switch {
 	case req.FeatureID != "":
 		return d.resolveFeatureSpawn(req.FeatureID)
+	case req.Goal != "":
+		return d.resolveGoalSpawn(req.Goal, project)
 	case req.TicketID != "":
 		wi, ctx, err := d.resolveTicket(req.TicketID, project)
 		if err != nil {
@@ -137,6 +139,33 @@ func (d *Daemon) resolveFeatureSpawn(featureID string) (*store.WorkItem, *store.
 	}
 
 	return wi, parentGoal, "", nil
+}
+
+// resolveGoalSpawn creates a new Goal work item from free-form goal text.
+func (d *Daemon) resolveGoalSpawn(goalText, project string) (*store.WorkItem, *store.WorkItem, string, error) {
+	// Generate work item ID
+	goalID, err := d.store.GenerateWorkItemID("")
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to generate work item ID: %w", err)
+	}
+
+	// Create Goal work item
+	// Use goal text as both subject and description for maximum context
+	goal := &store.WorkItem{
+		ID:          goalID,
+		Project:     project,
+		ItemType:    store.WorkItemTypeGoal,
+		Subject:     goalText,
+		Description: goalText,
+		Status:      store.WorkItemStatusInProgress,
+	}
+
+	if err := d.store.CreateWorkItem(goal); err != nil {
+		return nil, nil, "", fmt.Errorf("failed to create goal work item: %w", err)
+	}
+
+	logging.Info("created goal work item from free-form text", "goal_id", goalID, "text", goalText)
+	return goal, nil, "", nil
 }
 
 // resolveWorkItemSpawn fetches an existing work item by ID.
@@ -570,6 +599,34 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 	b.WriteString("- Mark tasks `in_progress` when you start them\n")
 	b.WriteString("- Mark tasks `completed` when done\n\n")
 
+	// Goal-based development guidance (for goal work items)
+	if workItem.ItemType == store.WorkItemTypeGoal {
+		b.WriteString("## Goal-Based Development\n\n")
+		b.WriteString("You have been spawned with a high-level goal. Your first step is to evaluate its complexity:\n\n")
+		b.WriteString("**Work solo if:**\n")
+		b.WriteString("- Goal is well-defined and accomplishable in a focused session\n")
+		b.WriteString("- Changes are localized to a few files (< 5)\n")
+		b.WriteString("- No obvious need for parallel workstreams\n")
+		b.WriteString("- Estimated work is < 10 tasks\n\n")
+		b.WriteString("**Create a team if:**\n")
+		b.WriteString("- Goal is complex with multiple independent subtasks\n")
+		b.WriteString("- Multiple areas of codebase need significant changes\n")
+		b.WriteString("- Work can be parallelized (e.g., frontend + backend, multiple services)\n")
+		b.WriteString("- Estimated work is > 10 tasks or spans multiple days\n\n")
+		b.WriteString("**Solo workflow:**\n")
+		b.WriteString("1. Explore the codebase to understand current architecture\n")
+		b.WriteString("2. Break down goal with TaskCreate\n")
+		b.WriteString("3. Work through tasks sequentially\n")
+		b.WriteString("4. Update task status as you progress\n\n")
+		b.WriteString("**Team workflow:**\n")
+		b.WriteString("1. Explore the codebase and identify parallel workstreams\n")
+		b.WriteString("2. Break down goal with TaskCreate\n")
+		b.WriteString("3. Use TeamCreate to create a coordinated team\n")
+		b.WriteString("4. Spawn teammates for each workstream using the Task tool\n")
+		b.WriteString("5. Coordinate their work and integrate results\n\n")
+		b.WriteString("Start by exploring the codebase to understand what needs to change, then decide on your approach.\n\n")
+	}
+
 	// Mode-specific instructions
 	if retrieve {
 		b.WriteString("## Mode: Retrieve & Plan\n\n")
@@ -591,8 +648,11 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 	b.WriteString("## When Done\n\n")
 	b.WriteString("When your work is complete:\n")
 	b.WriteString("1. Ensure all tasks are marked `completed`\n")
-	b.WriteString("2. Commit your changes with a clear message\n")
-	b.WriteString("3. Run `ath queue add` to add this feature to the merge queue\n\n")
+	b.WriteString("2. Commit, push, and create a PR using the `/commit-push-pr` skill\n")
+	b.WriteString("   - This will automatically commit your changes, push to remote, and open a pull request\n")
+	b.WriteString("   - Make sure the PR has the Linear/Jira ticket ID in the title if applicable\n")
+	b.WriteString("3. Run `ath queue add` to add this feature to the merge queue\n")
+	b.WriteString("4. Mark this feature work item as complete\n\n")
 
 	// Actionable task prompt - tell the agent what to do
 	b.WriteString("## Your Task\n\n")
