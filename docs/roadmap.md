@@ -7,10 +7,11 @@ Core infrastructure for orchestrating Claude Code agents with data sovereignty.
 **Completed:**
 - [x] Agent lifecycle management (spawn, kill, status tracking)
 - [x] Git worktree integration (isolated workspaces per agent)
-- [x] TUI dashboard (Bubble Tea)
+- [x] CLI-first workflow (`ath`, `athena-cli`)
 - [x] Unix socket daemon API
 - [x] SQLite persistence
-- [x] Control plane types (`internal/spec/`)
+- [x] Merge queue integration head and queue graph reconciliation
+- [x] Plugin integrations (GitHub/GitLab + Linear/Jira)
 - [x] Data plane with event sourcing (`internal/data/`, `internal/eventlog/`)
 - [x] Comprehensive CLI option mapping for Claude Code
 - [x] Pipeline architecture (EventLog → Cache → Bus → Replicator)
@@ -37,15 +38,15 @@ Core infrastructure for orchestrating Claude Code agents with data sovereignty.
 - [ ] Cache eviction metrics (hit rate, memory usage)
 - [ ] Snapshot persistence to disk (survive daemon restart)
 
-### TUI Improvements
+### CLI/Ops Improvements
 
-**Goal:** Real-time visibility into agent activity.
+**Goal:** Real-time visibility and control from the terminal.
 
-- [ ] Wire EventBus to dashboard (live message stream)
-- [ ] Message type filtering (show only tool calls, errors, etc.)
-- [ ] Conversation replay viewer (step through history)
-- [ ] Agent comparison view (side-by-side outputs)
-- [ ] All-in-one ops view (Jira/Linear auto creation, CI/CD views, task scheduling/planning, context insights via vector embeddings)
+- [ ] Queue diagnostics command (why diverged, suggested reconcile path)
+- [ ] Spawn/session audit command (agent launch context + task-list binding)
+- [ ] Plugin health command (auth/config verification per provider)
+- [ ] Rich `ath status` summary (queue + agents + in-progress work items)
+- [ ] Event stream tailing from CLI (agent/session live updates)
 
 ---
 
