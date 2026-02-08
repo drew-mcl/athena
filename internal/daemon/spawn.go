@@ -63,7 +63,9 @@ func (d *Daemon) handleSpawn(params json.RawMessage) (any, error) {
 
 	if workItem.WorktreePath != nil {
 		wt, err := d.store.GetWorktree(*workItem.WorktreePath)
-		if err == nil && wt != nil {
+		if err != nil {
+			logging.Debug("failed to load worktree details for spawn response", "path", *workItem.WorktreePath, "error", err)
+		} else if wt != nil {
 			resp.Worktree = &control.WorktreeInfo{
 				Path:    wt.Path,
 				Project: wt.Project,
@@ -130,7 +132,9 @@ func (d *Daemon) resolveFeatureSpawn(featureID string) (*store.WorkItem, *store.
 	}
 
 	wi.Status = store.WorkItemStatusInProgress
-	d.store.UpdateWorkItem(wi)
+	if err := d.store.UpdateWorkItem(wi); err != nil {
+		return nil, nil, "", fmt.Errorf("failed to update feature status: %w", err)
+	}
 
 	return wi, parentGoal, "", nil
 }
@@ -187,7 +191,15 @@ func (d *Daemon) spawnHeadless(workItem *store.WorkItem, workDir, project, arche
 	agentID := spawnedAgent.ID
 	workItem.AgentID = &agentID
 	workItem.Status = store.WorkItemStatusInProgress
-	d.store.UpdateWorkItem(workItem)
+	if err := d.store.UpdateWorkItem(workItem); err != nil {
+		if killErr := d.spawner.Kill(spawnedAgent.ID); killErr != nil {
+			logging.Warn("failed to roll back spawned agent after work item update failure",
+				"agent_id", spawnedAgent.ID,
+				"error", killErr,
+			)
+		}
+		return fmt.Errorf("failed to update work item after spawn: %w", err)
+	}
 
 	d.server.Broadcast(control.Event{
 		Type:    "agent_created",
@@ -210,7 +222,9 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 	// Get queue head for start point
 	startPoint := ""
 	queueBranch, _, err := d.getIntegrationHead(project)
-	if err == nil && queueBranch != "" {
+	if err != nil {
+		logging.Debug("failed to resolve integration head for feature worktree", "project", project, "error", err)
+	} else if queueBranch != "" {
 		startPoint = queueBranch
 		logging.Info("using queue head as start point", "branch", queueBranch, "project", project)
 	}
@@ -234,7 +248,9 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 
 	// Update the feature work item with the worktree path
 	feature.WorktreePath = &wtPath
-	d.store.UpdateWorkItem(feature)
+	if err := d.store.UpdateWorkItem(feature); err != nil {
+		return "", fmt.Errorf("created worktree %q but failed to persist feature link: %w", wtPath, err)
+	}
 
 	logging.Info("created worktree for feature",
 		"feature", feature.ID,
@@ -630,8 +646,10 @@ func (d *Daemon) buildInteractiveExec(prompt, archetype, taskListID string) ([]s
 }
 
 // pluginRegistry returns the daemon's plugin registry.
-// TODO: Use the daemon's actual plugin registry instead of creating an empty one.
-// This is a placeholder until plugin lifecycle management is implemented.
 func (d *Daemon) pluginRegistry() *plugin.Registry {
+	if d.plugins != nil {
+		d.refreshPluginConfig()
+		return d.plugins
+	}
 	return plugin.NewRegistry()
 }

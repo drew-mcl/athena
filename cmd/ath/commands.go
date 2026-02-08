@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/drewfead/athena/internal/control"
+	"github.com/drewfead/athena/internal/plugin"
 )
 
 // ============================================================================
@@ -53,7 +53,10 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 	defer client.Close()
 
 	project := detectProject()
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
 
 	req := control.SpawnRequest{
 		Project:  project,
@@ -71,9 +74,10 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 		// Classify the positional ID argument
 		if isWorkItemID(id) {
 			req.WorkItemID = id
-		} else {
-			// Treat as ticket ID
+		} else if isTicketID(id) {
 			req.TicketID = strings.ToUpper(id)
+		} else {
+			return fmt.Errorf("invalid id %q: expected work item (wi-...) or ticket (ABC-123)", id)
 		}
 	}
 
@@ -84,7 +88,11 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 
 	// Print context summary
 	if headless && resp.Agent != nil {
-		fmt.Printf("%s%s%s Spawned agent %s%s%s\n", green, checkMark, reset, magenta, resp.Agent.ID[:8], reset)
+		agentID := resp.Agent.ID
+		if len(agentID) > 8 {
+			agentID = agentID[:8]
+		}
+		fmt.Printf("%s%s%s Spawned agent %s%s%s\n", green, checkMark, reset, magenta, agentID, reset)
 	} else {
 		fmt.Printf("%s%s%s Launching Claude Code\n", green, checkMark, reset)
 	}
@@ -563,8 +571,14 @@ func getWorktreeAheadBehind(worktrees []*control.WorktreeInfo) map[string]AheadB
 		}
 		parts := strings.Fields(strings.TrimSpace(string(out)))
 		if len(parts) == 2 {
-			behind, _ := strconv.Atoi(parts[0])
-			ahead, _ := strconv.Atoi(parts[1])
+			behind, err := strconv.Atoi(parts[0])
+			if err != nil {
+				continue
+			}
+			ahead, err := strconv.Atoi(parts[1])
+			if err != nil {
+				continue
+			}
 			result[wt.Path] = AheadBehind{Ahead: ahead, Behind: behind}
 		}
 	}
@@ -659,9 +673,12 @@ func runQueueList(project string) error {
 		return err
 	}
 
-	// Check if VCS plugin is enabled for full functionality
-	cfg, _ := loadPluginConfig()
-	vcsEnabled := cfg != nil && (cfg.Enabled["github"] || cfg.Enabled["gitlab"])
+	// Check if a VCS plugin is enabled for full functionality.
+	cfg, err := plugin.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sWarning:%s failed to load plugin config: %v\n", yellow, reset, err)
+	}
+	vcsEnabled := cfg != nil && (cfg.IsEnabled("github") || cfg.IsEnabled("gitlab"))
 
 	if len(items) == 0 {
 		fmt.Println(gray + "Queue empty - new worktrees will branch from main" + reset)
@@ -843,49 +860,17 @@ var availablePlugins = []struct {
 	{"jira", "pm", "Jira - Issue tracking via REST API"},
 }
 
-// Plugin state stored in config file
-func getPluginConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "athena", "plugins.json")
-}
-
-type PluginConfig struct {
-	Enabled map[string]bool `json:"enabled"`
-}
-
-func loadPluginConfig() (*PluginConfig, error) {
-	path := getPluginConfigPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &PluginConfig{Enabled: make(map[string]bool)}, nil
+func isKnownPlugin(name string) bool {
+	for _, p := range availablePlugins {
+		if p.name == name {
+			return true
 		}
-		return nil, err
 	}
-
-	var cfg PluginConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	if cfg.Enabled == nil {
-		cfg.Enabled = make(map[string]bool)
-	}
-	return &cfg, nil
-}
-
-func savePluginConfig(cfg *PluginConfig) error {
-	path := getPluginConfigPath()
-	os.MkdirAll(filepath.Dir(path), 0755)
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+	return false
 }
 
 func runPluginList(category string) error {
-	cfg, err := loadPluginConfig()
+	cfg, err := plugin.LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -909,7 +894,7 @@ func runPluginList(category string) error {
 		}
 
 		// Status indicator
-		enabled := cfg.Enabled[p.name]
+		enabled := cfg.IsEnabled(p.name)
 		status := gray + "[ ]" + reset
 		if enabled {
 			status = green + "[*]" + reset
@@ -924,43 +909,32 @@ func runPluginList(category string) error {
 }
 
 func runPluginEnable(name string) error {
-	// Validate plugin exists
-	found := false
-	for _, p := range availablePlugins {
-		if p.name == name {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("unknown plugin: %s", name)
-	}
-
-	cfg, err := loadPluginConfig()
-	if err != nil {
-		return err
-	}
-
-	cfg.Enabled[name] = true
-	if err := savePluginConfig(cfg); err != nil {
-		return err
-	}
-
-	fmt.Printf("%s%s%s Enabled %s\n", green, checkMark, reset, name)
-	return nil
+	return runPluginSetEnabled(name, true)
 }
 
 func runPluginDisable(name string) error {
-	cfg, err := loadPluginConfig()
+	return runPluginSetEnabled(name, false)
+}
+
+func runPluginSetEnabled(name string, enabled bool) error {
+	if !isKnownPlugin(name) {
+		return fmt.Errorf("unknown plugin: %s", name)
+	}
+
+	cfg, err := plugin.LoadConfig()
 	if err != nil {
 		return err
 	}
 
-	cfg.Enabled[name] = false
-	if err := savePluginConfig(cfg); err != nil {
+	cfg.Enabled[name] = enabled
+	if err := plugin.SaveConfig(cfg); err != nil {
 		return err
 	}
 
-	fmt.Printf("%s%s%s Disabled %s\n", green, checkMark, reset, name)
+	verb := "Disabled"
+	if enabled {
+		verb = "Enabled"
+	}
+	fmt.Printf("%s%s%s %s %s\n", green, checkMark, reset, verb, name)
 	return nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/plugin"
+	"github.com/drewfead/athena/internal/plugin/pm"
 	"github.com/drewfead/athena/internal/plugin/vcs"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/task"
@@ -59,6 +60,7 @@ type Daemon struct {
 
 	// Merge queue sync
 	queueSync *QueueSync
+	plugins   *plugin.Registry
 
 	agents   map[string]*AgentProcess
 	agentsMu sync.RWMutex
@@ -109,6 +111,19 @@ func New(cfg *config.Config) (*Daemon, error) {
 		}
 	}
 
+	plugins := plugin.NewRegistry()
+	plugins.Register(vcs.NewGitHub())
+	plugins.Register(vcs.NewGitLab())
+	plugins.Register(pm.NewJira())
+	if linear, err := pm.NewLinear(os.Getenv("LINEAR_API_KEY")); err == nil {
+		plugins.Register(linear)
+	} else {
+		logging.Debug("linear plugin unavailable", "error", err)
+	}
+	if err := plugin.RefreshRegistryFromDisk(plugins); err != nil {
+		logging.Warn("failed to load plugin config", "error", err)
+	}
+
 	d := &Daemon{
 		config:         cfg,
 		store:          st,
@@ -119,6 +134,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		publisher:      publisher,
 		spawner:        agent.NewSpawner(cfg, st, publisher),
 		taskRegistry:   taskRegistry,
+		plugins:        plugins,
 		agents:         make(map[string]*AgentProcess),
 		jobQueue:       make(chan string, 100),
 		gitStatusCache: make(map[string]gitStatusCacheEntry),
@@ -132,14 +148,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 		d.emitAgentStreamEvent(eventType, agentID, worktreePath, payload)
 	})
 
-	// Initialize plugin registry for integrations
-	plugins := plugin.NewRegistry()
-	plugins.Register(vcs.NewGitHub())
-	plugins.Register(vcs.NewGitLab())
-	// TODO: Load enabled state from config and register PM plugins
-
 	// Initialize queue sync (watches PRs and auto-pops merged items)
-	d.queueSync = NewQueueSync(st, plugins, d.server)
+	d.queueSync = NewQueueSync(st, d.plugins, d.server)
 
 	d.registerHandlers()
 	return d, nil
@@ -321,6 +331,13 @@ func (d *Daemon) reloadConfig() error {
 		"heartbeat_interval", d.config.Agents.HeartbeatInterval)
 
 	return nil
+}
+
+// refreshPluginConfig reapplies persisted plugin enablement to the in-memory registry.
+func (d *Daemon) refreshPluginConfig() {
+	if err := plugin.RefreshRegistryFromDisk(d.plugins); err != nil {
+		logging.Debug("failed to refresh plugin config", "error", err)
+	}
 }
 
 // setDraining sets the draining state.
@@ -587,7 +604,11 @@ func (d *Daemon) cachedGitStatus(path string) *worktree.WorktreeStatus {
 	}
 	d.gitStatusCacheMu.Unlock()
 
-	status, _ := d.provisioner.GetStatus(path)
+	status, err := d.provisioner.GetStatus(path)
+	if err != nil {
+		logging.Debug("failed to get git status", "path", path, "error", err)
+		return nil
+	}
 	if status == nil {
 		return nil
 	}
@@ -1040,7 +1061,9 @@ func (d *Daemon) handleCreateWorktree(params json.RawMessage) (any, error) {
 
 		// Check merge queue for integration HEAD
 		queueBranch, _, err := d.getIntegrationHead(projectName)
-		if err == nil && queueBranch != "" {
+		if err != nil {
+			logging.Debug("failed to resolve integration head for new worktree", "project", projectName, "error", err)
+		} else if queueBranch != "" {
 			startPoint = queueBranch
 			logging.Info("using queue head as start point", "branch", queueBranch, "project", projectName)
 		}
@@ -1177,7 +1200,10 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 	}
 
 	// Find planner agent for this worktree
-	agents, _ := d.store.ListAgentsByWorktree(req.WorktreePath)
+	agents, err := d.store.ListAgentsByWorktree(req.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agents for worktree: %w", err)
+	}
 	var plannerAgent *store.Agent
 	for _, a := range agents {
 		if a.Archetype == "planner" {
@@ -1189,7 +1215,10 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 	// Check DB cache first (unless force refresh)
 	if !req.ForceRefresh {
 		plan, err := d.store.GetPlan(req.WorktreePath)
-		if err == nil && plan != nil && plan.Status != store.PlanStatusPending {
+		if err != nil {
+			return nil, fmt.Errorf("failed to get plan cache: %w", err)
+		}
+		if plan != nil && plan.Status != store.PlanStatusPending {
 			// Return cached plan if we have content
 			info := planToInfo(plan)
 			if plannerAgent != nil {
@@ -1208,14 +1237,23 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 			summary, _ := parsePlanFrontmatter(content)
 
 			// Plan found - cache in DB and return
-			existingPlan, _ := d.store.GetPlan(req.WorktreePath)
+			existingPlan, err := d.store.GetPlan(req.WorktreePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load existing cached plan: %w", err)
+			}
 			if existingPlan != nil {
-				d.store.UpdatePlanContent(req.WorktreePath, content)
+				if err := d.store.UpdatePlanContent(req.WorktreePath, content); err != nil {
+					return nil, fmt.Errorf("failed to update cached plan content: %w", err)
+				}
 				if summary != "" && existingPlan.Summary != summary {
-					d.store.UpdatePlanSummary(req.WorktreePath, summary)
+					if err := d.store.UpdatePlanSummary(req.WorktreePath, summary); err != nil {
+						return nil, fmt.Errorf("failed to update cached plan summary: %w", err)
+					}
 				}
 				if existingPlan.Status == store.PlanStatusPending {
-					d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusDraft)
+					if err := d.store.UpdatePlanStatus(req.WorktreePath, store.PlanStatusDraft); err != nil {
+						return nil, fmt.Errorf("failed to update cached plan status: %w", err)
+					}
 				}
 				existingPlan.Content = content
 				existingPlan.Summary = summary
@@ -1261,9 +1299,14 @@ func (d *Daemon) handleGetPlan(params json.RawMessage) (any, error) {
 	}
 
 	// Cache the pending plan
-	existingPlan, _ := d.store.GetPlan(req.WorktreePath)
+	existingPlan, err := d.store.GetPlan(req.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pending plan cache: %w", err)
+	}
 	if existingPlan == nil {
-		d.store.CreatePlan(plan)
+		if err := d.store.CreatePlan(plan); err != nil {
+			return nil, fmt.Errorf("failed to create pending plan cache: %w", err)
+		}
 	}
 
 	info := planToInfo(plan)
@@ -1423,7 +1466,10 @@ func (d *Daemon) handleMergeLocal(params json.RawMessage) (any, error) {
 		logging.Info("spawning conflict resolver agent", "worktree", req.WorktreePath, "branch", result.Branch)
 
 		// Get worktree for project info
-		wt, _ := d.store.GetWorktree(req.WorktreePath)
+		wt, err := d.store.GetWorktree(req.WorktreePath)
+		if err != nil {
+			logging.Debug("failed to load worktree while preparing conflict resolver", "path", req.WorktreePath, "error", err)
+		}
 		projectName := ""
 		if wt != nil {
 			projectName = wt.Project
@@ -1471,7 +1517,9 @@ If the conflicts are too complex to resolve automatically, explain what manual i
 			logging.Error("failed to spawn conflict resolver", "error", spawnErr)
 			// Mark job as failed
 			if job != nil {
-				d.store.UpdateJobStatus(job.ID, store.JobStatusFailed)
+				if err := d.store.UpdateJobStatus(job.ID, store.JobStatusFailed); err != nil {
+					logging.Warn("failed to mark merge job as failed", "job_id", job.ID, "error", err)
+				}
 			}
 			return &control.MergeLocalResult{
 				Success:      false,
@@ -1481,7 +1529,13 @@ If the conflicts are too complex to resolve automatically, explain what manual i
 		}
 
 		// Associate agent with worktree
-		d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID)
+		if err := d.store.AssignAgentToWorktree(req.WorktreePath, spawnedAgent.ID); err != nil {
+			logging.Warn("failed to associate resolver agent with worktree",
+				"path", req.WorktreePath,
+				"agent_id", spawnedAgent.ID,
+				"error", err,
+			)
+		}
 
 		// Broadcast agent creation
 		d.server.Broadcast(control.Event{
@@ -1540,7 +1594,10 @@ func (d *Daemon) handleAbandonWorktree(params json.RawMessage) (any, error) {
 	}
 
 	// Kill any running agent process before abandoning
-	wt, _ := d.store.GetWorktree(req.WorktreePath)
+	wt, err := d.store.GetWorktree(req.WorktreePath)
+	if err != nil {
+		logging.Debug("failed to load worktree before abandon", "path", req.WorktreePath, "error", err)
+	}
 	if wt != nil && wt.AgentID != nil {
 		if err := d.spawner.Kill(*wt.AgentID); err != nil {
 			logging.Debug("spawner kill returned error (may not be running)", "agent_id", *wt.AgentID, "error", err)
@@ -1758,7 +1815,10 @@ func (d *Daemon) handleGetBlackboardSummary(params json.RawMessage) (any, error)
 	}
 
 	// Get unresolved question count
-	unresolvedCount, _ := d.store.CountUnresolvedQuestions(req.WorktreePath)
+	unresolvedCount, err := d.store.CountUnresolvedQuestions(req.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count unresolved questions: %w", err)
+	}
 
 	return &control.BlackboardSummaryInfo{
 		WorktreePath:    req.WorktreePath,

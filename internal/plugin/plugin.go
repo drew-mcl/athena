@@ -4,6 +4,8 @@
 //   - pm: Project Management (Jira, Linear)
 package plugin
 
+import "sync"
+
 // Category represents a plugin category.
 type Category string
 
@@ -31,6 +33,7 @@ type Plugin interface {
 type BasePlugin struct {
 	name     string
 	category Category
+	mu       sync.RWMutex
 	enabled  bool
 }
 
@@ -45,11 +48,20 @@ func NewBasePlugin(name string, category Category) *BasePlugin {
 
 func (p *BasePlugin) Name() string       { return p.name }
 func (p *BasePlugin) Category() Category { return p.category }
-func (p *BasePlugin) Enabled() bool      { return p.enabled }
-func (p *BasePlugin) SetEnabled(e bool)  { p.enabled = e }
+func (p *BasePlugin) Enabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.enabled
+}
+func (p *BasePlugin) SetEnabled(e bool) {
+	p.mu.Lock()
+	p.enabled = e
+	p.mu.Unlock()
+}
 
 // Registry manages all available plugins.
 type Registry struct {
+	mu      sync.RWMutex
 	plugins map[string]Plugin
 }
 
@@ -62,16 +74,23 @@ func NewRegistry() *Registry {
 
 // Register adds a plugin to the registry.
 func (r *Registry) Register(p Plugin) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.plugins[p.Name()] = p
 }
 
 // Get returns a plugin by name.
 func (r *Registry) Get(name string) Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.plugins[name]
 }
 
 // GetByCategory returns all plugins in a category.
 func (r *Registry) GetByCategory(cat Category) []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var result []Plugin
 	for _, p := range r.plugins {
 		if p.Category() == cat {
@@ -83,6 +102,9 @@ func (r *Registry) GetByCategory(cat Category) []Plugin {
 
 // GetEnabled returns all enabled plugins.
 func (r *Registry) GetEnabled() []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var result []Plugin
 	for _, p := range r.plugins {
 		if p.Enabled() {
@@ -94,6 +116,9 @@ func (r *Registry) GetEnabled() []Plugin {
 
 // GetEnabledByCategory returns enabled plugins in a category.
 func (r *Registry) GetEnabledByCategory(cat Category) []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var result []Plugin
 	for _, p := range r.plugins {
 		if p.Category() == cat && p.Enabled() {
@@ -105,6 +130,9 @@ func (r *Registry) GetEnabledByCategory(cat Category) []Plugin {
 
 // List returns all registered plugins.
 func (r *Registry) List() []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	result := make([]Plugin, 0, len(r.plugins))
 	for _, p := range r.plugins {
 		result = append(result, p)
@@ -114,7 +142,10 @@ func (r *Registry) List() []Plugin {
 
 // Enable enables a plugin by name.
 func (r *Registry) Enable(name string) bool {
-	if p, ok := r.plugins[name]; ok {
+	r.mu.RLock()
+	p, ok := r.plugins[name]
+	r.mu.RUnlock()
+	if ok {
 		p.SetEnabled(true)
 		return true
 	}
@@ -123,7 +154,10 @@ func (r *Registry) Enable(name string) bool {
 
 // Disable disables a plugin by name.
 func (r *Registry) Disable(name string) bool {
-	if p, ok := r.plugins[name]; ok {
+	r.mu.RLock()
+	p, ok := r.plugins[name]
+	r.mu.RUnlock()
+	if ok {
 		p.SetEnabled(false)
 		return true
 	}

@@ -96,12 +96,22 @@ func (d *Daemon) handleAddToMergeQueue(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	// Get the merge base (what this branch is based on)
-	baseBranch, baseCommit, err := getGitMergeBase(req.WorktreePath, wt.Branch)
-	if err != nil {
-		// Fall back to just using "main" as the base
-		baseBranch = "main"
-		baseCommit, _ = getGitHead(req.WorktreePath + "/..") // Parent repo HEAD
+	// Base info must represent the actual integration ancestor for queue divergence checks.
+	// Prefer queue head when available, otherwise fall back to a merge-base with default branch.
+	baseBranch := ""
+	baseCommit := ""
+	if queueBranch, queueCommit, queueErr := d.getIntegrationHead(project); queueErr == nil && queueBranch != "" && queueCommit != "" {
+		baseBranch = queueBranch
+		baseCommit = queueCommit
+	} else {
+		baseBranch, baseCommit, err = getGitMergeBase(req.WorktreePath, wt.Branch)
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine base commit: %w", err)
+		}
+	}
+
+	if baseBranch == "" || baseCommit == "" {
+		return nil, fmt.Errorf("failed to determine queue base (branch=%q commit=%q)", baseBranch, baseCommit)
 	}
 
 	item := &store.MergeQueueItem{
@@ -140,7 +150,10 @@ func (d *Daemon) handleRemoveFromMergeQueue(params json.RawMessage) (any, error)
 	}
 
 	// Get item first to know project for broadcast
-	item, _ := d.store.GetMergeQueueItem(req.WorktreePath)
+	item, err := d.store.GetMergeQueueItem(req.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
 	project := ""
 	if item != nil {
 		project = item.Project
@@ -236,39 +249,72 @@ func (d *Daemon) cascadeRebase(project string) []map[string]string {
 	}
 
 	for _, item := range items {
-		result := map[string]string{
-			"path":   item.WorktreePath,
-			"branch": item.Branch,
+		queueItem := item
+		if mapped, ok := positionMap[item.Position]; ok && mapped != nil {
+			queueItem = mapped
+		} else {
+			positionMap[item.Position] = queueItem
 		}
 
-		// Find what to rebase onto - the item at position-1
-		var rebaseOnto string
-		if item.Position > 1 {
-			if prevItem, ok := positionMap[item.Position-1]; ok {
-				rebaseOnto = prevItem.Branch
+		result := map[string]string{
+			"path":   queueItem.WorktreePath,
+			"branch": queueItem.Branch,
+		}
+
+		// Resolve the exact target reference and commit to preserve queue chain semantics.
+		rebaseOnto, newBaseCommit, newBaseBranch, err := resolveQueueRebaseTarget(queueItem, positionMap)
+		if err != nil {
+			result["status"] = "error"
+			result["error"] = err.Error()
+			if updateErr := d.store.UpdateMergeQueueItem(queueItem.WorktreePath, store.MergeQueueStatusConflict, ""); updateErr != nil {
+				result["update_error"] = updateErr.Error()
 			}
+			queueItem.Status = store.MergeQueueStatusConflict
+			results = append(results, result)
+			continue
 		}
-		if rebaseOnto == "" {
-			rebaseOnto = "main" // First in queue rebases onto main
-		}
+		result["base"] = newBaseBranch
+		result["onto"] = rebaseOnto
 
 		// Perform the rebase
-		err := gitRebase(item.WorktreePath, rebaseOnto)
+		err = gitRebase(queueItem.WorktreePath, rebaseOnto)
 		if err != nil {
 			result["status"] = "conflict"
 			result["error"] = err.Error()
 
 			// Mark as conflict in store
-			d.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusConflict, "")
+			if updateErr := d.store.UpdateMergeQueueItem(queueItem.WorktreePath, store.MergeQueueStatusConflict, ""); updateErr != nil {
+				result["update_error"] = updateErr.Error()
+			}
+			queueItem.Status = store.MergeQueueStatusConflict
 		} else {
-			result["status"] = "success"
-
 			// Get new HEAD after rebase
-			newHead, _ := getGitHead(item.WorktreePath)
-			_, newBase, _ := getGitMergeBase(item.WorktreePath, item.Branch)
+			newHead, headErr := getGitHead(queueItem.WorktreePath)
+			if headErr != nil {
+				result["status"] = "error"
+				result["error"] = fmt.Sprintf("rebase succeeded but failed to resolve new HEAD: %v", headErr)
+				if updateErr := d.store.UpdateMergeQueueItem(queueItem.WorktreePath, store.MergeQueueStatusConflict, ""); updateErr != nil {
+					result["update_error"] = updateErr.Error()
+				}
+				queueItem.Status = store.MergeQueueStatusConflict
+				results = append(results, result)
+				continue
+			}
+
+			// Always move in-memory queue state forward so downstream rebases target the new integration head.
+			queueItem.Status = store.MergeQueueStatusQueued
+			queueItem.BaseBranch = newBaseBranch
+			queueItem.BaseCommit = newBaseCommit
+			queueItem.HeadCommit = newHead
 
 			// Mark as rebased in store
-			d.store.MarkQueueItemRebased(item.WorktreePath, newBase, newHead)
+			if updateErr := d.store.MarkQueueItemRebasedWithBase(queueItem.WorktreePath, newBaseBranch, newBaseCommit, newHead); updateErr != nil {
+				result["status"] = "error"
+				result["error"] = fmt.Sprintf("rebase succeeded but failed to persist queue state: %v", updateErr)
+			} else {
+				result["status"] = "success"
+				result["head"] = newHead
+			}
 		}
 
 		results = append(results, result)
@@ -354,7 +400,10 @@ func (d *Daemon) handleRebaseMergeQueueItem(params json.RawMessage) (any, error)
 		return nil, err
 	}
 
-	item, _ := d.store.GetMergeQueueItem(req.WorktreePath)
+	item, err := d.store.GetMergeQueueItem(req.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
 	if item != nil {
 		d.server.Broadcast(control.Event{
 			Type: "merge_queue_updated",
@@ -398,23 +447,19 @@ func getGitHead(path string) (string, error) {
 }
 
 func getGitMergeBase(path, branch string) (baseBranch string, baseCommit string, err error) {
-	// Try to find merge-base with main
-	cmd := exec.Command("git", "merge-base", "main", branch)
+	baseRef, baseBranch, err := getGitDefaultBaseRef(path)
+	if err != nil {
+		return "", "", err
+	}
+
+	cmd := exec.Command("git", "merge-base", baseRef, branch)
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err == nil {
-		return "main", strings.TrimSpace(string(out)), nil
+		return baseBranch, strings.TrimSpace(string(out)), nil
 	}
 
-	// Try master if main doesn't exist
-	cmd = exec.Command("git", "merge-base", "master", branch)
-	cmd.Dir = path
-	out, err = cmd.Output()
-	if err == nil {
-		return "master", strings.TrimSpace(string(out)), nil
-	}
-
-	return "", "", fmt.Errorf("could not find merge base")
+	return "", "", fmt.Errorf("could not find merge base between %s and %s", baseRef, branch)
 }
 
 // gitRebase performs a git rebase onto the specified branch.
@@ -436,4 +481,100 @@ func gitRebase(worktreePath, ontoBranch string) error {
 		return fmt.Errorf("rebase failed: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func resolveQueueRebaseTarget(item *store.MergeQueueItem, positionMap map[int]*store.MergeQueueItem) (rebaseRef, baseCommit, baseBranch string, err error) {
+	if item == nil {
+		return "", "", "", fmt.Errorf("queue item is required")
+	}
+
+	if rebaseRef, baseCommit, baseBranch, ok := selectQueueRebaseTarget(item, positionMap); ok {
+		if baseCommit == "" {
+			baseCommit, err = getGitRevParse(item.WorktreePath, rebaseRef)
+			if err != nil {
+				return "", "", "", fmt.Errorf("failed to resolve rebase target %q: %w", rebaseRef, err)
+			}
+		}
+		return rebaseRef, baseCommit, baseBranch, nil
+	}
+
+	if item.Position > 1 {
+		return "", "", "", fmt.Errorf("queue item at position %d has no stable predecessor", item.Position)
+	}
+
+	rebaseRef, baseBranch, err = getGitDefaultBaseRef(item.WorktreePath)
+	if err != nil {
+		return "", "", "", err
+	}
+	baseCommit, err = getGitRevParse(item.WorktreePath, rebaseRef)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to resolve default base ref %q: %w", rebaseRef, err)
+	}
+	return rebaseRef, baseCommit, baseBranch, nil
+}
+
+func selectQueueRebaseTarget(item *store.MergeQueueItem, positionMap map[int]*store.MergeQueueItem) (rebaseRef, baseCommit, baseBranch string, ok bool) {
+	if item == nil || item.Position <= 1 {
+		return "", "", "", false
+	}
+	prevItem, exists := positionMap[item.Position-1]
+	if !exists || prevItem == nil {
+		return "", "", "", false
+	}
+	if !isQueueItemStable(prevItem) {
+		return "", "", "", false
+	}
+
+	if prevItem.HeadCommit != "" {
+		return prevItem.HeadCommit, prevItem.HeadCommit, prevItem.Branch, true
+	}
+	if prevItem.Branch != "" {
+		return prevItem.Branch, "", prevItem.Branch, true
+	}
+	return "", "", "", false
+}
+
+func isQueueItemStable(item *store.MergeQueueItem) bool {
+	if item == nil {
+		return false
+	}
+	switch item.Status {
+	case "", store.MergeQueueStatusQueued, store.MergeQueueStatusMerging, store.MergeQueueStatusMerged:
+		return true
+	default:
+		return false
+	}
+}
+
+func getGitDefaultBaseRef(path string) (ref string, branch string, err error) {
+	originHead, err := gitOutput(path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err == nil && originHead != "" {
+		return originHead, strings.TrimPrefix(originHead, "origin/"), nil
+	}
+
+	for _, candidate := range []string{"main", "master"} {
+		if _, err := gitOutput(path, "rev-parse", "--verify", "--quiet", candidate); err == nil {
+			return candidate, candidate, nil
+		}
+		originCandidate := "origin/" + candidate
+		if _, err := gitOutput(path, "rev-parse", "--verify", "--quiet", originCandidate); err == nil {
+			return originCandidate, candidate, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("could not determine default base branch")
+}
+
+func getGitRevParse(path, ref string) (string, error) {
+	return gitOutput(path, "rev-parse", ref)
+}
+
+func gitOutput(path string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
