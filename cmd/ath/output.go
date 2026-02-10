@@ -990,6 +990,68 @@ func printError(msg string) {
 	fmt.Fprintf(os.Stderr, "%sError: %s%s\n", red, msg, reset)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RECONCILE RESULTS - Per-item rebase outcome
+// ═══════════════════════════════════════════════════════════════════════════
+
+func printReconcileResults(results []map[string]string) {
+	if len(results) == 0 {
+		fmt.Println(dim + "Nothing to reconcile - queue is clean" + reset)
+		return
+	}
+
+	fmt.Printf("%s≡%s Reconcile Results (%d items)\n\n", cyan, reset, len(results))
+
+	successCount, conflictCount, errorCount := 0, 0, 0
+
+	for _, r := range results {
+		branch := r["branch"]
+		status := r["status"]
+
+		var statusIcon, statusColor string
+		switch status {
+		case "success":
+			statusIcon = green + checkMark + reset
+			statusColor = green
+			successCount++
+		case "conflict":
+			statusIcon = yellow + "!" + reset
+			statusColor = yellow
+			conflictCount++
+		default:
+			statusIcon = red + "x" + reset
+			statusColor = red
+			errorCount++
+		}
+
+		fmt.Printf("  %s %s%s%s %s\n", statusIcon, statusColor, status, reset, branch)
+
+		if head, ok := r["head"]; ok && head != "" {
+			fmt.Printf("      %sHEAD:%s %s\n", gray, reset, shortSHA(head))
+		}
+		if base, ok := r["base"]; ok && base != "" {
+			fmt.Printf("      %sbase:%s %s\n", gray, reset, base)
+		}
+		if errMsg, ok := r["error"]; ok && errMsg != "" {
+			fmt.Printf("      %serror:%s %s\n", red, reset, truncate(errMsg, 80))
+		}
+	}
+
+	fmt.Println()
+
+	var parts []string
+	if successCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d rebased", successCount))
+	}
+	if conflictCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflicts", conflictCount))
+	}
+	if errorCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d errors", errorCount))
+	}
+	fmt.Printf("%s%s%s\n", dim, strings.Join(parts, ", "), reset)
+}
+
 // Legacy compatibility
 func printWorkItem(item *control.WorkItemInfo, indent int) {
 	shape := getShapeForItem(item)

@@ -23,7 +23,7 @@ type TaskList struct {
 	Provider  string    `json:"provider"`
 	Path      string    `json:"path,omitempty"` // File path for file-based providers
 	TaskCount int       `json:"task_count"`
-	Active    bool      `json:"active"`    // True when an agent is actively working (.lock file present)
+	Active    bool      `json:"active"` // True when an agent is actively working (.lock file present)
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

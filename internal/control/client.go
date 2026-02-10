@@ -1390,6 +1390,20 @@ func (c *Client) RebaseMergeQueueItem(worktreePath, newBaseCommit, newHeadCommit
 	return nil
 }
 
+// ReconcileQueueResult contains the results of reconciling diverged queue items.
+type ReconcileQueueResult struct {
+	Results []map[string]string `json:"results"`
+}
+
+// ReconcileQueue refreshes the queue graph and rebases any diverged items.
+func (c *Client) ReconcileQueue(project string) (*ReconcileQueueResult, error) {
+	var result ReconcileQueueResult
+	if err := c.callAndDecode("reconcile_queue", map[string]string{"project": project}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // PruneWorktreesResult contains the results of pruning worktrees.
 type PruneWorktreesResult struct {
 	Merged  []string `json:"merged"`  // Merged worktrees that were pruned

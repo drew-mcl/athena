@@ -282,6 +282,20 @@ This marks dependent features as needing rebase.`,
 	},
 }
 
+var queueReconcileCmd = &cobra.Command{
+	Use:     "reconcile",
+	Aliases: []string{"r"},
+	Short:   "Reconcile diverged queue items",
+	Long: `Detect and rebase diverged items in the merge queue.
+
+This refreshes the queue graph and automatically rebases any items
+whose base commit doesn't match their predecessor's head.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runQueueReconcile(project)
+	},
+}
+
 var queueRmCmd = &cobra.Command{
 	Use:   "rm [worktree-path]",
 	Short: "Remove worktree from the queue",
@@ -424,7 +438,8 @@ func init() {
 	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
 	queueHeadCmd.Flags().StringP("project", "p", "", "Project name")
 	queueGraphCmd.Flags().StringP("project", "p", "", "Filter by project")
-	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd, queueGraphCmd)
+	queueReconcileCmd.Flags().StringP("project", "p", "", "Project name")
+	queueCmd.AddCommand(queueAddCmd, queueHeadCmd, queueBumpCmd, queueRmCmd, queueGraphCmd, queueReconcileCmd)
 
 	// Agent flags
 	agentCmd.Flags().StringP("status", "s", "", "Filter by status (running, completed, crashed)")

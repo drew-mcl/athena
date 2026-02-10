@@ -19,6 +19,7 @@ func (d *Daemon) registerMergeQueueHandlers() {
 	d.server.Handle("remove_from_merge_queue", d.handleRemoveFromMergeQueue)
 	d.server.Handle("bump_merge_queue_item", d.handleBumpMergeQueueItem)
 	d.server.Handle("rebase_merge_queue_item", d.handleRebaseMergeQueueItem)
+	d.server.Handle("reconcile_queue", d.handleReconcileQueue)
 }
 
 func (d *Daemon) handleGetMergeQueue(params json.RawMessage) (any, error) {
@@ -224,6 +225,32 @@ func (d *Daemon) handleBumpMergeQueueItem(params json.RawMessage) (any, error) {
 	})
 
 	return mergeQueueItemToInfo(item), nil
+}
+
+func (d *Daemon) handleReconcileQueue(params json.RawMessage) (any, error) {
+	var req struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.refreshQueueGraph(req.Project); err != nil {
+		return nil, fmt.Errorf("failed to refresh queue graph: %w", err)
+	}
+
+	rebaseResults := d.cascadeRebase(req.Project)
+
+	d.server.Broadcast(control.Event{
+		Type: "merge_queue_updated",
+		Payload: map[string]any{
+			"project":        req.Project,
+			"action":         "reconciled",
+			"rebase_results": rebaseResults,
+		},
+	})
+
+	return &control.ReconcileQueueResult{Results: rebaseResults}, nil
 }
 
 // cascadeRebase automatically rebases items marked as rebasing/diverged in the queue.
