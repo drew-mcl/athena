@@ -152,6 +152,34 @@ func TestBuildSpawnPrompt(t *testing.T) {
 			t.Error("expected prompt to contain task description")
 		}
 	})
+
+	t.Run("CompletionWorkflowInstructions", func(t *testing.T) {
+		wi := &store.WorkItem{
+			ID:       "wi-k1l2",
+			Project:  "myproject",
+			ItemType: store.WorkItemTypeFeature,
+			Subject:  "Add new feature",
+		}
+
+		prompt := d.buildSpawnPrompt(wi, nil, "", "wi-k1l2", false)
+
+		// Should contain completion workflow instructions
+		if !strings.Contains(prompt, "## When Done") {
+			t.Error("expected prompt to contain completion section")
+		}
+		if !strings.Contains(prompt, "/commit-push-pr") {
+			t.Error("expected prompt to mention /commit-push-pr skill")
+		}
+		if !strings.Contains(prompt, "ath queue add") {
+			t.Error("expected prompt to mention ath queue add")
+		}
+		if !strings.Contains(prompt, "push to remote") {
+			t.Error("expected prompt to mention pushing to remote")
+		}
+		if !strings.Contains(prompt, "Mark this feature work item as complete") {
+			t.Error("expected prompt to mention marking feature complete")
+		}
+	})
 }
 
 func TestBuildInteractiveExec(t *testing.T) {

@@ -606,9 +606,10 @@ func printWorkItemTree(items []*control.WorkItemInfo) {
 }
 
 func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.WorkItemInfo, prefix string, isLast bool, stats map[string]int, idWidth int) {
+	isBlocked := item.Blocked && item.Status != "completed"
 	stats[item.Status]++
 
-	// Shape based on type
+	// Shape based on type and status
 	var shape string
 	switch item.ItemType {
 	case "goal":
@@ -619,8 +620,8 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 		shape = shapeTask
 	}
 
-	// Fill shape if in_progress
-	if item.Status == "in_progress" {
+	// Fill shape if in_progress or completed
+	if item.Status == "in_progress" || item.Status == "completed" {
 		switch item.ItemType {
 		case "goal":
 			shape = shapeGoalFilled
@@ -628,6 +629,17 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 			shape = shapeFeatureFilled
 		default:
 			shape = shapeTaskFilled
+		}
+	}
+	// Blocked tasks use open shapes (override filled for in_progress+blocked)
+	if isBlocked {
+		switch item.ItemType {
+		case "goal":
+			shape = shapeGoal
+		case "feature":
+			shape = shapeFeature
+		default:
+			shape = shapeTask
 		}
 	}
 
@@ -653,6 +665,11 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 		textStyle = gray
 	}
 
+	// Blocked items are red
+	if isBlocked {
+		shapeColor = red
+	}
+
 	// Tree connector
 	connector := treeBranch
 	if isLast {
@@ -676,7 +693,7 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 
 	// Status indicator
 	statusStr := ""
-	if item.Status == "in_progress" {
+	if item.Status == "in_progress" && !isBlocked {
 		statusStr = fmt.Sprintf(" %s%s active%s", yellow, bullet, reset)
 	}
 
@@ -825,12 +842,15 @@ func printStatusBox(inProgress, ready []*control.WorkItemInfo) {
 // SHARED HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// getShapeForItem returns colored shape based on item type and priority
-// getShapeForItem returns colored shape based on item type
-// Colors: goal=blue, feature=green, task=yellow (gray if completed)
+// getShapeForItem returns colored shape based on item type and status.
+// Shape: open=pending/blocked, filled=in_progress/completed
+// Colors: goal=blue, feature=green, task=yellow, completed=gray, blocked=red
 func getShapeForItem(item *control.WorkItemInfo) string {
+	isBlocked := item.Blocked && item.Status != "completed"
+
+	// Determine shape: filled for in_progress and completed, open for pending and blocked
 	var shape string
-	if item.Status == "in_progress" {
+	if (item.Status == "in_progress" || item.Status == "completed") && !isBlocked {
 		switch item.ItemType {
 		case "goal":
 			shape = shapeGoalFilled
@@ -850,10 +870,12 @@ func getShapeForItem(item *control.WorkItemInfo) string {
 		}
 	}
 
-	// Color by item type (dimmed if completed)
+	// Color by state
 	var color string
 	if item.Status == "completed" {
 		color = gray
+	} else if isBlocked {
+		color = red
 	} else {
 		switch item.ItemType {
 		case "goal":
