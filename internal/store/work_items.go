@@ -287,7 +287,7 @@ func (s *Store) GetWorkItemProgress(itemID string) (completed, total int, err er
 		)
 		SELECT
 			COUNT(*) as total,
-			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed
 		FROM descendants`
 
 	row := s.db.QueryRow(query, itemID)
