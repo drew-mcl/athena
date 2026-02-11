@@ -1530,3 +1530,58 @@ func (c *Client) GetAutoRunStatus() (*AutoRunStatus, error) {
 	}
 	return &result, nil
 }
+
+// ============================================================================
+// Hook Lifecycle API
+// ============================================================================
+
+// HookSessionStartRequest is sent when a Claude Code session starts.
+type HookSessionStartRequest struct {
+	WorkItemID string `json:"work_item_id"`
+	WorkDir    string `json:"work_dir"`
+}
+
+// HookStopRequest is sent when a Claude Code agent stops.
+type HookStopRequest struct {
+	WorkItemID string `json:"work_item_id"`
+	WorkDir    string `json:"work_dir"`
+}
+
+// HookSessionEndRequest is sent when a Claude Code session ends.
+type HookSessionEndRequest struct {
+	WorkItemID string `json:"work_item_id"`
+	WorkDir    string `json:"work_dir"`
+}
+
+// HookEventResponse contains the result of a hook handler.
+type HookEventResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+}
+
+// HookSessionStart notifies the daemon that a Claude Code session started.
+func (c *Client) HookSessionStart(req HookSessionStartRequest) (*HookEventResponse, error) {
+	var result HookEventResponse
+	if err := c.callAndDecode("hook_session_start", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// HookStop notifies the daemon that a Claude Code agent stopped.
+func (c *Client) HookStop(req HookStopRequest) (*HookEventResponse, error) {
+	var result HookEventResponse
+	if err := c.callAndDecode("hook_stop", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// HookSessionEnd notifies the daemon that a Claude Code session ended.
+func (c *Client) HookSessionEnd(req HookSessionEndRequest) (*HookEventResponse, error) {
+	var result HookEventResponse
+	if err := c.callAndDecode("hook_session_end", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

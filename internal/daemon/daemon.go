@@ -519,6 +519,8 @@ func (d *Daemon) registerHandlers() {
 	d.registerAutoRunHandlers()
 	// Rate limit status
 	d.server.Handle("rate_limit_status", d.handleRateLimitStatus)
+	// Hook Lifecycle
+	d.registerHookHandlers()
 }
 
 func (d *Daemon) handleListWorktrees(params json.RawMessage) (any, error) {
