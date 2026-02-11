@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/drewfead/athena/internal/executil"
 )
 
 // GitLab implements the VCS Provider interface using the glab CLI.
@@ -22,8 +23,7 @@ func NewGitLab() *GitLab {
 }
 
 func (g *GitLab) GetPR(ctx context.Context, repo, branch string) (*PullRequest, error) {
-	cmd := exec.CommandContext(ctx, "glab", "mr", "view", branch, "--repo", repo, "--output", "json")
-	out, err := cmd.Output()
+	out, err := glabOutput(ctx, "mr", "view", branch, "--repo", repo, "--output", "json")
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view failed: %w", err)
 	}
@@ -55,8 +55,7 @@ func (g *GitLab) GetPR(ctx context.Context, repo, branch string) (*PullRequest, 
 }
 
 func (g *GitLab) ListOpenPRs(ctx context.Context, repo string) ([]*PullRequest, error) {
-	cmd := exec.CommandContext(ctx, "glab", "mr", "list", "--repo", repo, "--state", "opened", "--output", "json")
-	out, err := cmd.Output()
+	out, err := glabOutput(ctx, "mr", "list", "--repo", repo, "--state", "opened", "--output", "json")
 	if err != nil {
 		return nil, fmt.Errorf("glab mr list failed: %w", err)
 	}
@@ -91,9 +90,8 @@ func (g *GitLab) ListOpenPRs(ctx context.Context, repo string) ([]*PullRequest, 
 }
 
 func (g *GitLab) GetPRState(ctx context.Context, repo string, prNumber int) (PRState, error) {
-	cmd := exec.CommandContext(ctx, "glab", "mr", "view", strconv.Itoa(prNumber),
+	out, err := glabOutput(ctx, "mr", "view", strconv.Itoa(prNumber),
 		"--repo", repo, "--output", "json")
-	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("glab mr view failed: %w", err)
 	}
@@ -109,9 +107,8 @@ func (g *GitLab) GetPRState(ctx context.Context, repo string, prNumber int) (PRS
 }
 
 func (g *GitLab) GetMergeCommit(ctx context.Context, repo string, prNumber int) (string, error) {
-	cmd := exec.CommandContext(ctx, "glab", "mr", "view", strconv.Itoa(prNumber),
+	out, err := glabOutput(ctx, "mr", "view", strconv.Itoa(prNumber),
 		"--repo", repo, "--output", "json")
-	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("glab mr view failed: %w", err)
 	}
@@ -127,8 +124,7 @@ func (g *GitLab) GetMergeCommit(ctx context.Context, repo string, prNumber int) 
 }
 
 func (g *GitLab) GetCIStatus(ctx context.Context, repo, branch string) (*CIRun, error) {
-	cmd := exec.CommandContext(ctx, "glab", "ci", "view", "--repo", repo, "--branch", branch, "--output", "json")
-	out, err := cmd.Output()
+	out, err := glabOutput(ctx, "ci", "view", "--repo", repo, "--branch", branch, "--output", "json")
 	if err != nil {
 		return nil, fmt.Errorf("glab ci view failed: %w", err)
 	}
@@ -159,9 +155,8 @@ func (g *GitLab) GetCIStatus(ctx context.Context, repo, branch string) (*CIRun, 
 }
 
 func (g *GitLab) ListCIRuns(ctx context.Context, repo, branch string, limit int) ([]*CIRun, error) {
-	cmd := exec.CommandContext(ctx, "glab", "ci", "list", "--repo", repo, "--branch", branch,
+	out, err := glabOutput(ctx, "ci", "list", "--repo", repo, "--branch", branch,
 		"--per-page", strconv.Itoa(limit), "--output", "json")
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("glab ci list failed: %w", err)
 	}
@@ -197,8 +192,7 @@ func (g *GitLab) ListCIRuns(ctx context.Context, repo, branch string, limit int)
 }
 
 func (g *GitLab) GetMergeReadiness(ctx context.Context, repo, branch string) (*MergeReadiness, error) {
-	cmd := exec.CommandContext(ctx, "glab", "mr", "view", branch, "--repo", repo, "--output", "json")
-	out, err := cmd.Output()
+	out, err := glabOutput(ctx, "mr", "view", branch, "--repo", repo, "--output", "json")
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view failed: %w", err)
 	}
@@ -238,12 +232,29 @@ func (g *GitLab) MergePR(ctx context.Context, repo, branch string, method MergeM
 		args = append(args, "--squash")
 	}
 
-	cmd := exec.CommandContext(ctx, "glab", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := glabCombinedOutput(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("glab mr merge failed: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return nil
+}
+
+// glabOutput runs a glab CLI command and returns its stdout.
+func glabOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd, err := executil.CommandContext(ctx, "glab", args...)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.Output()
+}
+
+// glabCombinedOutput runs a glab CLI command and returns combined stdout+stderr.
+func glabCombinedOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd, err := executil.CommandContext(ctx, "glab", args...)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.CombinedOutput()
 }
 
 func glabStateToPRState(state string) PRState {
