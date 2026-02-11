@@ -141,6 +141,9 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 			continue
 		}
 
+		// Update work item PR status if it exists
+		q.updateWorkItemPRStatus(ctx, item.WorktreePath, vcsProvider, repo, pr)
+
 		switch pr.State {
 		case vcs.PRStateMerged:
 			// PR merged! Remove from queue
@@ -174,6 +177,9 @@ func (q *QueueSync) handleMergedPR(project string, item *store.MergeQueueItem, p
 	if err := q.store.UpdateWorktreeStatus(item.WorktreePath, store.WorktreeStatusMerged); err != nil {
 		logging.Error("failed to update merged worktree status", "path", item.WorktreePath, "error", err)
 	}
+
+	// Mark work item as completed
+	q.completeWorkItem(item.WorktreePath)
 
 	q.server.Broadcast(control.Event{
 		Type: "merge_queue_updated",
@@ -316,4 +322,44 @@ func (q *QueueSync) getActiveProjects() []string {
 		return nil
 	}
 	return projects
+}
+
+// updateWorkItemPRStatus polls CI status and updates work item PR status fields.
+func (q *QueueSync) updateWorkItemPRStatus(ctx context.Context, worktreePath string, provider vcs.Provider, repo string, pr *vcs.PullRequest) {
+	workItem, err := q.store.GetWorkItemByWorktree(worktreePath)
+	if err != nil || workItem == nil {
+		return
+	}
+
+	// Get CI status
+	ciRun, err := provider.GetCIStatus(ctx, repo, pr.Branch)
+	if err != nil {
+		logging.Debug("failed to get CI status", "repo", repo, "branch", pr.Branch, "error", err)
+		return
+	}
+
+	// Determine if checks are passing
+	checksPassing := ciRun != nil && ciRun.Status == vcs.CIStatusPassed
+
+	// Mergeable is determined by PR state
+	mergeable := pr.State == vcs.PRStateOpen
+
+	// Update work item PR status
+	if err := q.store.UpdateWorkItemPRStatus(workItem.ID, checksPassing, false, mergeable); err != nil {
+		logging.Error("failed to update work item PR status", "work_item", workItem.ID, "error", err)
+	}
+}
+
+// completeWorkItem marks a work item as completed after PR merge.
+func (q *QueueSync) completeWorkItem(worktreePath string) {
+	workItem, err := q.store.GetWorkItemByWorktree(worktreePath)
+	if err != nil || workItem == nil {
+		return
+	}
+
+	if err := q.store.UpdateWorkItemStatus(workItem.ID, store.WorkItemStatusCompleted); err != nil {
+		logging.Error("failed to mark work item as completed", "work_item", workItem.ID, "error", err)
+	} else {
+		logging.Info("marked work item as completed", "work_item", workItem.ID, "worktree", worktreePath)
+	}
 }
