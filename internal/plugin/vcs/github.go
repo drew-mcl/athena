@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/drewfead/athena/internal/executil"
 )
 
 // GitHub implements the VCS Provider interface using the gh CLI.
@@ -22,9 +23,8 @@ func NewGitHub() *GitHub {
 }
 
 func (g *GitHub) GetPR(ctx context.Context, repo, branch string) (*PullRequest, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--repo", repo, "--json",
+	out, err := ghOutput(ctx, "pr", "view", branch, "--repo", repo, "--json",
 		"number,title,state,headRefName,baseRefName,mergeCommit,url")
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view failed: %w", err)
 	}
@@ -63,9 +63,8 @@ func (g *GitHub) GetPR(ctx context.Context, repo, branch string) (*PullRequest, 
 }
 
 func (g *GitHub) ListOpenPRs(ctx context.Context, repo string) ([]*PullRequest, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list", "--repo", repo, "--state", "open", "--json",
+	out, err := ghOutput(ctx, "pr", "list", "--repo", repo, "--state", "open", "--json",
 		"number,title,state,headRefName,baseRefName,url")
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list failed: %w", err)
 	}
@@ -100,9 +99,8 @@ func (g *GitHub) ListOpenPRs(ctx context.Context, repo string) ([]*PullRequest, 
 }
 
 func (g *GitHub) GetPRState(ctx context.Context, repo string, prNumber int) (PRState, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
+	out, err := ghOutput(ctx, "pr", "view", strconv.Itoa(prNumber),
 		"--repo", repo, "--json", "state")
-	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view failed: %w", err)
 	}
@@ -118,9 +116,8 @@ func (g *GitHub) GetPRState(ctx context.Context, repo string, prNumber int) (PRS
 }
 
 func (g *GitHub) GetMergeCommit(ctx context.Context, repo string, prNumber int) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
+	out, err := ghOutput(ctx, "pr", "view", strconv.Itoa(prNumber),
 		"--repo", repo, "--json", "mergeCommit")
-	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view failed: %w", err)
 	}
@@ -138,9 +135,8 @@ func (g *GitHub) GetMergeCommit(ctx context.Context, repo string, prNumber int) 
 }
 
 func (g *GitHub) GetCIStatus(ctx context.Context, repo, branch string) (*CIRun, error) {
-	cmd := exec.CommandContext(ctx, "gh", "run", "list", "--repo", repo, "--branch", branch,
+	out, err := ghOutput(ctx, "run", "list", "--repo", repo, "--branch", branch,
 		"--limit", "1", "--json", "databaseId,status,conclusion,headBranch,headSha,url,startedAt")
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("gh run list failed: %w", err)
 	}
@@ -175,9 +171,8 @@ func (g *GitHub) GetCIStatus(ctx context.Context, repo, branch string) (*CIRun, 
 }
 
 func (g *GitHub) ListCIRuns(ctx context.Context, repo, branch string, limit int) ([]*CIRun, error) {
-	cmd := exec.CommandContext(ctx, "gh", "run", "list", "--repo", repo, "--branch", branch,
+	out, err := ghOutput(ctx, "run", "list", "--repo", repo, "--branch", branch,
 		"--limit", strconv.Itoa(limit), "--json", "databaseId,status,conclusion,headBranch,headSha,url,startedAt")
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("gh run list failed: %w", err)
 	}
@@ -209,6 +204,104 @@ func (g *GitHub) ListCIRuns(ctx context.Context, repo, branch string, limit int)
 	}
 
 	return runs, nil
+}
+
+func (g *GitHub) GetMergeReadiness(ctx context.Context, repo, branch string) (*MergeReadiness, error) {
+	out, err := ghOutput(ctx, "pr", "view", branch, "--repo", repo, "--json",
+		"mergeable,mergeStateStatus,statusCheckRollup")
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %w", err)
+	}
+
+	var result struct {
+		Mergeable        string `json:"mergeable"`
+		MergeStateStatus string `json:"mergeStateStatus"`
+		StatusCheckRollup []struct {
+			State      string `json:"state"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"statusCheckRollup"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, err
+	}
+
+	mergeable := strings.EqualFold(result.Mergeable, "MERGEABLE")
+
+	// Check all status checks passed
+	ciGreen := true
+	if len(result.StatusCheckRollup) == 0 {
+		// No checks configured — treat as green
+		ciGreen = true
+	} else {
+		for _, check := range result.StatusCheckRollup {
+			conclusion := strings.ToLower(check.Conclusion)
+			status := strings.ToLower(check.Status)
+			state := strings.ToLower(check.State)
+
+			if state == "success" || conclusion == "success" || conclusion == "skipped" || conclusion == "neutral" {
+				continue
+			}
+			if status == "completed" && (conclusion == "success" || conclusion == "skipped" || conclusion == "neutral") {
+				continue
+			}
+			// Still running or failed
+			ciGreen = false
+			break
+		}
+	}
+
+	ready := mergeable && ciGreen
+	reason := ""
+	if !mergeable {
+		reason = "PR has merge conflicts"
+	} else if !ciGreen {
+		reason = "CI checks have not passed"
+	}
+
+	return &MergeReadiness{
+		Mergeable: mergeable,
+		CIGreen:   ciGreen,
+		Ready:     ready,
+		Reason:    reason,
+	}, nil
+}
+
+func (g *GitHub) MergePR(ctx context.Context, repo, branch string, method MergeMethod) error {
+	args := []string{"pr", "merge", branch, "--repo", repo, "--delete-branch"}
+	switch method {
+	case MergeMethodSquash:
+		args = append(args, "--squash")
+	case MergeMethodMerge:
+		args = append(args, "--merge")
+	default:
+		args = append(args, "--rebase")
+	}
+
+	output, err := ghCombinedOutput(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("gh pr merge failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// ghOutput runs a gh CLI command and returns its stdout.
+func ghOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd, err := executil.CommandContext(ctx, "gh", args...)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.Output()
+}
+
+// ghCombinedOutput runs a gh CLI command and returns combined stdout+stderr.
+func ghCombinedOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd, err := executil.CommandContext(ctx, "gh", args...)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.CombinedOutput()
 }
 
 func ghStateToPRState(state string) PRState {

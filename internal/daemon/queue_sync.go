@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drewfead/athena/internal/config"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/plugin"
@@ -16,24 +17,35 @@ import (
 
 // QueueSync monitors PR status and syncs the merge queue.
 // Works locally for queue management; VCS plugins add PR/CI awareness.
+// When auto-merge is enabled, it merges position-1 PRs that pass CI.
 type QueueSync struct {
 	store    *store.Store
 	plugins  *plugin.Registry
 	server   *control.Server
+	config   *config.Config
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// onAutoMerged is called after a successful auto-merge to cascade rebase remaining items.
+	onAutoMerged func(project string)
 }
 
 // NewQueueSync creates a new queue sync monitor.
-func NewQueueSync(store *store.Store, plugins *plugin.Registry, server *control.Server) *QueueSync {
+func NewQueueSync(store *store.Store, plugins *plugin.Registry, server *control.Server, cfg *config.Config) *QueueSync {
 	return &QueueSync{
 		store:    store,
 		plugins:  plugins,
 		server:   server,
+		config:   cfg,
 		interval: 30 * time.Second, // Poll every 30 seconds
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// SetAutoMergedCallback registers a function called after auto-merge succeeds.
+func (q *QueueSync) SetAutoMergedCallback(fn func(project string)) {
+	q.onAutoMerged = fn
 }
 
 // Start begins the background sync loop.
@@ -95,6 +107,12 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 		return
 	}
 
+	autoMergeEnabled := q.config != nil && q.config.Integrations.GitHub.AutoMerge
+	mergeMethod := vcs.MergeMethodRebase
+	if q.config != nil && q.config.Integrations.GitHub.MergeMethod != "" {
+		mergeMethod = vcs.MergeMethod(q.config.Integrations.GitHub.MergeMethod)
+	}
+
 	for _, item := range items {
 		// Skip items without a PR URL
 		wt, err := q.store.GetWorktree(item.WorktreePath)
@@ -127,28 +145,7 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 		case vcs.PRStateMerged:
 			// PR merged! Remove from queue
 			logging.Info("PR merged, removing from queue", "branch", item.Branch, "pr", pr.Number)
-
-			if err := q.store.RemoveFromMergeQueue(item.WorktreePath); err != nil {
-				logging.Error("failed to remove merged item from queue", "error", err)
-				continue
-			}
-
-			// Update worktree status
-			if err := q.store.UpdateWorktreeStatus(item.WorktreePath, store.WorktreeStatusMerged); err != nil {
-				logging.Error("failed to update merged worktree status", "path", item.WorktreePath, "error", err)
-			}
-
-			// Broadcast event
-			q.server.Broadcast(control.Event{
-				Type: "merge_queue_updated",
-				Payload: map[string]any{
-					"project": project,
-					"action":  "merged",
-					"path":    item.WorktreePath,
-					"branch":  item.Branch,
-					"pr":      pr.Number,
-				},
-			})
+			q.handleMergedPR(project, item, pr)
 
 		case vcs.PRStateClosed:
 			// PR closed without merge - just update status, don't remove
@@ -156,8 +153,85 @@ func (q *QueueSync) syncProject(ctx context.Context, project string) {
 			if err := q.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusConflict, ""); err != nil {
 				logging.Error("failed to mark queue item as conflict", "path", item.WorktreePath, "error", err)
 			}
+
+		case vcs.PRStateOpen:
+			// Auto-merge: only position 1, only queued status, only if enabled
+			if !autoMergeEnabled || item.Position != 1 || item.Status != store.MergeQueueStatusQueued {
+				continue
+			}
+			q.tryAutoMerge(ctx, project, item, vcsProvider, repo, mergeMethod)
 		}
 	}
+}
+
+// handleMergedPR processes a PR that was merged (externally or via auto-merge).
+func (q *QueueSync) handleMergedPR(project string, item *store.MergeQueueItem, pr *vcs.PullRequest) {
+	if err := q.store.RemoveFromMergeQueue(item.WorktreePath); err != nil {
+		logging.Error("failed to remove merged item from queue", "error", err)
+		return
+	}
+
+	if err := q.store.UpdateWorktreeStatus(item.WorktreePath, store.WorktreeStatusMerged); err != nil {
+		logging.Error("failed to update merged worktree status", "path", item.WorktreePath, "error", err)
+	}
+
+	q.server.Broadcast(control.Event{
+		Type: "merge_queue_updated",
+		Payload: map[string]any{
+			"project": project,
+			"action":  "merged",
+			"path":    item.WorktreePath,
+			"branch":  item.Branch,
+			"pr":      pr.Number,
+		},
+	})
+
+	// After merge, remaining items need to rebase against updated main.
+	if q.onAutoMerged != nil {
+		q.onAutoMerged(project)
+	}
+}
+
+// tryAutoMerge checks if a position-1 PR is ready to merge and merges it.
+func (q *QueueSync) tryAutoMerge(ctx context.Context, project string, item *store.MergeQueueItem, provider vcs.Provider, repo string, method vcs.MergeMethod) {
+	readiness, err := provider.GetMergeReadiness(ctx, repo, item.Branch)
+	if err != nil {
+		logging.Debug("failed to check merge readiness", "branch", item.Branch, "error", err)
+		return
+	}
+
+	if !readiness.Ready {
+		logging.Debug("PR not ready for auto-merge", "branch", item.Branch, "reason", readiness.Reason)
+		return
+	}
+
+	// Mark as merging
+	if err := q.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusMerging, ""); err != nil {
+		logging.Error("failed to mark queue item as merging", "path", item.WorktreePath, "error", err)
+		return
+	}
+
+	logging.Info("auto-merging PR", "branch", item.Branch, "method", string(method))
+
+	if err := provider.MergePR(ctx, repo, item.Branch, method); err != nil {
+		logging.Error("auto-merge failed", "branch", item.Branch, "error", err)
+		// Revert to queued so it can be retried next cycle
+		if updateErr := q.store.UpdateMergeQueueItem(item.WorktreePath, store.MergeQueueStatusQueued, ""); updateErr != nil {
+			logging.Error("failed to revert queue item status after merge failure", "path", item.WorktreePath, "error", updateErr)
+		}
+		return
+	}
+
+	logging.Info("auto-merge succeeded", "branch", item.Branch)
+
+	// Fetch PR details for the merged event
+	pr, err := provider.GetPR(ctx, repo, item.Branch)
+	if err != nil {
+		// Merge succeeded but we can't get PR details — still handle it
+		pr = &vcs.PullRequest{Branch: item.Branch}
+	}
+
+	q.handleMergedPR(project, item, pr)
 }
 
 func (q *QueueSync) refreshPluginConfig() {
