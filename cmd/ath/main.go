@@ -485,6 +485,66 @@ Examples:
 	},
 }
 
+// Enable/Disable hooks
+var enableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Install Athena lifecycle hooks into Claude Code",
+	Long: `Install Athena hooks into .claude/settings.json for the current project.
+
+Hooks fire on SessionStart, Stop, and SessionEnd to automate:
+  - Auto-adding feature worktrees to the merge queue
+  - Marking work items as in_progress
+  - Checking PR status and updating completion state
+
+Existing hooks (e.g., entire) are preserved.
+
+Examples:
+  ath enable       # Install hooks in current project
+  ath disable      # Remove hooks`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runEnable()
+	},
+}
+
+var disableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Remove Athena lifecycle hooks from Claude Code",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDisable()
+	},
+}
+
+// Hooks command (hidden) - internal plumbing called by Claude Code
+var hooksCmd = &cobra.Command{
+	Use:    "hooks",
+	Short:  "Handle Claude Code lifecycle events (internal)",
+	Hidden: true,
+}
+
+var hooksSessionStartCmd = &cobra.Command{
+	Use:   "session-start",
+	Short: "Handle session start event",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHookSessionStart()
+	},
+}
+
+var hooksStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Handle stop event",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHookStop()
+	},
+}
+
+var hooksSessionEndCmd = &cobra.Command{
+	Use:   "session-end",
+	Short: "Handle session end event",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHookSessionEnd()
+	},
+}
+
 func init() {
 	// Goal flags
 	goalNewCmd.Flags().StringP("description", "d", "", "Goal description")
@@ -542,7 +602,10 @@ func init() {
 	// Plugin commands
 	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd)
+	// Hooks subcommands (hidden, internal plumbing)
+	hooksCmd.AddCommand(hooksSessionStartCmd, hooksStopCmd, hooksSessionEndCmd)
+
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd, enableCmd, disableCmd, hooksCmd)
 }
 
 // Spawn command - unified agent launch

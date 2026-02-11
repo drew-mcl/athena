@@ -36,6 +36,16 @@ ath tree wi-a3f8                     # zoom into one goal
 ath wt                               # worktree status
 ```
 
+## getting started
+
+```bash
+ath enable
+```
+
+that's it. athena hooks into claude code's lifecycle — every session now gets tracked as a work item, features auto-join the merge queue, and PR status updates flow back automatically. you don't need to change how you use claude. just `ath enable` once per project and athena starts managing the plumbing.
+
+want the full orchestration? keep reading. just want tracking? you're done.
+
 ## spawn
 
 the core command. creates a worktree, sets up the task list, launches claude code.
@@ -100,6 +110,8 @@ ath plugin enable gitlab             # GitLab MRs, CI/CD via glab CLI
 ## quick reference
 
 ```bash
+ath enable             # install lifecycle hooks into claude code
+ath disable            # remove hooks
 ath                    # status overview
 ath g new "subject"    # create goal
 ath f new <goal> "x"   # create feature under goal

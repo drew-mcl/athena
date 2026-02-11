@@ -334,6 +334,13 @@ func (s *Store) UpdateWorkItemAgent(id string, agentID *string) error {
 	return err
 }
 
+// UpdateWorkItemPRURL sets the PR URL on a work item.
+func (s *Store) UpdateWorkItemPRURL(id string, prURL string) error {
+	query := `UPDATE work_items SET pr_url = ?, updated_at = ? WHERE id = ?`
+	_, err := s.db.Exec(query, prURL, time.Now(), id)
+	return err
+}
+
 // DeleteWorkItem removes a work item (soft delete could be added later).
 func (s *Store) DeleteWorkItem(id string) error {
 	query := `DELETE FROM work_items WHERE id = ?`
