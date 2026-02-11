@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.0](https://github.com/drew-mcl/athena/compare/athena-v1.0.0...athena-v1.1.0) (2026-02-11)
+
+
+### Features
+
+* **cli:** add ath agent command for listing and inspecting agents ([#54](https://github.com/drew-mcl/athena/issues/54)) ([f755608](https://github.com/drew-mcl/athena/commit/f755608d363961f93de6180d8674cc84b0faf623))
+* **cli:** add auto-linking for goal -&gt; feat -&gt; spawn workflow ([#61](https://github.com/drew-mcl/athena/issues/61)) ([a163253](https://github.com/drew-mcl/athena/commit/a163253120832483aaa17d18a7129194fb8cb11b))
+* **daemon:** rate limit watcher + auto-run loop ([#62](https://github.com/drew-mcl/athena/issues/62)) ([cee084e](https://github.com/drew-mcl/athena/commit/cee084e7c55926783b9e272223a0291271ba192d))
+* **hooks:** add ath enable/disable for Claude Code lifecycle hooks ([#63](https://github.com/drew-mcl/athena/issues/63)) ([430c9a4](https://github.com/drew-mcl/athena/commit/430c9a4c7a909befc3159cdacdb443a4d1386103))
+* **queue:** add ath queue reconcile command ([#58](https://github.com/drew-mcl/athena/issues/58)) ([26c5433](https://github.com/drew-mcl/athena/commit/26c5433e266e16de2934ba19afba932738ba3e4f))
+* **tasks:** blocked/completed styling and persist on cleanup ([#59](https://github.com/drew-mcl/athena/issues/59)) ([2a1776f](https://github.com/drew-mcl/athena/commit/2a1776f8c2ff5c8702e670b4c1dde18d7484a81a))
+
+
+### Bug Fixes
+
+* **store:** handle NULL completed count for items with no descendants ([#60](https://github.com/drew-mcl/athena/issues/60)) ([716eeb3](https://github.com/drew-mcl/athena/commit/716eeb3bed90576a3459330a58c490b5ad839a22))
+* **tasks:** rewrite claude provider for directory-per-list format ([#57](https://github.com/drew-mcl/athena/issues/57)) ([62fdd4e](https://github.com/drew-mcl/athena/commit/62fdd4ecd5aa702dac34a5ef94a1e3d9a3ad4a00))
+
 ## [1.0.0](https://github.com/drew-mcl/athena/compare/athena-v0.6.0...athena-v1.0.0) (2026-02-07)
 
 
