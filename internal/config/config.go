@@ -201,9 +201,11 @@ type LinearConfig struct {
 
 // GitHubConfig defines GitHub integration settings.
 type GitHubConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	AutoPR     bool   `yaml:"auto_pr"`
-	PRTemplate string `yaml:"pr_template"`
+	Enabled     bool   `yaml:"enabled"`
+	AutoPR      bool   `yaml:"auto_pr"`
+	PRTemplate  string `yaml:"pr_template"`
+	AutoMerge   bool   `yaml:"auto_merge"`   // Auto-merge PRs when CI green + no conflicts (default: true)
+	MergeMethod string `yaml:"merge_method"` // "rebase", "squash", or "merge" (default: "rebase")
 }
 
 // WorkflowMode controls automation level for agent spawning
@@ -391,6 +393,12 @@ When you and the user have a clear understanding of the feature and approach:
 		Terminal: TerminalConfig{
 			Provider:   "ghostty",
 			AutoAttach: false,
+		},
+		Integrations: IntegrationsConfig{
+			GitHub: GitHubConfig{
+				AutoMerge:   true,
+				MergeMethod: "rebase",
+			},
 		},
 		Daemon: DaemonConfig{
 			Socket:   "/tmp/athena.sock",

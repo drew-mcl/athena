@@ -49,6 +49,23 @@ type CIRun struct {
 	Duration  int // seconds
 }
 
+// MergeReadiness summarizes whether a PR is ready to auto-merge.
+type MergeReadiness struct {
+	Mergeable bool     // No conflicts
+	CIGreen   bool     // All required checks passed
+	Ready     bool     // Mergeable && CIGreen
+	Reason    string   // Human-readable explanation when not ready
+}
+
+// MergeMethod controls how a PR is merged.
+type MergeMethod string
+
+const (
+	MergeMethodRebase MergeMethod = "rebase"
+	MergeMethodSquash MergeMethod = "squash"
+	MergeMethodMerge  MergeMethod = "merge"
+)
+
 // Provider defines the VCS provider interface.
 type Provider interface {
 	plugin.Plugin
@@ -62,6 +79,10 @@ type Provider interface {
 	// CI Operations (optional - some providers may not support)
 	GetCIStatus(ctx context.Context, repo, branch string) (*CIRun, error)
 	ListCIRuns(ctx context.Context, repo, branch string, limit int) ([]*CIRun, error)
+
+	// Auto-merge Operations
+	GetMergeReadiness(ctx context.Context, repo, branch string) (*MergeReadiness, error)
+	MergePR(ctx context.Context, repo, branch string, method MergeMethod) error
 }
 
 // BaseVCS provides common VCS plugin functionality.

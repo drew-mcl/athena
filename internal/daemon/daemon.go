@@ -159,8 +159,11 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.spawner.SetRateLimitCallback(d.onRateLimitDetected)
 	d.spawner.SetRateLimitChecker(d.rateLimit.isRateLimited)
 
-	// Initialize queue sync (watches PRs and auto-pops merged items)
-	d.queueSync = NewQueueSync(st, d.plugins, d.server)
+	// Initialize queue sync (watches PRs, auto-pops merged items, auto-merges ready PRs)
+	d.queueSync = NewQueueSync(st, d.plugins, d.server, cfg)
+	d.queueSync.SetAutoMergedCallback(func(project string) {
+		d.postMergeCascade(project)
+	})
 
 	d.registerHandlers()
 	return d, nil

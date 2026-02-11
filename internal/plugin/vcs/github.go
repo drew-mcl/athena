@@ -211,6 +211,88 @@ func (g *GitHub) ListCIRuns(ctx context.Context, repo, branch string, limit int)
 	return runs, nil
 }
 
+func (g *GitHub) GetMergeReadiness(ctx context.Context, repo, branch string) (*MergeReadiness, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--repo", repo, "--json",
+		"mergeable,mergeStateStatus,statusCheckRollup")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %w", err)
+	}
+
+	var result struct {
+		Mergeable        string `json:"mergeable"`
+		MergeStateStatus string `json:"mergeStateStatus"`
+		StatusCheckRollup []struct {
+			State      string `json:"state"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"statusCheckRollup"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, err
+	}
+
+	mergeable := strings.EqualFold(result.Mergeable, "MERGEABLE")
+
+	// Check all status checks passed
+	ciGreen := true
+	if len(result.StatusCheckRollup) == 0 {
+		// No checks configured — treat as green
+		ciGreen = true
+	} else {
+		for _, check := range result.StatusCheckRollup {
+			conclusion := strings.ToLower(check.Conclusion)
+			status := strings.ToLower(check.Status)
+			state := strings.ToLower(check.State)
+
+			if state == "success" || conclusion == "success" || conclusion == "skipped" || conclusion == "neutral" {
+				continue
+			}
+			if status == "completed" && (conclusion == "success" || conclusion == "skipped" || conclusion == "neutral") {
+				continue
+			}
+			// Still running or failed
+			ciGreen = false
+			break
+		}
+	}
+
+	ready := mergeable && ciGreen
+	reason := ""
+	if !mergeable {
+		reason = "PR has merge conflicts"
+	} else if !ciGreen {
+		reason = "CI checks have not passed"
+	}
+
+	return &MergeReadiness{
+		Mergeable: mergeable,
+		CIGreen:   ciGreen,
+		Ready:     ready,
+		Reason:    reason,
+	}, nil
+}
+
+func (g *GitHub) MergePR(ctx context.Context, repo, branch string, method MergeMethod) error {
+	args := []string{"pr", "merge", branch, "--repo", repo, "--delete-branch"}
+	switch method {
+	case MergeMethodSquash:
+		args = append(args, "--squash")
+	case MergeMethodMerge:
+		args = append(args, "--merge")
+	default:
+		args = append(args, "--rebase")
+	}
+
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh pr merge failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
 func ghStateToPRState(state string) PRState {
 	switch strings.ToLower(state) {
 	case "open":

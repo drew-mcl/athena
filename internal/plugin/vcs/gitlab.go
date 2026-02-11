@@ -196,6 +196,56 @@ func (g *GitLab) ListCIRuns(ctx context.Context, repo, branch string, limit int)
 	return runs, nil
 }
 
+func (g *GitLab) GetMergeReadiness(ctx context.Context, repo, branch string) (*MergeReadiness, error) {
+	cmd := exec.CommandContext(ctx, "glab", "mr", "view", branch, "--repo", repo, "--output", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("glab mr view failed: %w", err)
+	}
+
+	var result struct {
+		MergeStatus string `json:"merge_status"`
+		Pipeline    struct {
+			Status string `json:"status"`
+		} `json:"pipeline"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, err
+	}
+
+	mergeable := result.MergeStatus == "can_be_merged"
+	ciGreen := strings.ToLower(result.Pipeline.Status) == "success"
+	ready := mergeable && ciGreen
+	reason := ""
+	if !mergeable {
+		reason = "MR has merge conflicts"
+	} else if !ciGreen {
+		reason = "Pipeline has not passed"
+	}
+
+	return &MergeReadiness{
+		Mergeable: mergeable,
+		CIGreen:   ciGreen,
+		Ready:     ready,
+		Reason:    reason,
+	}, nil
+}
+
+func (g *GitLab) MergePR(ctx context.Context, repo, branch string, method MergeMethod) error {
+	args := []string{"mr", "merge", branch, "--repo", repo, "--remove-source-branch", "--yes"}
+	if method == MergeMethodSquash {
+		args = append(args, "--squash")
+	}
+
+	cmd := exec.CommandContext(ctx, "glab", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("glab mr merge failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
 func glabStateToPRState(state string) PRState {
 	switch strings.ToLower(state) {
 	case "opened":
