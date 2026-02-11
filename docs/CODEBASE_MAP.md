@@ -9,7 +9,7 @@ This document maps high-level system functionality to specific files and symbols
 | Daemon lifecycle | `internal/daemon/daemon.go` | `Daemon`, `New`, `Run` | Main background service, signal handling, worker loops. |
 | Control API registration | `internal/daemon/daemon.go` | `registerHandlers` | Wires RPC-style methods exposed over the Unix socket. |
 | Spawn orchestration | `internal/daemon/spawn.go` | `handleSpawn`, `resolveSpawnTarget`, `buildSpawnPrompt` | Unified agent launch flow for feature/ticket/work-item/bare modes. |
-| Merge queue engine | `internal/daemon/merge_queue.go` | `getIntegrationHead`, `refreshQueueGraph`, `cascadeRebase` | Queue head tracking, divergence detection, and rebase cascade. |
+| Merge queue engine | `internal/daemon/merge_queue.go` | `getIntegrationHead`, `refreshQueueGraph`, `cascadeRebase` | Queue position tracking, divergence detection, and rebase cascade. |
 | Queue background sync | `internal/daemon/queue_sync.go` | `QueueSync`, `syncProject` | Polls enabled VCS plugins and auto-removes merged queue items. |
 | Job execution | `internal/daemon/executor.go` | `JobExecutor`, `ExecuteJob` | Executes planned jobs against agents/worktrees. |
 
