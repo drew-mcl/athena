@@ -517,6 +517,92 @@ func runTskInteractive() error {
 
 // Tree command
 
+func runFeatStatus(featureID string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Get the feature
+	item, err := client.GetWorkItem(featureID)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		return fmt.Errorf("feature not found: %s", featureID)
+	}
+	if item.ItemType != "feature" {
+		return fmt.Errorf("%s is not a feature (type: %s)", featureID, item.ItemType)
+	}
+
+	// Check completion
+	complete, err := client.CheckFeatureComplete(featureID)
+	if err != nil {
+		return err
+	}
+
+	// Display status
+	fmt.Printf("%s%s%s %s\n", bold, item.ID, reset, item.Subject)
+	fmt.Println()
+
+	// Progress
+	if item.TotalCount > 0 {
+		pct := float64(item.CompletedCount) / float64(item.TotalCount) * 100
+		progressColor := yellow
+		if item.CompletedCount == item.TotalCount {
+			progressColor = green
+		}
+		fmt.Printf("  %sTasks:%s      %s%d/%d%s (%.0f%%)\n", dim, reset, progressColor, item.CompletedCount, item.TotalCount, reset, pct)
+	} else {
+		fmt.Printf("  %sTasks:%s      %sNone%s\n", dim, reset, gray, reset)
+	}
+
+	// PR URL
+	if item.PRURL != "" {
+		fmt.Printf("  %sPR:%s         %s\n", dim, reset, item.PRURL)
+	} else {
+		fmt.Printf("  %sPR:%s         %sNot created%s\n", dim, reset, red, reset)
+	}
+
+	// CI Checks
+	if item.PRURL != "" {
+		checksColor := red
+		checksText := "✗ failing"
+		if item.PRChecksPassing {
+			checksColor = green
+			checksText = "✓ passing"
+		}
+		fmt.Printf("  %sCI Checks:%s  %s%s%s\n", dim, reset, checksColor, checksText, reset)
+	}
+
+	// Approval
+	if item.PRURL != "" && item.PRApproved {
+		fmt.Printf("  %sApproved:%s   %s✓ yes%s\n", dim, reset, green, reset)
+	}
+
+	// Mergeability
+	if item.PRURL != "" {
+		mergeColor := red
+		mergeText := "✗ conflicts"
+		if item.PRMergeable {
+			mergeColor = green
+			mergeText = "✓ ready"
+		}
+		fmt.Printf("  %sMergeable:%s %s%s%s\n", dim, reset, mergeColor, mergeText, reset)
+	}
+
+	// Overall status
+	fmt.Println()
+	if complete {
+		fmt.Printf("%s✓ Feature is complete and ready to merge%s\n", green+bold, reset)
+	} else {
+		fmt.Printf("%s○ Feature is not yet complete%s\n", yellow+bold, reset)
+	}
+
+	return nil
+}
+
 func runTree(rootID, project string, goalsOnly bool) error {
 	client, err := getClient()
 	if err != nil {

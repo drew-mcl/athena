@@ -65,15 +65,17 @@ func (s *Store) CreateWorkItem(item *WorkItem) error {
 	query := `
 		INSERT INTO work_items (
 			id, project, item_type, parent_id, subject, description, status,
-			worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+			worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+			agent_id, priority, metadata,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	now := time.Now()
 	_, err := s.db.Exec(query,
 		item.ID, item.Project, item.ItemType, item.ParentID,
 		item.Subject, item.Description, item.Status,
 		item.WorktreePath, item.TicketID, item.PRURL,
+		item.PRChecksPassing, item.PRApproved, item.PRMergeable,
 		item.AgentID, item.Priority, item.Metadata,
 		now, now,
 	)
@@ -90,7 +92,8 @@ func (s *Store) CreateWorkItem(item *WorkItem) error {
 func (s *Store) GetWorkItem(id string) (*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items WHERE id = ?`
 
@@ -102,7 +105,8 @@ func (s *Store) GetWorkItem(id string) (*WorkItem, error) {
 func (s *Store) ListWorkItems(project string, itemType WorkItemType, status WorkItemStatus) ([]*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items WHERE 1=1`
 
@@ -136,7 +140,8 @@ func (s *Store) ListWorkItems(project string, itemType WorkItemType, status Work
 func (s *Store) ListWorkItemsByParent(parentID string) ([]*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items WHERE parent_id = ?
 		ORDER BY priority ASC, created_at ASC`
@@ -154,7 +159,8 @@ func (s *Store) ListWorkItemsByParent(parentID string) ([]*WorkItem, error) {
 func (s *Store) ListOrphanTasks(project string) ([]*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items
 		WHERE parent_id IS NULL AND item_type = 'task'`
@@ -182,7 +188,8 @@ func (s *Store) ListReadyItems(project string) ([]*WorkItem, error) {
 	// 2. They have no children, OR all their children are completed
 	query := `
 		SELECT w.id, w.project, w.item_type, w.parent_id, w.subject, w.description, w.status,
-		       w.worktree_path, w.ticket_id, w.pr_url, w.agent_id, w.priority, w.metadata,
+		       w.worktree_path, w.ticket_id, w.pr_url, w.pr_checks_passing, w.pr_approved, w.pr_mergeable,
+		       w.agent_id, w.priority, w.metadata,
 		       w.created_at, w.updated_at
 		FROM work_items w
 		WHERE w.status = 'pending'
@@ -213,20 +220,23 @@ func (s *Store) GetWorkItemTree(rootID string) ([]*WorkItem, error) {
 	query := `
 		WITH RECURSIVE descendants AS (
 			SELECT id, project, item_type, parent_id, subject, description, status,
-			       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+			       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+			       agent_id, priority, metadata,
 			       created_at, updated_at, 0 as depth
 			FROM work_items WHERE id = ?
 
 			UNION ALL
 
 			SELECT w.id, w.project, w.item_type, w.parent_id, w.subject, w.description, w.status,
-			       w.worktree_path, w.ticket_id, w.pr_url, w.agent_id, w.priority, w.metadata,
+			       w.worktree_path, w.ticket_id, w.pr_url, w.pr_checks_passing, w.pr_approved, w.pr_mergeable,
+			       w.agent_id, w.priority, w.metadata,
 			       w.created_at, w.updated_at, d.depth + 1
 			FROM work_items w
 			INNER JOIN descendants d ON w.parent_id = d.id
 		)
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM descendants
 		ORDER BY depth, priority ASC, created_at ASC`
@@ -246,20 +256,23 @@ func (s *Store) GetWorkItemAncestors(itemID string) ([]*WorkItem, error) {
 	query := `
 		WITH RECURSIVE ancestors AS (
 			SELECT id, project, item_type, parent_id, subject, description, status,
-			       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+			       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+			       agent_id, priority, metadata,
 			       created_at, updated_at, 0 as depth
 			FROM work_items WHERE id = ?
 
 			UNION ALL
 
 			SELECT w.id, w.project, w.item_type, w.parent_id, w.subject, w.description, w.status,
-			       w.worktree_path, w.ticket_id, w.pr_url, w.agent_id, w.priority, w.metadata,
+			       w.worktree_path, w.ticket_id, w.pr_url, w.pr_checks_passing, w.pr_approved, w.pr_mergeable,
+			       w.agent_id, w.priority, w.metadata,
 			       w.created_at, w.updated_at, a.depth + 1
 			FROM work_items w
 			INNER JOIN ancestors a ON w.id = a.parent_id
 		)
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM ancestors
 		ORDER BY depth DESC`
@@ -301,6 +314,7 @@ func (s *Store) UpdateWorkItem(item *WorkItem) error {
 		UPDATE work_items SET
 			subject = ?, description = ?, status = ?,
 			worktree_path = ?, ticket_id = ?, pr_url = ?,
+			pr_checks_passing = ?, pr_approved = ?, pr_mergeable = ?,
 			agent_id = ?, priority = ?, metadata = ?,
 			updated_at = ?
 		WHERE id = ?`
@@ -309,6 +323,7 @@ func (s *Store) UpdateWorkItem(item *WorkItem) error {
 	_, err := s.db.Exec(query,
 		item.Subject, item.Description, item.Status,
 		item.WorktreePath, item.TicketID, item.PRURL,
+		item.PRChecksPassing, item.PRApproved, item.PRMergeable,
 		item.AgentID, item.Priority, item.Metadata,
 		now, item.ID,
 	)
@@ -341,6 +356,60 @@ func (s *Store) UpdateWorkItemPRURL(id string, prURL string) error {
 	return err
 }
 
+// UpdateWorkItemPRStatus updates the PR completion status fields.
+func (s *Store) UpdateWorkItemPRStatus(id string, checksPassing, approved, mergeable bool) error {
+	query := `
+		UPDATE work_items
+		SET pr_checks_passing = ?, pr_approved = ?, pr_mergeable = ?, updated_at = ?
+		WHERE id = ?`
+	_, err := s.db.Exec(query, checksPassing, approved, mergeable, time.Now(), id)
+	return err
+}
+
+// IsFeatureComplete checks if a feature work item is complete and ready to merge.
+// A feature is considered complete when:
+// - All child tasks are completed
+// - PR is created (PRURL is set)
+// - CI checks are passing
+// - PR is approved (optional, can be false for features that don't require approval)
+// - PR is mergeable (no conflicts)
+func (s *Store) IsFeatureComplete(id string) (bool, error) {
+	item, err := s.GetWorkItem(id)
+	if err != nil {
+		return false, err
+	}
+	if item == nil {
+		return false, fmt.Errorf("work item not found: %s", id)
+	}
+
+	// Only applies to features
+	if item.ItemType != WorkItemTypeFeature {
+		return false, nil
+	}
+
+	// Check all child tasks are completed
+	completed, total, err := s.GetWorkItemProgress(id)
+	if err != nil {
+		return false, err
+	}
+	if total > 0 && completed < total {
+		return false, nil
+	}
+
+	// Check PR exists
+	if item.PRURL == nil || *item.PRURL == "" {
+		return false, nil
+	}
+
+	// Check CI and mergeability
+	if !item.PRChecksPassing || !item.PRMergeable {
+		return false, nil
+	}
+
+	// Note: We don't require approval since some repos may not have that configured
+	return true, nil
+}
+
 // DeleteWorkItem removes a work item (soft delete could be added later).
 func (s *Store) DeleteWorkItem(id string) error {
 	query := `DELETE FROM work_items WHERE id = ?`
@@ -352,7 +421,8 @@ func (s *Store) DeleteWorkItem(id string) error {
 func (s *Store) GetWorkItemByWorktree(worktreePath string) (*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items WHERE worktree_path = ?`
 
@@ -364,7 +434,8 @@ func (s *Store) GetWorkItemByWorktree(worktreePath string) (*WorkItem, error) {
 func (s *Store) GetWorkItemByTicket(ticketID string) (*WorkItem, error) {
 	query := `
 		SELECT id, project, item_type, parent_id, subject, description, status,
-		       worktree_path, ticket_id, pr_url, agent_id, priority, metadata,
+		       worktree_path, ticket_id, pr_url, pr_checks_passing, pr_approved, pr_mergeable,
+		       agent_id, priority, metadata,
 		       created_at, updated_at
 		FROM work_items WHERE ticket_id = ?`
 
@@ -381,6 +452,7 @@ func scanWorkItem(row *sql.Row) (*WorkItem, error) {
 		&item.ID, &item.Project, &item.ItemType, &item.ParentID,
 		&item.Subject, &item.Description, &item.Status,
 		&item.WorktreePath, &item.TicketID, &item.PRURL,
+		&item.PRChecksPassing, &item.PRApproved, &item.PRMergeable,
 		&item.AgentID, &item.Priority, &metadata,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
@@ -405,6 +477,7 @@ func scanWorkItems(rows *sql.Rows) ([]*WorkItem, error) {
 			&item.ID, &item.Project, &item.ItemType, &item.ParentID,
 			&item.Subject, &item.Description, &item.Status,
 			&item.WorktreePath, &item.TicketID, &item.PRURL,
+			&item.PRChecksPassing, &item.PRApproved, &item.PRMergeable,
 			&item.AgentID, &item.Priority, &metadata,
 			&item.CreatedAt, &item.UpdatedAt,
 		)
