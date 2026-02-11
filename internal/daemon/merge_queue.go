@@ -7,6 +7,7 @@ import (
 
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/executil"
+	"github.com/drewfead/athena/internal/logging"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/google/uuid"
 )
@@ -244,6 +245,41 @@ func (d *Daemon) handleReconcileQueue(params json.RawMessage) (any, error) {
 	})
 
 	return &control.ReconcileQueueResult{Results: rebaseResults}, nil
+}
+
+// postMergeCascade runs after a PR is merged: fetches updated main, then rebases
+// all remaining queue items against it so the next item is ready to merge.
+func (d *Daemon) postMergeCascade(project string) {
+	// Fetch origin in one of the remaining worktree paths so local refs are updated.
+	items, err := d.store.GetMergeQueue(project)
+	if err != nil || len(items) == 0 {
+		return
+	}
+	if _, err := gitOutput(items[0].WorktreePath, "fetch", "origin"); err != nil {
+		logging.Warn("failed to fetch origin after auto-merge", "project", project, "error", err)
+	}
+
+	// Mark all remaining items as diverged since their base (the merged branch) is gone.
+	if err := d.store.MarkQueueItemsDiverged(project, 1); err != nil {
+		logging.Error("failed to mark items as diverged after auto-merge", "project", project, "error", err)
+		return
+	}
+
+	if err := d.refreshQueueGraph(project); err != nil {
+		logging.Error("failed to refresh queue graph after auto-merge", "project", project, "error", err)
+	}
+
+	rebaseResults := d.cascadeRebase(project)
+	if len(rebaseResults) > 0 {
+		d.server.Broadcast(control.Event{
+			Type: "merge_queue_updated",
+			Payload: map[string]any{
+				"project":        project,
+				"action":         "post_merge_rebase",
+				"rebase_results": rebaseResults,
+			},
+		})
+	}
 }
 
 // cascadeRebase automatically rebases items marked as rebasing/diverged in the queue.

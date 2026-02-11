@@ -42,6 +42,14 @@ func (f *fakeVCSProvider) ListCIRuns(ctx context.Context, repo, branch string, l
 	return nil, nil
 }
 
+func (f *fakeVCSProvider) GetMergeReadiness(ctx context.Context, repo, branch string) (*vcs.MergeReadiness, error) {
+	return &vcs.MergeReadiness{}, nil
+}
+
+func (f *fakeVCSProvider) MergePR(ctx context.Context, repo, branch string, method vcs.MergeMethod) error {
+	return nil
+}
+
 func TestParseRepoFromPRURL(t *testing.T) {
 	tests := []struct {
 		name         string
