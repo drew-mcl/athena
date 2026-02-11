@@ -236,7 +236,9 @@ The queue ensures features integrate cleanly in sequence, even though they devel
 
 ## Agent Archetypes
 
-Athena provides specialized archetypes for different types of work:
+Athena provides specialized archetypes for different types of work. Install them with `ath enable`.
+
+### Built-in Archetypes (Always Available)
 
 | Archetype | Purpose | Model | Use Case |
 |-----------|---------|-------|----------|
@@ -248,4 +250,47 @@ Athena provides specialized archetypes for different types of work:
 | `reconciler` | Branch cleanup, queue reconciliation | sonnet | Maintenance tasks |
 | `mapper` | Codebase documentation and mapping | sonnet | Documentation generation |
 
-Archetypes are selected automatically based on work item type, or can be overridden with `--archetype` flag.
+### Claude Code Subagents (Installed by `ath enable`)
+
+These specialized subagents are installed to `.claude/agents/` and work alongside built-in archetypes:
+
+| Archetype | Purpose | Model | When Claude Uses It |
+|-----------|---------|-------|---------------------|
+| `code-reducer` | Reduce code size, remove duplication, simplify | sonnet | After features to clean up and consolidate |
+| `code-reviewer` | Architecture and code quality review | sonnet | Before merging, after code changes |
+| `test-coverer` | Add test coverage, identify untested paths | sonnet | When test coverage is lacking |
+| `security-reviewer` | Security audit, vulnerability scanning | sonnet | Before merging security-sensitive changes |
+| `performance-optimizer` | Performance analysis and optimization | sonnet | When performance issues are identified |
+| `doc-generator` | Documentation generation for code and APIs | sonnet | After features, when docs are missing |
+
+### Installation
+
+```bash
+ath enable          # Install lifecycle hooks + agent archetypes
+ath disable         # Remove hooks only (preserve archetypes)
+ath disable --agents # Remove hooks AND archetypes
+```
+
+**What gets installed:**
+- Lifecycle hooks in `.claude/settings.json` (SessionStart, Stop, SessionEnd)
+- Agent archetypes in `.claude/agents/` (markdown files with YAML frontmatter)
+
+**Customization:**
+- Archetypes are only written if they don't already exist (preserves your customizations)
+- Edit any archetype file in `.claude/agents/` to customize behavior
+- Claude Code automatically loads archetypes from `.claude/agents/`
+
+### Usage Examples
+
+```
+# Claude uses archetypes automatically based on descriptions
+"Review this code for security issues"  # Uses security-reviewer
+"Add test coverage for this module"     # Uses test-coverer
+"Reduce duplication in these files"     # Uses code-reducer
+
+# Or request a specific archetype explicitly
+"Use the code-reviewer subagent to analyze this PR"
+"Have the performance-optimizer look at this slow function"
+```
+
+Archetypes integrate seamlessly with the orchestrator workflow - the orchestrator can spawn specialized subagents for specific tasks.
