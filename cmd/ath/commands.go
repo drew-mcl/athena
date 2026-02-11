@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/drewfead/athena/internal/cli"
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/plugin"
 )
@@ -70,7 +71,17 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 	// Feature flag takes priority
 	if featureID != "" {
 		req.FeatureID = featureID
-	} else if id != "" {
+	} else if id == "" && worktree {
+		// If -w flag is set but no feature ID provided, try context
+		ctx, ctxErr := cli.LoadContext()
+		if ctxErr == nil && ctx.LastFeatureID != "" {
+			featureID = ctx.LastFeatureID
+			req.FeatureID = featureID
+			fmt.Printf("%sUsing feature from context: %s%s\n", dim, featureID, reset)
+		}
+	}
+
+	if id != "" && featureID == "" {
 		// Classify the positional ID argument
 		if isWorkItemID(id) {
 			req.WorkItemID = id
@@ -280,6 +291,13 @@ func runGoalNew(subject, description, project string) error {
 
 	printSuccess(fmt.Sprintf("Created goal: %s", item.ID))
 	printWorkItem(item, 0)
+
+	// Save goal ID to context for auto-linking
+	if err := cli.UpdateGoalContext(item.ID, item.Project); err != nil {
+		// Non-fatal - just log the warning
+		fmt.Fprintf(os.Stderr, "%sWarning: failed to save context: %v%s\n", yellow, err, reset)
+	}
+
 	return nil
 }
 
@@ -337,6 +355,19 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 	}
 	defer client.Close()
 
+	// If no parent ID provided, try to use the last goal from context
+	if parentID == "" {
+		ctx, err := cli.LoadContext()
+		if err != nil {
+			return fmt.Errorf("no parent ID provided and failed to load context: %w", err)
+		}
+		if ctx.LastGoalID == "" {
+			return fmt.Errorf("no parent ID provided and no goal in context (run 'ath goal new' first)")
+		}
+		parentID = ctx.LastGoalID
+		fmt.Printf("%sUsing goal from context: %s%s\n", dim, parentID, reset)
+	}
+
 	// Get parent to inherit project
 	parent, err := client.GetWorkItem(parentID)
 	if err != nil {
@@ -360,6 +391,13 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 
 	printSuccess(fmt.Sprintf("Created feature: %s", item.ID))
 	printWorkItem(item, 0)
+
+	// Save feature ID to context for auto-linking
+	if err := cli.UpdateFeatureContext(item.ID, item.Project); err != nil {
+		// Non-fatal - just log the warning
+		fmt.Fprintf(os.Stderr, "%sWarning: failed to save context: %v%s\n", yellow, err, reset)
+	}
+
 	return nil
 }
 

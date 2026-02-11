@@ -110,12 +110,27 @@ var featCmd = &cobra.Command{
 }
 
 var featNewCmd = &cobra.Command{
-	Use:   "new <parent-id> <subject>",
+	Use:   "new [parent-id] <subject>",
 	Short: "Create a new feature under a goal",
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Create a new feature under a goal.
+
+If parent-id is omitted, uses the most recently created goal from context.
+
+Examples:
+  ath feat new wi-a3f8 "OAuth login"     # Explicit parent
+  ath feat new "OAuth login"              # Use goal from context`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		parentID := args[0]
-		subject := args[1]
+		var parentID, subject string
+		if len(args) == 1 {
+			// No parent ID provided - will be read from context
+			parentID = ""
+			subject = args[0]
+		} else {
+			// Parent ID provided
+			parentID = args[0]
+			subject = args[1]
+		}
 		ticket, _ := cmd.Flags().GetString("ticket")
 		description, _ := cmd.Flags().GetString("description")
 		return runFeatNew(parentID, subject, ticket, description)
@@ -458,11 +473,17 @@ var spawnCmd = &cobra.Command{
 
 Primary flow (feature):
   ath spawn -f <feature-id>     # Create worktree, task list, launch agent
+  ath spawn -w                  # Use feature from context (auto-linked)
 
 Other modes:
   ath spawn                     # Interactive Claude Code in current dir
   ath spawn ENG-123             # Lookup ticket, create goal, spawn
   ath spawn wi-a3f8             # Spawn against existing work item
+
+Auto-linking workflow:
+  ath goal new "Build auth"     # Creates goal, saves to context
+  ath feat new "OAuth login"    # Uses goal from context, saves feature
+  ath spawn -w                  # Uses feature from context, creates worktree
 
 Modes:
   (default)     Interactive - Claude Code opens in your terminal
@@ -471,11 +492,12 @@ Modes:
 Flags:
   -f, --feature    Feature work item ID to spawn on (primary flow)
   -r, --retrieve   Break down the goal into features before implementing
-  -w, --worktree   Create a dedicated worktree
+  -w, --worktree   Create a dedicated worktree (reads feature from context if no -f)
   -p, --parallel   Enable parallel task-worker mode
 
 Examples:
   ath spawn -f wi-a3f8.1           # Spawn on feature (creates worktree)
+  ath spawn -w                     # Spawn using feature from context
   ath spawn -f wi-a3f8.1 --headless # Fire-and-forget on feature
   ath spawn                        # Interactive in current dir
   ath spawn ENG-123                # Lookup ticket, spawn interactive
