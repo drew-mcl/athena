@@ -263,21 +263,10 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 		return "", fmt.Errorf("cannot find main repo for project %q: %w", project, err)
 	}
 
-	// Get queue head for start point, but verify the branch actually exists
-	startPoint := ""
-	queueBranch, _, err := d.getIntegrationHead(project)
-	if err != nil {
-		logging.Debug("failed to resolve integration head for feature worktree", "project", project, "error", err)
-	} else if queueBranch != "" {
-		// Verify branch exists before using it as start point
-		if branchExists(mainRepoPath, queueBranch) {
-			startPoint = queueBranch
-			logging.Info("using queue head as start point", "branch", queueBranch, "project", project)
-		} else {
-			logging.Warn("queue head branch does not exist, falling back to default",
-				"branch", queueBranch, "project", project)
-		}
-	}
+	// Always branch from the default branch (main/master) for parallel development.
+	// The queue orders features for sequential merge, but they develop in parallel.
+	// This allows spawning multiple features simultaneously without chaining.
+	startPoint := "" // Empty means use default branch
 
 	// Create branch name from feature ID
 	branch := fmt.Sprintf("feat/%s", feature.ID)
@@ -309,21 +298,19 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 		"start_point", startPoint,
 	)
 
-	// Auto-add to merge queue so features are tracked from creation
+	// Auto-add to merge queue so features are tracked from creation.
+	// All features branch from the default branch (main) for parallel development.
 	headCommit, err := getGitHead(wtPath)
 	if err != nil {
 		logging.Warn("created worktree but failed to get HEAD for queue", "error", err)
 		return wtPath, nil // non-fatal
 	}
-	baseBranch := startPoint
-	baseCommit := headCommit // new branch starts at the same commit
-	if baseBranch == "" {
-		// No queue head was used, find the default branch merge-base
-		baseBranch, baseCommit, err = getGitMergeBase(wtPath, branch)
-		if err != nil {
-			logging.Warn("created worktree but failed to determine queue base", "error", err)
-			return wtPath, nil // non-fatal
-		}
+
+	// Determine base branch and commit (what this was forked from)
+	baseBranch, baseCommit, err := getGitMergeBase(wtPath, branch)
+	if err != nil {
+		logging.Warn("created worktree but failed to determine queue base", "error", err)
+		return wtPath, nil // non-fatal
 	}
 	queueItem := &store.MergeQueueItem{
 		ID:           uuid.NewString()[:8],

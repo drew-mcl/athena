@@ -147,24 +147,21 @@ All goroutines use `safeGo()` or `safeLoop()` for panic recovery.
 
 ## Merge Queue Workflow
 
-Athena uses a **merge queue** to coordinate multiple in-flight features. This ensures features stack properly and dependencies are managed automatically.
+Athena uses a **merge queue** to coordinate multiple in-flight features. Features develop in parallel but merge sequentially, ensuring clean integration.
 
 ### How It Works
 
-1. **New features start from queue head**: When you create a worktree, it automatically branches from the most recent feature in the queue (not main). This creates a proper dependency chain.
+1. **All features branch from main**: When you create a worktree, it branches from the default branch (main/master). This enables true parallel development - you can spawn multiple features simultaneously without them chaining off each other.
 
-2. **Add completed features to queue**: When your feature is ready:
-   ```bash
-   ath queue add
-   ```
+2. **Auto-added to queue**: Features are automatically added to the merge queue when created. The queue determines merge order, not branching structure.
 
-3. **Queue tracks order**: Features merge to main in queue order. Position 1 merges first.
+3. **Sequential merge via rebasing**: Features merge to main in queue order (position 1 first). Before merging, later positions automatically rebase onto earlier ones, creating a clean chain.
 
 4. **Editing earlier features**: If you need to fix a feature that's earlier in the queue:
    - Make your changes
-   - Run `ath queue bump` - this moves your feature to the back
-   - Athena **automatically rebases** all dependent features
-   - If conflicts occur, the agent is notified to resolve them
+   - Run `ath queue bump` - this updates the queue
+   - Athena **automatically rebases** all dependent features onto your changes
+   - If conflicts occur, affected features are marked for manual resolution
 
 ### CLI Commands
 
@@ -179,12 +176,12 @@ ath queue rm           # Remove from queue
 ### For Agents
 
 When working in a worktree:
-- Check if you're in the queue: `ath queue` shows your position
-- After completing a feature, add it: `ath queue add`
-- If fixing an earlier feature: make changes, then `ath queue bump`
+- Your feature is automatically in the queue (added during worktree creation)
+- Check your position: `ath queue` shows queue status
+- If fixing an earlier feature: make changes, then `ath queue bump` to update it
 - If you see `status: conflict` - resolve the merge conflict, then continue
 
-The queue ensures features integrate cleanly in order.
+The queue ensures features integrate cleanly in sequence, even though they develop in parallel.
 
 ### Key Files
 
