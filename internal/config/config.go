@@ -299,11 +299,28 @@ Record important information for future agents:
 - [[FINDING: <discovered constraint or pattern>]]
 - [[TRIED: <approach and outcome>]]
 
-## IMPORTANT: Commit Requirements
-When you complete your work, you MUST commit all changes:
+## CRITICAL: Completion Requirements
+
+When your coding work is complete, you MUST perform ALL of these steps in order:
+
+### 1. Commit All Changes
 - Use conventional commit format (feat:, fix:, refactor:, etc.)
 - Write a clear subject line and explanatory body
-- Never leave uncommitted changes in the worktree`,
+- Include ticket ID in commit message if applicable
+- Never leave uncommitted changes in the worktree
+
+### 2. Push to Remote
+- Push your commits to the remote branch
+- Ensure the push succeeds before proceeding
+
+### 3. Create Pull Request
+- ALWAYS use gh pr create or the /commit-push-pr skill
+- Include the ticket ID in the PR title if applicable
+- Provide a clear summary of changes in the PR body
+- Verify the PR was created successfully
+- Creating the PR will automatically mark this feature as complete
+
+IMPORTANT: All three steps are REQUIRED. Do not skip any step. If any step fails, resolve the issue before proceeding.`,
 				PermissionMode: "default",
 				Model:          "sonnet",
 			},

@@ -698,7 +698,9 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 		b.WriteString("3. Create a PR using `gh pr create` or the `/commit-push-pr` skill\n")
 		b.WriteString("   - The PR title should include the ticket ID if applicable\n")
 		b.WriteString("   - The feature is already in the merge queue (added automatically)\n")
-		b.WriteString("4. Verify the PR was created successfully before finishing\n\n")
+		b.WriteString("4. Verify the PR was created successfully\n")
+		b.WriteString("   - Creating the PR will automatically mark this feature as complete\n")
+		b.WriteString("   - You MUST create the PR - it's not optional\n\n")
 	}
 
 	// Actionable task prompt - tell the agent what to do
