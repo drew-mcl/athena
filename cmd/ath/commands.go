@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/drewfead/athena/internal/control"
 	"github.com/drewfead/athena/internal/plugin"
@@ -45,7 +46,7 @@ func isWorkItemID(id string) bool {
 	return strings.HasPrefix(id, "wi-")
 }
 
-func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool) error {
+func runSpawn(featureID, id, archetype string, retrieve, headless, worktree, parallel bool) error {
 	client, err := getClient()
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon: %w", err)
@@ -59,12 +60,13 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 	}
 
 	req := control.SpawnRequest{
-		Project:  project,
-		Retrieve: retrieve,
-		Headless: headless,
-		Worktree: worktree,
-		Parallel: parallel,
-		WorkDir:  cwd,
+		Project:   project,
+		Retrieve:  retrieve,
+		Headless:  headless,
+		Worktree:  worktree,
+		Parallel:  parallel,
+		WorkDir:   cwd,
+		Archetype: archetype,
 	}
 
 	// Feature flag takes priority
@@ -77,7 +79,7 @@ func runSpawn(featureID, id string, retrieve, headless, worktree, parallel bool)
 		} else if isTicketID(id) {
 			req.TicketID = strings.ToUpper(id)
 		} else {
-			return fmt.Errorf("invalid id %q: expected work item (wi-...) or ticket (ABC-123)", id)
+			return fmt.Errorf("invalid id %q: expected a work item ID (wi-xxxx) or ticket ID (ENG-123)\nHint: use 'ath tree' to find work item IDs", id)
 		}
 	}
 
@@ -296,7 +298,7 @@ func runGoalShow(id string) error {
 	}
 
 	if len(tree) == 0 {
-		return fmt.Errorf("goal not found: %s", id)
+		return fmt.Errorf("goal not found: %s\nHint: use 'ath goal' to list goals, or 'ath tree' to see all work items", id)
 	}
 
 	printWorkItemTree(tree)
@@ -337,17 +339,25 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 	}
 	defer client.Close()
 
-	// Get parent to inherit project
-	parent, err := client.GetWorkItem(parentID)
-	if err != nil {
-		return err
+	project := detectProject()
+	if project == "" {
+		project = "default"
 	}
-	if parent == nil {
-		return fmt.Errorf("parent goal not found: %s", parentID)
+
+	// If parent specified, inherit its project
+	if parentID != "" {
+		parent, err := client.GetWorkItem(parentID)
+		if err != nil {
+			return err
+		}
+		if parent == nil {
+			return fmt.Errorf("parent goal not found: %s\nHint: use 'ath goal' to list available goals", parentID)
+		}
+		project = parent.Project
 	}
 
 	item, err := client.CreateWorkItem(control.CreateWorkItemRequest{
-		Project:     parent.Project,
+		Project:     project,
 		ItemType:    "feature",
 		ParentID:    parentID,
 		Subject:     subject,
@@ -946,16 +956,232 @@ func runAgentShow(id string) error {
 	for _, a := range agents {
 		if a.ID == id || strings.HasPrefix(a.ID, id) {
 			if match != nil {
-				return fmt.Errorf("ambiguous agent ID prefix: %s (matches %s and %s)", id, match.ID[:8], a.ID[:8])
+				return fmt.Errorf("ambiguous agent ID prefix %q: matches both %s and %s\nHint: use a longer prefix to disambiguate", id, match.ID[:8], a.ID[:8])
 			}
 			match = a
 		}
 	}
 	if match == nil {
-		return fmt.Errorf("agent not found: %s", id)
+		return fmt.Errorf("agent not found: %s\nHint: use 'ath agent' to list all agents", id)
 	}
 
 	printAgentDetail(match)
+	return nil
+}
+
+// ============================================================================
+// Tidy Command
+// ============================================================================
+
+func runTidy(headless bool) error {
+	return runSpawn("", "", "reconciler", false, headless, false, false)
+}
+
+// ============================================================================
+// Map Command
+// ============================================================================
+
+func runMap(headless bool) error {
+	return runSpawn("", "", "mapper", false, headless, false, false)
+}
+
+// ============================================================================
+// Auto-Run Commands
+// ============================================================================
+
+func runAutoRun(project string, once bool) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	if project == "" {
+		project = detectProject()
+	}
+
+	status, err := client.StartAutoRun(control.AutoRunRequest{
+		Project: project,
+		Once:    once,
+	})
+	if err != nil {
+		return err
+	}
+
+	if once {
+		fmt.Printf("%s%s%s Auto-run started (one task)\n", green, checkMark, reset)
+		fmt.Printf("  Project: %s\n", status.Project)
+		fmt.Println()
+
+		// Wait for completion and show results
+		for {
+			time.Sleep(3 * time.Second)
+			s, err := client.GetAutoRunStatus()
+			if err != nil {
+				return fmt.Errorf("lost connection while waiting: %w", err)
+			}
+			if s.Running {
+				if s.CurrentItem != nil {
+					fmt.Printf("\r  %sWorking on: %s %s%s", dim, s.CurrentItem.ID, s.CurrentItem.Subject, reset)
+				}
+				continue
+			}
+			fmt.Println()
+			printAutoRunResults(s)
+			return nil
+		}
+	}
+
+	fmt.Printf("%s%s%s Auto-run loop started\n", green, checkMark, reset)
+	fmt.Printf("  Project: %s\n", status.Project)
+	fmt.Println()
+	fmt.Printf("%sMonitor: ath run status%s\n", dim, reset)
+	fmt.Printf("%sStop:    ath run stop%s\n", dim, reset)
+	return nil
+}
+
+func runAutoRunStatus() error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	status, err := client.GetAutoRunStatus()
+	if err != nil {
+		return err
+	}
+
+	if !status.Running {
+		fmt.Println(dim + "Auto-run is not active" + reset)
+		if status.Completed > 0 || status.Failed > 0 {
+			printAutoRunResults(status)
+		}
+		return nil
+	}
+
+	fmt.Printf("%s%s%s Auto-run active\n", green, checkMark, reset)
+	fmt.Printf("  Project:   %s\n", status.Project)
+
+	if status.CurrentItem != nil {
+		fmt.Printf("  Working on: %s%s%s %s\n", magenta, status.CurrentItem.ID, reset, status.CurrentItem.Subject)
+	}
+	if status.CurrentAgent != nil {
+		agentID := status.CurrentAgent.ID
+		if len(agentID) > 8 {
+			agentID = agentID[:8]
+		}
+		fmt.Printf("  Agent:     %s%s%s (%s)\n", yellow, agentID, reset, status.CurrentAgent.Status)
+	}
+	fmt.Println()
+	printAutoRunResults(status)
+
+	return nil
+}
+
+func printAutoRunResults(status *control.AutoRunStatus) {
+	if status.Completed > 0 {
+		fmt.Printf("  %s%d completed%s\n", green, status.Completed, reset)
+		for _, r := range status.CompletedItems {
+			agentHint := ""
+			if r.AgentID != "" {
+				aid := r.AgentID
+				if len(aid) > 8 {
+					aid = aid[:8]
+				}
+				agentHint = fmt.Sprintf(" %s(agent %s)%s", dim, aid, reset)
+			}
+			fmt.Printf("    %s%s%s %s %s%s\n", green, checkMark, reset, r.ItemID, r.Subject, agentHint)
+		}
+	}
+	if status.Failed > 0 {
+		fmt.Printf("  %s%d failed%s\n", red, status.Failed, reset)
+		for _, r := range status.FailedItems {
+			agentHint := ""
+			if r.AgentID != "" {
+				aid := r.AgentID
+				if len(aid) > 8 {
+					aid = aid[:8]
+				}
+				agentHint = fmt.Sprintf(" %s(agent %s)%s", dim, aid, reset)
+			}
+			fmt.Printf("    %s✗%s %s %s%s\n", red, reset, r.ItemID, r.Subject, agentHint)
+			if r.Error != "" {
+				fmt.Printf("      %s%s%s\n", dim, r.Error, reset)
+			}
+			if r.AgentID != "" {
+				aid := r.AgentID
+				if len(aid) > 8 {
+					aid = aid[:8]
+				}
+				fmt.Printf("      %sLogs: ath agent %s%s\n", dim, aid, reset)
+			}
+		}
+	}
+}
+
+func runAutoRunStop() error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	status, err := client.StopAutoRun()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s%s%s Auto-run stopped\n", green, checkMark, reset)
+	printAutoRunResults(status)
+	return nil
+}
+
+// ============================================================================
+// Rate Limit Command
+// ============================================================================
+
+func runRateStatus() error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	status, err := client.GetRateLimitStatus()
+	if err != nil {
+		return err
+	}
+
+	if status.Limited {
+		fmt.Printf("%s!%s Rate limited\n", yellow, reset)
+		if status.WaitingSec > 0 {
+			fmt.Printf("  Reset:   in %ds (%s)\n", status.WaitingSec, status.ResetAt)
+		} else {
+			fmt.Printf("  Reset:   %s\n", status.ResetAt)
+		}
+		if status.Reason != "" {
+			reason := status.Reason
+			if len(reason) > 80 {
+				reason = reason[:77] + "..."
+			}
+			fmt.Printf("  Reason:  %s\n", reason)
+		}
+		if status.AgentID != "" {
+			agentID := status.AgentID
+			if len(agentID) > 8 {
+				agentID = agentID[:8]
+			}
+			fmt.Printf("  Trigger: agent %s%s%s\n", magenta, agentID, reset)
+		}
+	} else {
+		fmt.Printf("%s%s%s No rate limit active\n", green, checkMark, reset)
+	}
+
+	if status.HitCount > 0 {
+		fmt.Printf("  Total hits: %d this session\n", status.HitCount)
+	}
+
 	return nil
 }
 
@@ -1033,7 +1259,11 @@ func runPluginDisable(name string) error {
 
 func runPluginSetEnabled(name string, enabled bool) error {
 	if !isKnownPlugin(name) {
-		return fmt.Errorf("unknown plugin: %s", name)
+		knownNames := make([]string, 0, len(availablePlugins))
+		for _, p := range availablePlugins {
+			knownNames = append(knownNames, p.name)
+		}
+		return fmt.Errorf("unknown plugin %q: available plugins are: %s", name, strings.Join(knownNames, ", "))
 	}
 
 	cfg, err := plugin.LoadConfig()

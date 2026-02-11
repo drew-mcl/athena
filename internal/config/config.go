@@ -356,6 +356,20 @@ When you and the user have a clear understanding of the feature and approach:
 				AllowedTools:   []string{"Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"},
 				Model:          "opus",
 			},
+			"reconciler": {
+				Description:    "Maintenance agent for branch cleanup, queue reconciliation, and PR management",
+				Prompt:         reconcilerPrompt,
+				PermissionMode: "default",
+				AllowedTools:   []string{"Bash", "Read", "Grep", "Glob", "Edit", "Write", "WebFetch"},
+				Model:          "sonnet",
+			},
+			"mapper": {
+				Description:    "Codebase mapper that explores and documents project structure",
+				Prompt:         mapperPrompt,
+				PermissionMode: "default",
+				AllowedTools:   []string{"Bash", "Read", "Grep", "Glob", "Edit", "Write"},
+				Model:          "sonnet",
+			},
 		},
 		Terminal: TerminalConfig{
 			Provider:   "ghostty",

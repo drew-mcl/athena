@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/drewfead/athena/internal/agent"
@@ -13,6 +14,7 @@ import (
 	"github.com/drewfead/athena/internal/plugin/pm"
 	"github.com/drewfead/athena/internal/store"
 	"github.com/drewfead/athena/internal/worktree"
+	"github.com/google/uuid"
 )
 
 // handleSpawn is the unified spawn handler.
@@ -38,9 +40,22 @@ func (d *Daemon) handleSpawn(params json.RawMessage) (any, error) {
 	taskListID := workItem.ID
 	prompt := d.buildSpawnPrompt(workItem, parentGoal, ticketContext, taskListID, req.Retrieve)
 
-	archetype := "executor"
-	if req.Retrieve {
-		archetype = "planner"
+	archetype := req.Archetype
+	if archetype == "" {
+		archetype = "executor"
+		if req.Retrieve {
+			archetype = "planner"
+		}
+	}
+
+	// When an explicit archetype is set on a bare work item, use the archetype description as subject
+	if req.Archetype != "" && workItem.Subject == "Interactive session" {
+		if arch, ok := d.config.Archetypes[archetype]; ok {
+			workItem.Subject = arch.Description
+			if err := d.store.UpdateWorkItem(workItem); err != nil {
+				logging.Debug("failed to update bare work item subject from archetype", "error", err)
+			}
+		}
 	}
 
 	resp := &control.SpawnResponse{
@@ -248,14 +263,20 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 		return "", fmt.Errorf("cannot find main repo for project %q: %w", project, err)
 	}
 
-	// Get queue head for start point
+	// Get queue head for start point, but verify the branch actually exists
 	startPoint := ""
 	queueBranch, _, err := d.getIntegrationHead(project)
 	if err != nil {
 		logging.Debug("failed to resolve integration head for feature worktree", "project", project, "error", err)
 	} else if queueBranch != "" {
-		startPoint = queueBranch
-		logging.Info("using queue head as start point", "branch", queueBranch, "project", project)
+		// Verify branch exists before using it as start point
+		if branchExists(mainRepoPath, queueBranch) {
+			startPoint = queueBranch
+			logging.Info("using queue head as start point", "branch", queueBranch, "project", project)
+		} else {
+			logging.Warn("queue head branch does not exist, falling back to default",
+				"branch", queueBranch, "project", project)
+		}
 	}
 
 	// Create branch name from feature ID
@@ -288,7 +309,44 @@ func (d *Daemon) createFeatureWorktree(feature *store.WorkItem, project string) 
 		"start_point", startPoint,
 	)
 
+	// Auto-add to merge queue so features are tracked from creation
+	headCommit, err := getGitHead(wtPath)
+	if err != nil {
+		logging.Warn("created worktree but failed to get HEAD for queue", "error", err)
+		return wtPath, nil // non-fatal
+	}
+	baseBranch := startPoint
+	baseCommit := headCommit // new branch starts at the same commit
+	if baseBranch == "" {
+		// No queue head was used, find the default branch merge-base
+		baseBranch, baseCommit, err = getGitMergeBase(wtPath, branch)
+		if err != nil {
+			logging.Warn("created worktree but failed to determine queue base", "error", err)
+			return wtPath, nil // non-fatal
+		}
+	}
+	queueItem := &store.MergeQueueItem{
+		ID:           uuid.NewString()[:8],
+		Project:      project,
+		WorktreePath: wtPath,
+		Branch:       branch,
+		BaseBranch:   baseBranch,
+		BaseCommit:   baseCommit,
+		HeadCommit:   headCommit,
+	}
+	if err := d.store.AddToMergeQueue(queueItem); err != nil {
+		logging.Warn("created worktree but failed to add to queue", "error", err)
+	} else {
+		logging.Info("auto-added feature to merge queue", "feature", feature.ID, "branch", branch)
+	}
+
 	return wtPath, nil
+}
+
+// branchExists checks if a git branch ref is valid in the given repo.
+func branchExists(repoPath, branch string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "--quiet", branch)
+	return cmd.Run() == nil
 }
 
 // findMainRepoPath finds the main repo path for a project from the store.
@@ -644,15 +702,17 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 	b.WriteString("- `ath queue add` - add completed work to the merge queue\n")
 	b.WriteString("- `ath wt` - list worktrees\n\n")
 
-	// Completion instructions
-	b.WriteString("## When Done\n\n")
-	b.WriteString("When your work is complete:\n")
-	b.WriteString("1. Ensure all tasks are marked `completed`\n")
-	b.WriteString("2. Commit, push, and create a PR using the `/commit-push-pr` skill\n")
-	b.WriteString("   - This will automatically commit your changes, push to remote, and open a pull request\n")
-	b.WriteString("   - Make sure the PR has the Linear/Jira ticket ID in the title if applicable\n")
-	b.WriteString("3. Run `ath queue add` to add this feature to the merge queue\n")
-	b.WriteString("4. Mark this feature work item as complete\n\n")
+	// Completion instructions - only for feature/goal work items (not maintenance archetypes)
+	if workItem.ItemType == store.WorkItemTypeFeature || workItem.ItemType == store.WorkItemTypeGoal {
+		b.WriteString("## When Done\n\n")
+		b.WriteString("When your work is complete:\n")
+		b.WriteString("1. Ensure all tasks are marked `completed`\n")
+		b.WriteString("2. Commit and push all changes\n")
+		b.WriteString("3. Create a PR using `gh pr create` or the `/commit-push-pr` skill\n")
+		b.WriteString("   - The PR title should include the ticket ID if applicable\n")
+		b.WriteString("   - The feature is already in the merge queue (added automatically)\n")
+		b.WriteString("4. Verify the PR was created successfully before finishing\n\n")
+	}
 
 	// Actionable task prompt - tell the agent what to do
 	b.WriteString("## Your Task\n\n")

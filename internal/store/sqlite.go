@@ -629,7 +629,8 @@ const (
 	AgentStatusCompleted   AgentStatus = "completed"
 	AgentStatusTerminated  AgentStatus = "terminated"
 	AgentStatusAttached    AgentStatus = "attached"
-	AgentStatusInteractive AgentStatus = "interactive" // Interactive chat session
+	AgentStatusInteractive AgentStatus = "interactive"  // Interactive chat session
+	AgentStatusRateLimited AgentStatus = "rate_limited" // Paused due to API rate limit
 )
 
 // Agent represents a Claude Code agent instance.

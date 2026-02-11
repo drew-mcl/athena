@@ -20,6 +20,9 @@ type Supervisor struct {
 	store   *store.Store
 	spawner *Spawner
 
+	// Rate limit integration
+	rateLimitChecker RateLimitChecker
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -35,6 +38,11 @@ func NewSupervisor(cfg *config.Config, st *store.Store, sp *Spawner) *Supervisor
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+}
+
+// SetRateLimitChecker sets the function to check if the daemon is rate limited.
+func (s *Supervisor) SetRateLimitChecker(checker RateLimitChecker) {
+	s.rateLimitChecker = checker
 }
 
 // Start begins supervisor monitoring loops.
@@ -139,6 +147,15 @@ func (s *Supervisor) recoverCrashedAgents() {
 }
 
 func (s *Supervisor) shouldRestart(agent *store.Agent) bool {
+	// If rate limited, don't restart yet - recovery loop handles this
+	if s.rateLimitChecker != nil {
+		if limited, resetAt := s.rateLimitChecker(); limited {
+			if time.Now().Before(resetAt) {
+				return false
+			}
+		}
+	}
+
 	// Check restart policy
 	policy := s.config.Agents.RestartPolicy
 	if policy == "never" {
