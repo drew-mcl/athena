@@ -1251,3 +1251,210 @@ func TestFindMainRepoPath_FallbackByProjectName(t *testing.T) {
 		t.Errorf("expected %s, got %s", mainPath, found)
 	}
 }
+
+// --- Orchestrator archetype selection tests ---
+
+func TestHandleSpawn_GoalUsesOrchestratorArchetype(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Create a goal work item
+	goal := &store.WorkItem{
+		ID:          "wi-goal-arch",
+		Project:     "myproject",
+		ItemType:    store.WorkItemTypeGoal,
+		Subject:     "Build feature X",
+		Description: "A high-level goal",
+		Status:      store.WorkItemStatusPending,
+	}
+	if err := d.store.CreateWorkItem(goal); err != nil {
+		t.Fatal(err)
+	}
+
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
+		WorkItemID: "wi-goal-arch",
+	})
+
+	result, err := d.handleSpawn(reqJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp := result.(*control.SpawnResponse)
+
+	// Check that orchestrator archetype was selected
+	// The orchestrator uses opus model (from default config)
+	foundModel := false
+	for i, arg := range resp.ExecArgs {
+		if arg == "--model" && i+1 < len(resp.ExecArgs) && resp.ExecArgs[i+1] == "opus" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Errorf("expected --model opus for orchestrator archetype, args: %v", resp.ExecArgs)
+	}
+
+	// Check that the prompt contains orchestrator guidance
+	promptIdx := -1
+	for i, arg := range resp.ExecArgs {
+		if arg == "--append-system-prompt" && i+1 < len(resp.ExecArgs) {
+			promptIdx = i + 1
+			break
+		}
+	}
+	if promptIdx == -1 {
+		t.Fatal("expected --append-system-prompt in ExecArgs")
+	}
+	prompt := resp.ExecArgs[promptIdx]
+	if !strings.Contains(prompt, "Goal Orchestration") {
+		t.Error("expected 'Goal Orchestration' in prompt for goal work item")
+	}
+}
+
+func TestHandleSpawn_FeatureUsesExecutorArchetype(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Register a worktree in the store first (FK constraint)
+	wtPath := filepath.Join(t.TempDir(), "test-feature-wt")
+	wt := &store.Worktree{
+		Path:    wtPath,
+		Project: "myproject",
+		Branch:  "feat/wi-feature-arch",
+		IsMain:  false,
+		Status:  store.WorktreeStatusActive,
+	}
+	if err := d.store.UpsertWorktree(wt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a feature work item
+	feature := &store.WorkItem{
+		ID:           "wi-feature-arch",
+		Project:      "myproject",
+		ItemType:     store.WorkItemTypeFeature,
+		Subject:      "Implement specific feature",
+		Status:       store.WorkItemStatusPending,
+		WorktreePath: &wtPath,
+	}
+	if err := d.store.CreateWorkItem(feature); err != nil {
+		t.Fatal(err)
+	}
+
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
+		FeatureID: "wi-feature-arch",
+	})
+
+	result, err := d.handleSpawn(reqJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp := result.(*control.SpawnResponse)
+
+	// Check that executor archetype was selected (uses sonnet model)
+	foundModel := false
+	for i, arg := range resp.ExecArgs {
+		if arg == "--model" && i+1 < len(resp.ExecArgs) && resp.ExecArgs[i+1] == "sonnet" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Errorf("expected --model sonnet for executor archetype, args: %v", resp.ExecArgs)
+	}
+
+	// Should NOT contain orchestrator guidance
+	promptIdx := -1
+	for i, arg := range resp.ExecArgs {
+		if arg == "--append-system-prompt" && i+1 < len(resp.ExecArgs) {
+			promptIdx = i + 1
+			break
+		}
+	}
+	if promptIdx >= 0 {
+		prompt := resp.ExecArgs[promptIdx]
+		if strings.Contains(prompt, "Goal Orchestration") {
+			t.Error("feature work item should not have Goal Orchestration section")
+		}
+	}
+}
+
+func TestHandleSpawn_ExplicitArchetypeOverride(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Create a goal work item
+	goal := &store.WorkItem{
+		ID:       "wi-goal-override",
+		Project:  "myproject",
+		ItemType: store.WorkItemTypeGoal,
+		Subject:  "Build feature Y",
+		Status:   store.WorkItemStatusPending,
+	}
+	if err := d.store.CreateWorkItem(goal); err != nil {
+		t.Fatal(err)
+	}
+
+	// Explicitly request executor archetype (override default orchestrator)
+	reqJSON := mustMarshalSpawnRequest(t, control.SpawnRequest{
+		WorkItemID: "wi-goal-override",
+		Archetype:  "executor",
+	})
+
+	result, err := d.handleSpawn(reqJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp := result.(*control.SpawnResponse)
+
+	// Should use executor (sonnet) not orchestrator (opus)
+	foundModel := false
+	for i, arg := range resp.ExecArgs {
+		if arg == "--model" && i+1 < len(resp.ExecArgs) && resp.ExecArgs[i+1] == "sonnet" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Errorf("expected --model sonnet when explicitly requesting executor, args: %v", resp.ExecArgs)
+	}
+}
+
+func TestResolveGoalSpawn_CreatesGoalWorkItem(t *testing.T) {
+	d := newTestDaemon(t)
+
+	goalText := "Implement user dashboard"
+	wi, parentGoal, ticketCtx, err := d.resolveGoalSpawn(goalText, "myproject")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should create a goal work item
+	if wi.ItemType != store.WorkItemTypeGoal {
+		t.Errorf("expected goal type, got %s", wi.ItemType)
+	}
+	if wi.Subject != goalText {
+		t.Errorf("expected subject %q, got %q", goalText, wi.Subject)
+	}
+	if wi.Description != goalText {
+		t.Errorf("expected description %q, got %q", goalText, wi.Description)
+	}
+	if wi.Status != store.WorkItemStatusInProgress {
+		t.Errorf("expected in_progress status, got %s", wi.Status)
+	}
+	if parentGoal != nil {
+		t.Errorf("expected nil parent goal for goal spawn, got %+v", parentGoal)
+	}
+	if ticketCtx != "" {
+		t.Errorf("expected empty ticket context, got %q", ticketCtx)
+	}
+
+	// Verify persistence
+	stored, err := d.store.GetWorkItem(wi.ID)
+	if err != nil || stored == nil {
+		t.Fatal("goal work item not persisted")
+	}
+	if stored.ItemType != store.WorkItemTypeGoal {
+		t.Errorf("persisted work item should be goal type, got %s", stored.ItemType)
+	}
+}

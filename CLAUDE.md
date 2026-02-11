@@ -145,6 +145,49 @@ All goroutines use `safeGo()` or `safeLoop()` for panic recovery.
 | Questions | Quick Q&A history |
 | Notes | Idea capture, promote to features |
 
+## Goal Spawning Workflow
+
+Athena uses an **orchestrator archetype** for goal-level work. Goals are high-level objectives that get broken down into features.
+
+### How It Works
+
+1. **Spawn from a goal**: `ath spawn --goal "Build user authentication system"`
+2. **Orchestrator agent activates**: Automatically uses the "orchestrator" archetype (opus model)
+3. **Agent workflow**:
+   - Analyzes the goal and explores the codebase
+   - Breaks down the goal into discrete features
+   - Creates Feature work items under the goal
+   - Decides: work solo (sequential) or create a team (parallel)
+   - If team: spawns teammates on each feature
+   - Coordinates implementation and integration
+
+### Orchestrator Archetype
+
+The orchestrator is designed specifically for goal-level work:
+- **Model**: opus (needs planning and coordination capability)
+- **Workflow**: Analyze → Break down → Evaluate complexity → Execute
+- **Solo approach**: < 5 features, sequential work, localized changes
+- **Team approach**: 5+ features, parallel work, multiple areas of codebase
+
+### CLI Commands
+
+```bash
+ath spawn --goal "Goal description"           # Create and spawn on a goal
+ath spawn --work-item wi-abc123               # Spawn on existing goal
+ath tree                                      # View goal → features hierarchy
+```
+
+### For Orchestrator Agents
+
+When spawned on a goal:
+- Use `TaskCreate` to create Feature work items (tasks under the goal)
+- If working solo: implement features sequentially
+- If creating a team:
+  - Use `TeamCreate` to create a coordinated team
+  - Use Task tool to spawn teammates on each feature
+  - Assign features with `TaskUpdate` (set owner to teammate name)
+  - Coordinate work and handle blockers
+
 ## Merge Queue Workflow
 
 Athena uses a **merge queue** to coordinate multiple in-flight features. Features develop in parallel but merge sequentially, ensuring clean integration.
@@ -191,13 +234,18 @@ The queue ensures features integrate cleanly in sequence, even though they devel
 | `internal/daemon/merge_queue.go` | Queue API handlers, auto-rebase |
 | `cmd/ath/commands.go` | CLI commands (runQueue*) |
 
-## Future Ideas
+## Agent Archetypes
 
-### Multi-Agent Orchestration
+Athena provides specialized archetypes for different types of work:
 
-For large features that are too big for a single agent:
-- Sub-worktrees with hash suffix feeding into orchestrator agent
-- Parent agent coordinates, child agents do focused work
-- Core infrastructure work - not MVP scope
+| Archetype | Purpose | Model | Use Case |
+|-----------|---------|-------|----------|
+| `orchestrator` | Goal-level coordination and feature breakdown | opus | Goals (automatic for goal work items) |
+| `executor` | Feature implementation and commits | sonnet | Features (automatic for feature work items) |
+| `planner` | Exploration and planning without changes | opus | Research, architecture analysis |
+| `reviewer` | Code review and quality checks | sonnet | PR reviews, validation |
+| `brainstorm` | Interactive ideation and exploration | opus | User collaboration, design discussions |
+| `reconciler` | Branch cleanup, queue reconciliation | sonnet | Maintenance tasks |
+| `mapper` | Codebase documentation and mapping | sonnet | Documentation generation |
 
-This is a significant architectural addition - explore when base system is stable.
+Archetypes are selected automatically based on work item type, or can be overridden with `--archetype` flag.
