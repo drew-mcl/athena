@@ -151,15 +151,17 @@ var featNewCmd = &cobra.Command{
 	Short: "Create a new feature, optionally under a goal",
 	Long: `Create a new feature, optionally nested under a goal.
 
-If parent-id is omitted, uses the most recently created goal from context.
-With one arg:  use goal from context (or standalone if no context)
-With two args: feature under a goal (parent-id + subject)
+If parent-id is omitted, tries to use the most recently created goal from context.
+If no context exists, creates a standalone feature (no parent goal).
+
+With one arg:  uses goal from context, or creates standalone feature
+With two args: creates feature under specified goal (parent-id + subject)
 
 Use -t to link an external ticket (Linear, Jira) and -d for a description.
 
 Examples:
-  ath feat new "OAuth flow"                         # Use goal from context
-  ath feat new wi-a3f8 "OAuth flow"                 # Explicit parent
+  ath feat new "OAuth flow"                         # Standalone or use context
+  ath feat new wi-a3f8 "OAuth flow"                 # Explicit parent goal
   ath feat new "Login page" -t ENG-123 -d "OAuth2"  # With ticket link`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {

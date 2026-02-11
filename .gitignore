@@ -34,3 +34,7 @@ go.work.sum
 athena.sock
 
 .todo
+
+# Tool-local config
+.claude/
+.entire/

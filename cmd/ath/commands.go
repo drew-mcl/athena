@@ -360,14 +360,11 @@ func runFeatNew(parentID, subject, ticketID, description string) error {
 	// If no parent ID provided, try to use the last goal from context
 	if parentID == "" {
 		ctx, err := cli.LoadContext()
-		if err != nil {
-			return fmt.Errorf("no parent ID provided and failed to load context: %w", err)
+		if err == nil && ctx.LastGoalID != "" {
+			parentID = ctx.LastGoalID
+			fmt.Printf("%sUsing goal from context: %s%s\n", dim, parentID, reset)
 		}
-		if ctx.LastGoalID == "" {
-			return fmt.Errorf("no parent ID provided and no goal in context (run 'ath goal new' first)")
-		}
-		parentID = ctx.LastGoalID
-		fmt.Printf("%sUsing goal from context: %s%s\n", dim, parentID, reset)
+		// Otherwise parentID stays empty - standalone feature
 	}
 
 	project := detectProject()
