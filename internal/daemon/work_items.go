@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -377,6 +379,9 @@ func (d *Daemon) initialTaskSync() {
 		return
 	}
 
+	// First, migrate orphaned UUID task lists to their correct work items.
+	d.migrateOrphanedTaskLists(lists)
+
 	synced := 0
 	for _, l := range lists {
 		if !strings.HasPrefix(l.ID, "wi-") {
@@ -391,6 +396,146 @@ func (d *Daemon) initialTaskSync() {
 	if synced > 0 {
 		logging.Info("initial task sync complete", "lists_synced", synced)
 	}
+}
+
+// uuidPattern matches UUID-format strings (e.g., "4adb163b-369d-4c1a-96ba-bf915a69eb5f").
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// migrateOrphanedTaskLists finds UUID-named task directories that should belong
+// to work items (via agents table) and syncs their tasks to the correct work_items.
+//
+// Before the env var pipeline was fixed, Claude Code would ignore the
+// CLAUDE_CODE_TASK_LIST_ID env and create its own UUID-based task list.
+// This migration reads those orphaned lists and syncs them to the correct parent.
+func (d *Daemon) migrateOrphanedTaskLists(lists []task.TaskList) {
+	// Build set of UUID task list IDs.
+	var uuidLists []string
+	for _, l := range lists {
+		if uuidPattern.MatchString(l.ID) {
+			uuidLists = append(uuidLists, l.ID)
+		}
+	}
+	if len(uuidLists) == 0 {
+		return
+	}
+
+	// Build mapping: UUID (claude_session_id) → work item ID.
+	mapping := d.buildSessionToWorkItemMapping()
+	if len(mapping) == 0 {
+		return
+	}
+
+	migrated := 0
+	for _, uuid := range uuidLists {
+		workItemID, ok := mapping[uuid]
+		if !ok {
+			continue
+		}
+
+		// Verify the work item exists in the store.
+		wi, err := d.store.GetWorkItem(workItemID)
+		if err != nil || wi == nil {
+			logging.Debug("skipping orphaned task list migration: work item not found",
+				"uuid", uuid, "work_item_id", workItemID)
+			continue
+		}
+
+		// Sync tasks from the UUID dir to the correct work item.
+		// The UUID is used as the task list ID (directory name) for file reads,
+		// while workItemID is used for store lookups.
+		d.syncClaudeTasksToWorkItems(uuid, workItemID)
+		migrated++
+		logging.Info("migrated orphaned task list",
+			"uuid", uuid, "work_item_id", workItemID, "project", wi.Project)
+	}
+
+	if migrated > 0 {
+		logging.Info("orphaned task list migration complete", "migrated", migrated)
+	}
+}
+
+// buildSessionToWorkItemMapping builds a map from claude_session_id (UUID) to work item ID.
+// It uses two strategies:
+//  1. Direct: agent linked to work_item via work_items.agent_id
+//  2. Worktree path: extract work item ID from worktree directory basename
+func (d *Daemon) buildSessionToWorkItemMapping() map[string]string {
+	agents, err := d.store.ListAgents()
+	if err != nil {
+		logging.Debug("failed to list agents for task migration", "error", err)
+		return nil
+	}
+
+	// Pre-load work items that have agent_id set for direct linkage.
+	agentToWorkItem := make(map[string]string) // agent.ID → work_item.ID
+	allWorkItems, err := d.store.ListWorkItems("", "", "")
+	if err != nil {
+		logging.Debug("failed to list work items for task migration", "error", err)
+		return nil
+	}
+	for _, wi := range allWorkItems {
+		if wi.AgentID != nil && *wi.AgentID != "" {
+			agentToWorkItem[*wi.AgentID] = wi.ID
+		}
+	}
+
+	mapping := make(map[string]string)
+	for _, agent := range agents {
+		sessionID := agent.ClaudeSessionID
+		if sessionID == "" || !uuidPattern.MatchString(sessionID) {
+			continue
+		}
+
+		// Strategy 1: Direct linkage via agent_id on work_items.
+		if wiID, ok := agentToWorkItem[agent.ID]; ok {
+			mapping[sessionID] = wiID
+			continue
+		}
+
+		// Strategy 2: Extract work item ID from worktree path basename.
+		// Worktree paths follow: <base>/<work-item-id>-<4char-hash>
+		// e.g., /Users/drew/repos/worktrees/wi-c5a6.1-1925 → wi-c5a6.1
+		if wiID := extractWorkItemIDFromWorktreePath(agent.WorktreePath); wiID != "" {
+			mapping[sessionID] = wiID
+		}
+	}
+
+	return mapping
+}
+
+// extractWorkItemIDFromWorktreePath extracts a work item ID from a worktree directory path.
+// Worktree dirs are named "<work-item-id>-<4char-hash>" (e.g., "wi-c5a6.1-1925").
+// Returns empty string if the path doesn't match the expected pattern.
+func extractWorkItemIDFromWorktreePath(wtPath string) string {
+	if wtPath == "" {
+		return ""
+	}
+	base := filepath.Base(wtPath)
+	if !strings.HasPrefix(base, "wi-") {
+		return ""
+	}
+
+	// Find the last hyphen — the suffix after it should be a 4-char hex hash.
+	lastHyphen := strings.LastIndex(base, "-")
+	if lastHyphen < 0 || lastHyphen <= 2 { // must be after "wi-"
+		return ""
+	}
+
+	suffix := base[lastHyphen+1:]
+	if len(suffix) != 4 || !isHex(suffix) {
+		return ""
+	}
+
+	return base[:lastHyphen]
+}
+
+// isHex returns true if s consists entirely of hexadecimal characters.
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // handleTaskEvent processes a task event and syncs to work_items if applicable.
@@ -569,9 +714,18 @@ func isBlockedFromMetadata(metadata string) bool {
 // Athena work item ID. Claude Code replaces dots with hyphens in directory names,
 // so wi-266d.2 becomes wi-266d-2 on disk. This reverses that: find the last hyphen
 // followed by only digits and replace it with a dot.
+//
+// Only converts if there are at least 2 hyphens, so that goal IDs like "wi-a3f8"
+// or "wi-1234" are not mistakenly converted to "wi.a3f8" or "wi.1234".
 func taskListDirToWorkItemID(dirName string) string {
 	lastHyphen := strings.LastIndex(dirName, "-")
 	if lastHyphen < 0 || lastHyphen == len(dirName)-1 {
+		return dirName
+	}
+
+	// Count hyphens: need at least 2 (the "wi-" prefix + child separator).
+	// A goal like "wi-a3f8" has only 1 hyphen and should stay unchanged.
+	if strings.Count(dirName, "-") < 2 {
 		return dirName
 	}
 

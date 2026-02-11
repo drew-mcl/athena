@@ -186,6 +186,7 @@ func buildClaudeOptions(spec RunSpec, resume bool) *claudecode.SpawnOptions {
 	}
 
 	opts.DangerouslySkipPermissions = spec.SkipPermissions
+	opts.Env = spec.Env
 
 	// Map git identity from runner spec to claudecode options
 	if spec.GitIdentity != nil {

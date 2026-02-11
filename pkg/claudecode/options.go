@@ -49,6 +49,10 @@ type SpawnOptions struct {
 	// DangerouslySkipPermissions bypasses all permission checks.
 	// When true, passes --dangerously-skip-permissions to Claude Code.
 	DangerouslySkipPermissions bool
+
+	// Env holds additional environment variables to inject into the spawned process.
+	// These are merged into the process environment alongside git identity vars.
+	Env map[string]string
 }
 
 // GitIdentityConfig configures git identity for agent commits.

@@ -41,11 +41,20 @@ func Spawn(ctx context.Context, opts *SpawnOptions) (*Process, error) {
 	}
 	cmd.Dir = opts.WorkDir
 
-	// Inject git identity environment variables if configured.
-	if opts.GitIdentity != nil {
-		gitEnv := opts.GitIdentity.Env()
-		if len(gitEnv) > 0 {
-			cmd.Env = append(os.Environ(), gitEnv...)
+	// Inject environment variables: custom env + git identity.
+	// If either is set, we need to explicitly inherit os.Environ() since
+	// setting cmd.Env overrides the default "inherit parent" behavior.
+	if len(opts.Env) > 0 || opts.GitIdentity != nil {
+		cmd.Env = os.Environ()
+
+		// Add custom env vars
+		for k, v := range opts.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		// Add git identity vars
+		if opts.GitIdentity != nil {
+			cmd.Env = append(cmd.Env, opts.GitIdentity.Env()...)
 		}
 	}
 
