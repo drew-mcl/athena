@@ -145,14 +145,14 @@ sequenceDiagram
 
     You->>Athena: ath spawn -f wi-a3f8.1
     Athena->>D: spawn(feature_id)
-    D->>D: create worktree from queue head
+    D->>D: create worktree from main
     D->>D: set CLAUDE_CODE_TASK_LIST_ID
     D->>A1: launch claude code
     Note over A1: working on Feature A...
 
     You->>Athena: ath spawn -f wi-a3f8.2
     Athena->>D: spawn(feature_id)
-    D->>D: create worktree from queue head
+    D->>D: create worktree from main
     D->>A2: launch claude code
     Note over A2: working on Feature B...
 
@@ -275,21 +275,24 @@ graph TD
 
 ## merge queue detail
 
-the queue solves the "multiple features in flight" problem. new features always branch from queue head, so they stack cleanly.
+the queue solves the "multiple features in flight" problem. all features branch from main for parallel development, then rebase onto each other during merge for clean integration.
 
 ```mermaid
-graph LR
-    Main["main"] --> Q1["Feature C<br/><i>merged ✓</i>"]
-    Q1 --> Q2["Feature B<br/><i>PR open ⏳</i>"]
-    Q2 --> Q3["Feature A<br/><i>agent working 🔨</i>"]
+graph TB
+    Main["main"] --> Q1["Feature A<br/><i>queue pos 1</i>"]
+    Main --> Q2["Feature B<br/><i>queue pos 2</i>"]
+    Main --> Q3["Feature C<br/><i>queue pos 3</i>"]
 
-    Q3 -.-> |"new features<br/>branch from here"| New["Feature D<br/><i>next spawn</i>"]
+    Q1 -.-> |"before merge:<br/>B rebases onto A"| Q2
+    Q2 -.-> |"before merge:<br/>C rebases onto B"| Q3
 
     style Q1 fill:#2d5a2d,color:#fff
     style Q2 fill:#5a5a2d,color:#fff
     style Q3 fill:#2d2d5a,color:#fff
-    style New fill:#3a3a3a,color:#fff,stroke-dasharray: 5 5
 ```
+
+**Development**: All features work in parallel, branching from main
+**Integration**: Queue order determines merge sequence with automatic rebasing
 
 when you edit an earlier feature and run `ath queue bump`, dependents are automatically reconciled.
 
