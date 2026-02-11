@@ -626,13 +626,7 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 		ticketStr = fmt.Sprintf(" %s%s%s", yellow, item.TicketID, reset)
 	}
 
-	// Status indicator
-	statusStr := ""
-	if item.Status == "in_progress" && !isBlocked {
-		statusStr = fmt.Sprintf(" %s%s active%s", yellow, bullet, reset)
-	}
-
-	// Print: connector shape ID subject [progress] [ticket] [status]
+	// Print: connector shape ID subject [progress] [ticket]
 	paddedID := padRight(item.ID, idWidth)
 	// Sanitize subject: replace newlines with spaces, collapse multiple spaces, truncate
 	subject := strings.ReplaceAll(item.Subject, "\n", " ")
@@ -644,7 +638,7 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 		shapeColor, shape, reset,
 		idStyle, paddedID, reset,
 		textStyle, subject, reset,
-		ticketStr, progressStr+statusStr)
+		ticketStr, progressStr)
 
 	// Children
 	childItems := children[item.ID]
@@ -693,22 +687,17 @@ func printWorkItemTable(title string, items []*control.WorkItemInfo) {
 			progressStr = fmt.Sprintf(" %s[%d/%d]%s", gray, item.CompletedCount, item.TotalCount, reset)
 		}
 
-		statusStr := ""
-		if item.Status == "in_progress" {
-			statusStr = fmt.Sprintf(" %s%s active%s", yellow, bullet, reset)
-		}
-
 		// ID magenta, text white (or gray if completed)
 		idStyle, textStyle := magenta, white
 		if item.Status == "completed" {
 			idStyle, textStyle = gray, gray
 		}
 
-		fmt.Printf("  %s %s%s%s %s%s%s%s%s\n",
+		fmt.Printf("  %s %s%s%s %s%s%s%s\n",
 			shape,
 			idStyle, item.ID, reset,
 			textStyle, item.Subject, reset,
-			progressStr, statusStr)
+			progressStr)
 	}
 
 	// Summary
