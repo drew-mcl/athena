@@ -1421,12 +1421,12 @@ type SpawnRequest struct {
 	WorkItemID string `json:"work_item_id,omitempty"` // e.g. wi-a3f8
 	Goal       string `json:"goal,omitempty"`         // Free-form goal text (e.g. "implement user auth")
 	Project    string `json:"project,omitempty"`
-	Retrieve   bool   `json:"retrieve,omitempty"`   // -r flag: break down goal first
-	Headless   bool   `json:"headless,omitempty"`   // --headless flag: run detached
-	Worktree   bool   `json:"worktree,omitempty"`   // -w flag: create worktree
-	Parallel   bool   `json:"parallel,omitempty"`   // -p flag: parallel task-worker mode
-	WorkDir    string `json:"work_dir,omitempty"`   // current dir for bare mode
-	Archetype  string `json:"archetype,omitempty"`  // Explicit archetype override (e.g. "reconciler")
+	Retrieve   bool   `json:"retrieve,omitempty"`  // -r flag: break down goal first
+	Headless   bool   `json:"headless,omitempty"`  // --headless flag: run detached
+	Worktree   bool   `json:"worktree,omitempty"`  // -w flag: create worktree
+	Parallel   bool   `json:"parallel,omitempty"`  // -p flag: parallel task-worker mode
+	WorkDir    string `json:"work_dir,omitempty"`  // current dir for bare mode
+	Archetype  string `json:"archetype,omitempty"` // Explicit archetype override (e.g. "reconciler")
 }
 
 // SpawnResponse contains the result of a spawn request.
@@ -1460,7 +1460,7 @@ func (c *Client) PruneWorktrees() (*PruneWorktreesResult, error) {
 // RateLimitStatus contains the current rate limit state.
 type RateLimitStatus struct {
 	Limited    bool   `json:"limited"`
-	ResetAt    string `json:"reset_at,omitempty"`    // RFC 3339
+	ResetAt    string `json:"reset_at,omitempty"` // RFC 3339
 	Reason     string `json:"reason,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`    // which agent triggered it
 	HitCount   int    `json:"hit_count"`             // total hits this session
@@ -1494,14 +1494,14 @@ type AutoRunResult struct {
 
 // AutoRunStatus contains the current state of the auto-run loop.
 type AutoRunStatus struct {
-	Running        bool             `json:"running"`
-	Project        string           `json:"project"`
-	CurrentItem    *WorkItemInfo    `json:"current_item,omitempty"`
-	CurrentAgent   *AgentInfo       `json:"current_agent,omitempty"`
-	Completed      int              `json:"completed"`
-	Failed         int              `json:"failed"`
-	CompletedItems []AutoRunResult  `json:"completed_items,omitempty"`
-	FailedItems    []AutoRunResult  `json:"failed_items,omitempty"`
+	Running        bool            `json:"running"`
+	Project        string          `json:"project"`
+	CurrentItem    *WorkItemInfo   `json:"current_item,omitempty"`
+	CurrentAgent   *AgentInfo      `json:"current_agent,omitempty"`
+	Completed      int             `json:"completed"`
+	Failed         int             `json:"failed"`
+	CompletedItems []AutoRunResult `json:"completed_items,omitempty"`
+	FailedItems    []AutoRunResult `json:"failed_items,omitempty"`
 }
 
 // StartAutoRun starts the auto-run loop on the daemon.

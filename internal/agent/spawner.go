@@ -47,7 +47,7 @@ type Spawner struct {
 	streamEmitter StreamEventEmitter
 
 	// Rate limit integration
-	onRateLimit  RateLimitCallback
+	onRateLimit   RateLimitCallback
 	isRateLimited RateLimitChecker
 }
 
