@@ -67,8 +67,8 @@ ath queue                # merge queue
 ## what you get
 
 - **work items**: goals (strategic), features (PR-sized), tasks (claude code native)
-- **parallel development**: one worktree per feature, isolated agents
-- **merge queue**: features merge in order, new work branches from queue head
+- **parallel development**: one worktree per feature, all branch from main, isolated agents
+- **merge queue**: features merge sequentially, queue manages rebase order
 - **PM integration**: jira/linear → goals/features automatically
 - **plugins**: github, gitlab, linear, jira
 

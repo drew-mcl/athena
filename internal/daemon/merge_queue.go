@@ -97,18 +97,11 @@ func (d *Daemon) handleAddToMergeQueue(params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	// Base info must represent the actual integration ancestor for queue divergence checks.
-	// Prefer queue head when available, otherwise fall back to a merge-base with default branch.
-	baseBranch := ""
-	baseCommit := ""
-	if queueBranch, queueCommit, queueErr := d.getIntegrationHead(project); queueErr == nil && queueBranch != "" && queueCommit != "" {
-		baseBranch = queueBranch
-		baseCommit = queueCommit
-	} else {
-		baseBranch, baseCommit, err = getGitMergeBase(req.WorktreePath, wt.Branch)
-		if err != nil {
-			return nil, fmt.Errorf("failed to determine base commit: %w", err)
-		}
+	// Determine the actual base branch and commit by finding the merge-base.
+	// This correctly detects what the worktree was forked from (usually main).
+	baseBranch, baseCommit, err := getGitMergeBase(req.WorktreePath, wt.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine base commit: %w", err)
 	}
 
 	if baseBranch == "" || baseCommit == "" {
