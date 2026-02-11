@@ -614,7 +614,7 @@ func init() {
 	spawnCmd.Flags().Bool("headless", false, "Run agent headless in background")
 	spawnCmd.Flags().BoolP("worktree", "w", false, "Create a dedicated worktree")
 	spawnCmd.Flags().BoolP("parallel", "p", false, "Enable parallel task-worker mode")
-	spawnCmd.Flags().StringP("archetype", "a", "", "Agent archetype (executor, planner, reconciler, ...)")
+	spawnCmd.Flags().StringP("archetype", "a", "", "Agent archetype (executor, planner, ...) or 'select' for interactive menu")
 
 	// Run flags
 	runCmd.Flags().Bool("once", false, "Run one task and stop")

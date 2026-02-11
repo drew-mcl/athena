@@ -282,7 +282,15 @@ ath disable --agents # Remove hooks AND archetypes
 
 ### Usage Examples
 
-```
+```bash
+# Spawn with interactive archetype selector
+ath spawn -a select     # Interactive menu of all archetypes
+ath spawn -a ?          # Alternative syntax
+
+# Spawn with specific archetype
+ath spawn -a planner         # Use planner archetype
+ath spawn -a code-reviewer   # Use code-reviewer archetype
+
 # Claude uses archetypes automatically based on descriptions
 "Review this code for security issues"  # Uses security-reviewer
 "Add test coverage for this module"     # Uses test-coverer
@@ -292,5 +300,10 @@ ath disable --agents # Remove hooks AND archetypes
 "Use the code-reviewer subagent to analyze this PR"
 "Have the performance-optimizer look at this slow function"
 ```
+
+**Interactive Selector**: When you use `-a select` or `-a ?`, Athena displays an interactive menu showing:
+- All built-in archetypes (orchestrator, executor, planner, etc.)
+- All installed archetypes from `.claude/agents/`
+- Description and source for each option
 
 Archetypes integrate seamlessly with the orchestrator workflow - the orchestrator can spawn specialized subagents for specific tasks.
