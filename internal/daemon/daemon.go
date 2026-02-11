@@ -75,6 +75,12 @@ type Daemon struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// Auto-run loop state
+	autoRun *autoRunState
+
+	// Rate limit state
+	rateLimit *rateLimitState
+
 	// Shutdown coordination
 	shutdownOnce sync.Once
 	draining     bool
@@ -138,6 +144,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		agents:         make(map[string]*AgentProcess),
 		jobQueue:       make(chan string, 100),
 		gitStatusCache: make(map[string]gitStatusCacheEntry),
+		rateLimit:      newRateLimitState(),
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -147,6 +154,10 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.spawner.SetStreamEmitter(func(eventType, agentID, worktreePath string, payload any) {
 		d.emitAgentStreamEvent(eventType, agentID, worktreePath, payload)
 	})
+
+	// Wire up rate limit detection from spawner to daemon
+	d.spawner.SetRateLimitCallback(d.onRateLimitDetected)
+	d.spawner.SetRateLimitChecker(d.rateLimit.isRateLimited)
 
 	// Initialize queue sync (watches PRs and auto-pops merged items)
 	d.queueSync = NewQueueSync(st, d.plugins, d.server)
@@ -504,6 +515,10 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_ready_items", d.handleGetReadyItems)
 	// Merge Queue
 	d.registerMergeQueueHandlers()
+	// Auto-run loop
+	d.registerAutoRunHandlers()
+	// Rate limit status
+	d.server.Handle("rate_limit_status", d.handleRateLimitStatus)
 }
 
 func (d *Daemon) handleListWorktrees(params json.RawMessage) (any, error) {

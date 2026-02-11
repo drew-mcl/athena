@@ -167,17 +167,51 @@ func TestBuildSpawnPrompt(t *testing.T) {
 		if !strings.Contains(prompt, "## When Done") {
 			t.Error("expected prompt to contain completion section")
 		}
-		if !strings.Contains(prompt, "/commit-push-pr") {
-			t.Error("expected prompt to mention /commit-push-pr skill")
+		if !strings.Contains(prompt, "Create a PR") {
+			t.Error("expected prompt to mention creating a PR")
 		}
-		if !strings.Contains(prompt, "ath queue add") {
-			t.Error("expected prompt to mention ath queue add")
+		if !strings.Contains(prompt, "already in the merge queue") {
+			t.Error("expected prompt to mention auto-queue")
 		}
-		if !strings.Contains(prompt, "push to remote") {
-			t.Error("expected prompt to mention pushing to remote")
+		if !strings.Contains(prompt, "Commit and push") {
+			t.Error("expected prompt to mention committing and pushing")
 		}
-		if !strings.Contains(prompt, "Mark this feature work item as complete") {
-			t.Error("expected prompt to mention marking feature complete")
+		if !strings.Contains(prompt, "Verify the PR") {
+			t.Error("expected prompt to mention verifying the PR")
+		}
+	})
+
+	t.Run("BareTaskNoWhenDone", func(t *testing.T) {
+		wi := &store.WorkItem{
+			ID:       "wi-m3n4",
+			Project:  "myproject",
+			ItemType: store.WorkItemTypeTask,
+			Subject:  "Interactive session",
+		}
+
+		prompt := d.buildSpawnPrompt(wi, nil, "", "wi-m3n4", false)
+
+		// Task work items should NOT contain the When Done section
+		if strings.Contains(prompt, "## When Done") {
+			t.Error("expected bare task prompt to NOT contain When Done section")
+		}
+		if strings.Contains(prompt, "/commit-push-pr") {
+			t.Error("expected bare task prompt to NOT mention /commit-push-pr")
+		}
+	})
+
+	t.Run("GoalHasWhenDone", func(t *testing.T) {
+		wi := &store.WorkItem{
+			ID:       "wi-o5p6",
+			Project:  "myproject",
+			ItemType: store.WorkItemTypeGoal,
+			Subject:  "Build auth system",
+		}
+
+		prompt := d.buildSpawnPrompt(wi, nil, "", "wi-o5p6", false)
+
+		if !strings.Contains(prompt, "## When Done") {
+			t.Error("expected goal prompt to contain When Done section")
 		}
 	})
 }

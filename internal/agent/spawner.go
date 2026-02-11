@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/drewfead/athena/internal/config"
 	agentctx "github.com/drewfead/athena/internal/context"
@@ -27,6 +28,12 @@ import (
 // The callback receives event type, agent ID, worktree path, and payload.
 type StreamEventEmitter func(eventType, agentID, worktreePath string, payload any)
 
+// RateLimitCallback is called when an agent encounters a rate limit error.
+type RateLimitCallback func(resetAt time.Time, reason, agentID string)
+
+// RateLimitChecker returns whether the daemon is currently rate limited.
+type RateLimitChecker func() (bool, time.Time)
+
 // Spawner manages the creation and tracking of Claude Code agent processes.
 type Spawner struct {
 	config     *config.Config
@@ -38,6 +45,10 @@ type Spawner struct {
 	processes     map[string]*ManagedProcess
 	mu            sync.RWMutex
 	streamEmitter StreamEventEmitter
+
+	// Rate limit integration
+	onRateLimit  RateLimitCallback
+	isRateLimited RateLimitChecker
 }
 
 // ManagedProcess wraps a Claude process with management metadata.
@@ -80,6 +91,16 @@ func (s *Spawner) ContextManager() *agentctx.Manager {
 // SetStreamEmitter sets the callback for emitting stream events.
 func (s *Spawner) SetStreamEmitter(emitter StreamEventEmitter) {
 	s.streamEmitter = emitter
+}
+
+// SetRateLimitCallback sets the callback for rate limit detection.
+func (s *Spawner) SetRateLimitCallback(cb RateLimitCallback) {
+	s.onRateLimit = cb
+}
+
+// SetRateLimitChecker sets the function to check if the daemon is rate limited.
+func (s *Spawner) SetRateLimitChecker(checker RateLimitChecker) {
+	s.isRateLimited = checker
 }
 
 // SpawnSpec defines how to spawn an agent.
@@ -606,6 +627,20 @@ func (s *Spawner) processEvent(mp *ManagedProcess, event runner.Event) {
 		}
 	}
 
+	// Check for rate limit errors
+	if s.onRateLimit != nil {
+		errMsg := ""
+		if msg.Type == data.TypeError && msg.Error != nil {
+			errMsg = msg.Error.Message
+		} else if event.Type == "result" && event.Subtype == "error" {
+			errMsg = event.Content
+		}
+		if errMsg != "" && isRateLimitError(errMsg) {
+			resetAt := parseResetTime(errMsg)
+			s.onRateLimit(resetAt, errMsg, mp.AgentID)
+		}
+	}
+
 	// Update heartbeat
 	s.store.UpdateHeartbeat(mp.AgentID)
 }
@@ -673,6 +708,18 @@ func (s *Spawner) handleExit(mp *ManagedProcess) {
 		// Check for automatic workflow: auto-publish PR on executor completion
 		s.maybeAutoPublishPR(agent)
 	} else {
+		// Check if this crash was due to a rate limit
+		if s.isRateLimited != nil {
+			if limited, _ := s.isRateLimited(); limited {
+				s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusRateLimited)
+				logging.Warn("agent rate-limited, will resume after reset",
+					"agent_id", mp.AgentID, "exit_code", exitCode)
+				crashPayload := fmt.Sprintf(`{"type":"rate_limited","exit_code":%d,"message":"Agent paused due to API rate limit"}`, exitCode)
+				s.store.LogAgentEvent(mp.AgentID, "rate_limited", crashPayload)
+				return
+			}
+		}
+
 		s.store.UpdateAgentStatus(mp.AgentID, store.AgentStatusCrashed)
 		logging.Warn("agent crashed", "agent_id", mp.AgentID, "exit_code", exitCode)
 		// Log crash event for visibility
@@ -956,6 +1003,68 @@ func (s *Spawner) trackFileAccess(mp *ManagedProcess, input json.RawMessage) {
 	if err := s.store.RecordFileAccess(mp.AgentID, mp.SessionID, readInput.FilePath, estimatedTokens); err != nil {
 		logging.Debug("failed to record file access", "error", err, "file", readInput.FilePath)
 	}
+}
+
+// Rate limit detection helpers
+
+var rateLimitPatterns = []string{
+	"429",
+	"rate limit",
+	"rate-limit",
+	"rate_limit",
+	"you've hit your limit",
+	"overloaded",
+}
+
+// isRateLimitError checks if an error message indicates a rate limit.
+func isRateLimitError(message string) bool {
+	lower := strings.ToLower(message)
+	for _, pattern := range rateLimitPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseResetTime attempts to extract a reset time from an error message.
+// Falls back to 60 seconds from now if no time can be parsed.
+func parseResetTime(message string) time.Time {
+	now := time.Now()
+	fallback := now.Add(60 * time.Second)
+
+	// Try "retry after N seconds"
+	for _, word := range strings.Fields(message) {
+		if len(word) > 0 && word[0] >= '0' && word[0] <= '9' {
+			// Check if preceded by "after" (rough heuristic)
+			lower := strings.ToLower(message)
+			idx := strings.Index(lower, "retry after")
+			if idx >= 0 {
+				// Extract number after "retry after"
+				after := lower[idx+len("retry after"):]
+				after = strings.TrimSpace(after)
+				var secs int
+				if _, err := fmt.Sscanf(after, "%d", &secs); err == nil && secs > 0 {
+					return now.Add(time.Duration(secs) * time.Second)
+				}
+			}
+			break
+		}
+	}
+
+	// Try RFC 3339 timestamp embedded in message
+	// Look for pattern like 2024-01-01T00:00:00Z
+	for _, word := range strings.Fields(message) {
+		if len(word) >= 20 && (word[4] == '-' && word[10] == 'T') {
+			// Clean trailing punctuation
+			word = strings.TrimRight(word, ".,;:\"')")
+			if t, err := time.Parse(time.RFC3339, word); err == nil && t.After(now) {
+				return t
+			}
+		}
+	}
+
+	return fallback
 }
 
 // isToolResultError checks if a tool result content indicates an error.

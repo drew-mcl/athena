@@ -43,7 +43,7 @@ Shorthand Commands:
   g  → goal      t  → tsk       tr → tree
   f  → feat      w  → wt        q  → queue
   a  → agent     i  → interactive
-  p  → plugin
+  p  → plugin    tidy → repo maintenance
 
 Display:
   Shape colors indicate item type (blue/green/yellow)
@@ -74,6 +74,18 @@ var goalCmd = &cobra.Command{
 	Use:     "goal",
 	Aliases: []string{"g"},
 	Short:   "Manage goals (strategic objectives)",
+	Long: `Manage goals - top-level strategic objectives that organize features.
+
+Goals sit at the top of the work item hierarchy (Goal > Feature > Task).
+They don't have worktrees themselves; instead, features under them do.
+
+With no subcommand: list all goals in the current project.
+
+Examples:
+  ath goal                          # List all goals
+  ath goal new "Auth system"        # Create a new goal
+  ath goal new "API v2" -p myproj   # Create goal in specific project
+  ath goal show wi-a3f8             # Show goal and its children`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGoalList()
 	},
@@ -82,7 +94,15 @@ var goalCmd = &cobra.Command{
 var goalNewCmd = &cobra.Command{
 	Use:   "new <subject>",
 	Short: "Create a new goal",
-	Args:  cobra.ExactArgs(1),
+	Long: `Create a new goal (strategic objective).
+
+The subject should be a short description of the objective.
+Use -d for a longer description and -p to specify a project.
+
+Examples:
+  ath goal new "Auth system"
+  ath goal new "API v2" -d "Complete REST API redesign" -p myproj`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		description, _ := cmd.Flags().GetString("description")
 		project, _ := cmd.Flags().GetString("project")
@@ -93,7 +113,13 @@ var goalNewCmd = &cobra.Command{
 var goalShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show goal details and children",
-	Args:  cobra.ExactArgs(1),
+	Long: `Show a goal and its full subtree (features and tasks).
+
+The ID should be a work item ID (e.g., wi-a3f8).
+
+Examples:
+  ath goal show wi-a3f8`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGoalShow(args[0])
 	},
@@ -104,18 +130,45 @@ var featCmd = &cobra.Command{
 	Use:     "feat",
 	Aliases: []string{"f"},
 	Short:   "Manage features (PR-sized work with worktree)",
+	Long: `Manage features - PR-sized units of work, optionally nested under goals.
+
+Each feature gets its own worktree and can be spawned on by an agent.
+
+With no subcommand: list all features in the current project.
+
+Examples:
+  ath feat                                # List all features
+  ath feat new "OAuth flow"               # Create standalone feature
+  ath feat new wi-a3f8 "OAuth flow"       # Create feature under goal
+  ath feat new "Login" -t ENG-42          # Create with ticket link`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runFeatList()
 	},
 }
 
 var featNewCmd = &cobra.Command{
-	Use:   "new <parent-id> <subject>",
-	Short: "Create a new feature under a goal",
-	Args:  cobra.MinimumNArgs(2),
+	Use:   "new [parent-id] <subject>",
+	Short: "Create a new feature, optionally under a goal",
+	Long: `Create a new feature, optionally nested under a goal.
+
+With one arg:  standalone feature (no parent goal)
+With two args: feature under a goal (parent-id + subject)
+
+Use -t to link an external ticket (Linear, Jira) and -d for a description.
+
+Examples:
+  ath feat new "OAuth flow"                         # Standalone feature
+  ath feat new wi-a3f8 "OAuth flow"                 # Under a goal
+  ath feat new "Login page" -t ENG-123 -d "OAuth2"  # With ticket link`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		parentID := args[0]
-		subject := args[1]
+		var parentID, subject string
+		if len(args) == 2 {
+			parentID = args[0]
+			subject = args[1]
+		} else {
+			subject = args[0]
+		}
 		ticket, _ := cmd.Flags().GetString("ticket")
 		description, _ := cmd.Flags().GetString("description")
 		return runFeatNew(parentID, subject, ticket, description)
@@ -168,6 +221,13 @@ Examples:
 var tskReadyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Show unblocked tasks ready to work on",
+	Long: `Show tasks that are unblocked and ready to be worked on.
+
+These are tasks with no pending dependencies - they can be picked up
+immediately by an agent or worked on manually.
+
+Examples:
+  ath tsk ready`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTskReady()
 	},
@@ -201,6 +261,16 @@ var wtCmd = &cobra.Command{
 	Use:     "wt",
 	Aliases: []string{"w"},
 	Short:   "Manage worktrees",
+	Long: `Manage git worktrees tracked by Athena.
+
+Shows worktrees for the current project with branch info, ahead/behind
+counts, and merge queue position.
+
+With no subcommand: list all worktrees.
+
+Examples:
+  ath wt                # List worktrees with status
+  ath wt prune          # Clean up merged/orphaned worktrees`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runWtList()
 	},
@@ -299,6 +369,11 @@ whose base commit doesn't match their predecessor's head.`,
 var queueRmCmd = &cobra.Command{
 	Use:   "rm [worktree-path]",
 	Short: "Remove worktree from the queue",
+	Long: `Remove a worktree from the merge queue. Uses current directory if no path provided.
+
+Examples:
+  ath queue rm                    # Remove current worktree from queue
+  ath queue rm ../athena-feature  # Remove specific worktree`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) > 0 {
@@ -312,6 +387,14 @@ var queueGraphCmd = &cobra.Command{
 	Use:     "graph",
 	Aliases: []string{"g"},
 	Short:   "Visual pipeline view of the merge queue",
+	Long: `Show a visual graph of the merge queue pipeline.
+
+Displays the dependency chain from main through each queued feature,
+including status indicators for diverged or conflicting items.
+
+Examples:
+  ath queue graph                 # Graph for current project
+  ath queue graph -p myproj       # Graph for specific project`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		return runQueueGraph(project)
@@ -433,6 +516,18 @@ func init() {
 	spawnCmd.Flags().Bool("headless", false, "Run agent headless in background")
 	spawnCmd.Flags().BoolP("worktree", "w", false, "Create a dedicated worktree")
 	spawnCmd.Flags().BoolP("parallel", "p", false, "Enable parallel task-worker mode")
+	spawnCmd.Flags().StringP("archetype", "a", "", "Agent archetype (executor, planner, reconciler, ...)")
+
+	// Run flags
+	runCmd.Flags().Bool("once", false, "Run one task and stop")
+	runCmd.Flags().StringP("project", "p", "", "Project name")
+	runCmd.AddCommand(runStatusCmd, runStopCmd)
+
+	// Tidy flags
+	tidyCmd.Flags().Bool("headless", false, "Run reconciler in background")
+
+	// Map flags
+	mapCmd.Flags().Bool("headless", false, "Run mapper in background")
 
 	// Queue flags
 	queueCmd.Flags().StringP("project", "p", "", "Filter by project")
@@ -447,7 +542,7 @@ func init() {
 	// Plugin commands
 	pluginCmd.AddCommand(pluginEnableCmd, pluginDisableCmd, pluginVCSCmd, pluginPMCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd)
 }
 
 // Spawn command - unified agent launch
@@ -483,6 +578,7 @@ Examples:
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		featureID, _ := cmd.Flags().GetString("feature")
+		archetype, _ := cmd.Flags().GetString("archetype")
 		retrieve, _ := cmd.Flags().GetBool("retrieve")
 		headless, _ := cmd.Flags().GetBool("headless")
 		worktree, _ := cmd.Flags().GetBool("worktree")
@@ -493,7 +589,7 @@ Examples:
 			id = args[0]
 		}
 
-		return runSpawn(featureID, id, retrieve, headless, worktree, parallel)
+		return runSpawn(featureID, id, archetype, retrieve, headless, worktree, parallel)
 	},
 }
 
@@ -502,7 +598,118 @@ var interactiveCmd = &cobra.Command{
 	Use:     "i",
 	Aliases: []string{"interactive"},
 	Short:   "Start an interactive agent in the current directory",
+	Long: `Start an interactive Claude Code session in the current directory.
+
+This is a shorthand for 'ath spawn' with no arguments. It launches
+Claude Code in your terminal with Athena context (work items, tasks).
+
+Examples:
+  ath i                           # Start interactive session
+  ath interactive                 # Same thing, long form`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSpawn("", "", false, false, false, false)
+		return runSpawn("", "", "", false, false, false, false)
+	},
+}
+
+// Map command - run codebase mapper
+var mapCmd = &cobra.Command{
+	Use:   "map",
+	Short: "Update codebase map (explore and document project structure)",
+	Long: `Run a mapper agent that explores the codebase and updates docs/CODEBASE_MAP.md.
+
+The mapper will:
+- Scan all directories and key files
+- Document package purposes and relationships
+- Identify key types, interfaces, and entry points
+- Update the codebase map with current information
+
+Examples:
+  ath map              # Interactive mapper
+  ath map --headless   # Run mapper in background`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		headless, _ := cmd.Flags().GetBool("headless")
+		return runMap(headless)
+	},
+}
+
+// Tidy command - run repo maintenance via reconciler archetype
+var tidyCmd = &cobra.Command{
+	Use:   "tidy",
+	Short: "Run repo maintenance (merge PRs, prune worktrees, reconcile queue)",
+	Long: `Run automated repository maintenance using a reconciler agent.
+
+The reconciler will:
+- Survey branches and open PRs
+- Merge approved, CI-passing PRs
+- Close stale PRs (14+ days inactive, failing CI)
+- Prune merged/orphaned worktrees and branches
+- Fix simple CI issues (formatting, go mod tidy)
+- Reconcile the merge queue
+
+Examples:
+  ath tidy              # Interactive reconciler
+  ath tidy --headless   # Run reconciler in background`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		headless, _ := cmd.Flags().GetBool("headless")
+		return runTidy(headless)
+	},
+}
+
+// Run command - auto-run loop that picks tasks and spawns agents
+var runCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Auto-run loop: pick tasks, spawn agents, repeat",
+	Long: `Start the auto-run loop that automatically picks ready tasks and spawns agents.
+
+The loop:
+1. Finds the next ready work item (features first, then tasks)
+2. Spawns a headless agent to work on it
+3. Waits for the agent to complete
+4. Marks the item done (or failed)
+5. Picks the next item and repeats
+
+Use --once to run just one task. Use 'ath run stop' to halt the loop.
+
+Examples:
+  ath run                # Start auto-run loop
+  ath run --once         # Run one task and stop
+  ath run status         # Check auto-run status
+  ath run stop           # Stop the loop`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		once, _ := cmd.Flags().GetBool("once")
+		project, _ := cmd.Flags().GetString("project")
+		return runAutoRun(project, once)
+	},
+}
+
+// Rate limit command
+var rateCmd = &cobra.Command{
+	Use:   "rate",
+	Short: "Show API rate limit status",
+	Long: `Show the current API rate limit status.
+
+When agents share an API key, hitting a rate limit pauses all agents
+until the limit resets. This command shows whether a rate limit is active.
+
+Examples:
+  ath rate                    # Show current rate limit status`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runRateStatus()
+	},
+}
+
+var runStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show auto-run status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runAutoRunStatus()
+	},
+}
+
+var runStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the auto-run loop",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runAutoRunStop()
 	},
 }

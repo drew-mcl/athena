@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/drewfead/athena/internal/agent"
@@ -315,11 +317,20 @@ func (d *Daemon) agentToInfo(a *store.Agent) *control.AgentInfo {
 		info.LinearIssueID = *a.LinearIssueID
 	}
 
-	// Enrich plan status for planner agents
-	if a.Archetype == "planner" {
-		if plan, err := d.store.GetPlan(a.WorktreePath); err == nil && plan != nil {
-			info.PlanStatus = string(plan.Status)
+	// Enrich plan info - check for any agent, not just planners
+	if plan, err := d.store.GetPlan(a.WorktreePath); err == nil && plan != nil {
+		info.PlanStatus = string(plan.Status)
+	}
+	// Also check Claude's native plan file
+	if a.ClaudeSessionID != "" {
+		if planPath := findClaudePlanPath(a.WorktreePath, a.ClaudeSessionID); planPath != "" {
+			info.PlanPath = planPath
 		}
+	}
+
+	// Enrich task list ID from work item association
+	if wi, err := d.store.GetWorkItemByWorktree(a.WorktreePath); err == nil && wi != nil {
+		info.TaskListID = wi.ID
 	}
 
 	// Compute metrics for active agents
@@ -471,4 +482,28 @@ func (d *Daemon) handleSpawnChat(params json.RawMessage) (any, error) {
 		Command:   cmd,
 		WorkDir:   req.WorktreePath,
 	}, nil
+}
+
+// findClaudePlanPath checks if a Claude plan file exists for the given worktree session.
+// Returns the plan file path if found, empty string otherwise.
+func findClaudePlanPath(worktreePath, sessionID string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	// Claude session files: ~/.claude/projects/<escaped-path>/<sessionID>.jsonl
+	escapedPath := strings.ReplaceAll(worktreePath, "/", "-")
+	sessionFile := filepath.Join(homeDir, ".claude", "projects", escapedPath, sessionID+".jsonl")
+
+	slug, err := extractSessionSlug(sessionFile)
+	if err != nil || slug == "" {
+		return ""
+	}
+
+	planPath := filepath.Join(homeDir, ".claude", "plans", slug+".md")
+	if _, err := os.Stat(planPath); err != nil {
+		return ""
+	}
+	return planPath
 }
