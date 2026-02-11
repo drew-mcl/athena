@@ -239,3 +239,68 @@ func removeAthenaHook(hooks map[string][]hookMatcher, event string) {
 func isAthenaHook(command string) bool {
 	return strings.HasPrefix(command, "ath hooks ")
 }
+
+// AgentsPath returns the path to .claude/agents/ in the given project root.
+func AgentsPath(projectRoot string) string {
+	return filepath.Join(projectRoot, ".claude", "agents")
+}
+
+// InstallAgents writes Athena agent archetypes to .claude/agents/.
+// Skips archetypes that already exist to preserve user customizations.
+// Returns a list of installed archetype names.
+func InstallAgents(projectRoot string) ([]string, error) {
+	agentsDir := AgentsPath(projectRoot)
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create agents directory: %w", err)
+	}
+
+	archetypes := AgentArchetypes()
+	var installed []string
+
+	for filename, content := range archetypes {
+		path := filepath.Join(agentsDir, filename)
+
+		// Skip if file already exists (preserve user customizations)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+
+		// Write archetype file
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return installed, fmt.Errorf("write %s: %w", filename, err)
+		}
+
+		installed = append(installed, strings.TrimSuffix(filename, ".md"))
+	}
+
+	return installed, nil
+}
+
+// RemoveAgents removes Athena-installed agent archetypes from .claude/agents/.
+// Only removes archetypes that match Athena's known list.
+// Returns a list of removed archetype names.
+func RemoveAgents(projectRoot string) ([]string, error) {
+	agentsDir := AgentsPath(projectRoot)
+	archetypes := AgentArchetypes()
+	var removed []string
+
+	for filename := range archetypes {
+		path := filepath.Join(agentsDir, filename)
+
+		// Check if file exists
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		}
+
+		// Remove the file
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("remove %s: %w", filename, err)
+		}
+
+		removed = append(removed, strings.TrimSuffix(filename, ".md"))
+	}
+
+	return removed, nil
+}

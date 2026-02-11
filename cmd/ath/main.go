@@ -533,9 +533,23 @@ Examples:
 var disableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Remove Athena lifecycle hooks from Claude Code",
+	Long: `Remove Athena hooks from .claude/settings.json for the current project.
+
+By default, only hooks are removed. Agent archetypes are preserved.
+
+Use --agents to also remove Athena-installed agent archetypes.
+
+Examples:
+  ath disable          # Remove hooks only (preserve archetypes)
+  ath disable --agents # Remove hooks AND archetypes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDisable()
+		removeAgents, _ := cmd.Flags().GetBool("agents")
+		return runDisable(removeAgents)
 	},
+}
+
+func init() {
+	disableCmd.Flags().Bool("agents", false, "Also remove Athena agent archetypes")
 }
 
 // Hooks command (hidden) - internal plumbing called by Claude Code
