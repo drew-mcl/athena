@@ -709,6 +709,10 @@ func printStatusBox(inProgress, ready []*control.WorkItemInfo) {
 				white, item.Subject, reset)
 		}
 	}
+
+	// Add helpful hints
+	fmt.Println()
+	fmt.Printf("%sRun 'ath --help' to see all commands%s\n", dim, reset)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

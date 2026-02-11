@@ -40,10 +40,9 @@ Work Item Hierarchy:
   Task     ○  - Individual work items                   [yellow]
 
 Shorthand Commands:
-  g  → goal      t  → tsk       tr → tree
-  f  → feat      w  → wt        q  → queue
+  g  → goal      t  → tsk        tr → tree
+  f  → feat      w  → wt         q  → queue
   a  → agent     i  → interactive
-  p  → plugin    tidy → repo maintenance
 
 Display:
   Shape colors indicate item type (blue/green/yellow)
@@ -51,19 +50,17 @@ Display:
   Dimmed/gray indicates completed items
   IDs shown in magenta, text in white
 
-Examples:
-  ath                               # Status summary
+Common Commands:
+  ath                               # Status summary (active + ready work)
   ath i                             # Interactive agent in current dir
-  ath spawn -f wi-a3f8.1            # Spawn agent on feature (primary)
-  ath spawn -f wi-a3f8.1 --headless # Fire-and-forget on feature
-  ath spawn ENG-123                 # Spawn with ticket context
-  ath agent                         # List running agents
-  ath agent <id>                    # Show agent detail + session ID
+  ath spawn -f wi-a3f8.1            # Spawn agent on feature (creates worktree)
   ath tr                            # Full work item tree
   ath g new "Auth system"           # Create goal
   ath f new wi-a3f8 "OAuth"         # Create feature under goal
   ath t "Update readme"             # Quick task (inbox)
-  ath q                             # Show merge queue`,
+  ath q                             # Show merge queue
+  ath agent                         # List running agents
+  ath tidy                          # Run repo maintenance`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatus()
 	},
