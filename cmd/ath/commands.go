@@ -1221,6 +1221,55 @@ func runRateStatus() error {
 }
 
 // ============================================================================
+// Session Commands
+// ============================================================================
+
+func runSessionShow(agentID string) error {
+	client, err := getClient()
+	if err != nil {
+		return fmt.Errorf("cannot connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Support prefix matching - list all and find match
+	agents, err := client.ListAgents()
+	if err != nil {
+		return err
+	}
+
+	var match *control.AgentInfo
+	for _, a := range agents {
+		if a.ID == agentID || strings.HasPrefix(a.ID, agentID) {
+			if match != nil {
+				return fmt.Errorf("ambiguous agent ID prefix %q: matches both %s and %s\nHint: use a longer prefix to disambiguate", agentID, match.ID[:8], a.ID[:8])
+			}
+			match = a
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("agent not found: %s\nHint: use 'ath agent' to list all agents", agentID)
+	}
+
+	if match.ClaudeSessionID == "" {
+		return fmt.Errorf("agent %s has no session ID", match.ID[:8])
+	}
+
+	// Print the session ID and jump command
+	fmt.Printf("%s%s%s\n", yellow, match.ClaudeSessionID, reset)
+	fmt.Printf("\n%sJump into this session:%s\n", dim, reset)
+	fmt.Printf("  claude --session-id %s\n", match.ClaudeSessionID)
+
+	// Show worktree context if available
+	if match.WorktreePath != "" {
+		fmt.Printf("\n%sWorktree:%s %s%s%s\n", dim, reset, cyan, match.WorktreePath, reset)
+		fmt.Printf("%sChange directory first if needed:%s\n", dim, reset)
+		fmt.Printf("  cd %s\n", match.WorktreePath)
+	}
+
+	return nil
+}
+
+// ============================================================================
 // Plugin Commands
 // ============================================================================
 

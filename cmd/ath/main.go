@@ -486,6 +486,29 @@ Examples:
 	},
 }
 
+// Session command
+var sessionCmd = &cobra.Command{
+	Use:   "session <agent-id>",
+	Short: "Extract session ID from an agent",
+	Long: `Extract the Claude Code session ID from an agent.
+
+This allows you to jump into an existing agent session interactively
+using the --session-id flag.
+
+The agent-id can be a full ID or a prefix that uniquely identifies an agent.
+
+Examples:
+  ath session a3f8b2c1         # Get session ID for agent
+  ath session a3f8             # Prefix match works too
+
+Then use the session ID to jump in:
+  claude --session-id <uuid>`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSessionShow(args[0])
+	},
+}
+
 // Enable/Disable hooks
 var enableCmd = &cobra.Command{
 	Use:   "enable",
@@ -606,7 +629,7 @@ func init() {
 	// Hooks subcommands (hidden, internal plumbing)
 	hooksCmd.AddCommand(hooksSessionStartCmd, hooksStopCmd, hooksSessionEndCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd, enableCmd, disableCmd, hooksCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, sessionCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd, enableCmd, disableCmd, hooksCmd)
 }
 
 // Spawn command - unified agent launch
