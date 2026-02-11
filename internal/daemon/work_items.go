@@ -275,15 +275,18 @@ func (d *Daemon) handleGetReadyItems(params json.RawMessage) (any, error) {
 
 func workItemToInfo(item *store.WorkItem) *control.WorkItemInfo {
 	info := &control.WorkItemInfo{
-		ID:          item.ID,
-		Project:     item.Project,
-		ItemType:    string(item.ItemType),
-		Subject:     item.Subject,
-		Description: item.Description,
-		Status:      string(item.Status),
-		Priority:    int(item.Priority),
-		CreatedAt:   item.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   item.UpdatedAt.Format(time.RFC3339),
+		ID:              item.ID,
+		Project:         item.Project,
+		ItemType:        string(item.ItemType),
+		Subject:         item.Subject,
+		Description:     item.Description,
+		Status:          string(item.Status),
+		Priority:        int(item.Priority),
+		PRChecksPassing: item.PRChecksPassing,
+		PRApproved:      item.PRApproved,
+		PRMergeable:     item.PRMergeable,
+		CreatedAt:       item.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       item.UpdatedAt.Format(time.RFC3339),
 	}
 
 	if item.ParentID != nil {
@@ -341,6 +344,55 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func (d *Daemon) handleUpdateWorkItemPRStatus(params json.RawMessage) (any, error) {
+	var req struct {
+		ID              string `json:"id"`
+		ChecksPassing   bool   `json:"checks_passing"`
+		Approved        bool   `json:"approved"`
+		Mergeable       bool   `json:"mergeable"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	if err := d.store.UpdateWorkItemPRStatus(req.ID, req.ChecksPassing, req.Approved, req.Mergeable); err != nil {
+		return nil, err
+	}
+
+	// Get updated item
+	item, err := d.store.GetWorkItem(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("work item not found: %s", req.ID)
+	}
+
+	// Broadcast event
+	d.server.Broadcast(control.Event{
+		Type:    "work_item_updated",
+		Payload: workItemToInfo(item),
+	})
+
+	return workItemToInfo(item), nil
+}
+
+func (d *Daemon) handleCheckFeatureComplete(params json.RawMessage) (any, error) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, err
+	}
+
+	complete, err := d.store.IsFeatureComplete(req.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]bool{"complete": complete}, nil
 }
 
 // Task sync watcher - syncs Claude Code tasks to work_items table

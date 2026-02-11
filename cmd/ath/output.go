@@ -626,19 +626,42 @@ func printTreeNode(item *control.WorkItemInfo, children map[string][]*control.Wo
 		ticketStr = fmt.Sprintf(" %s%s%s", yellow, item.TicketID, reset)
 	}
 
-	// Print: connector shape ID subject [progress] [ticket]
+	// Completion status for features
+	completionStr := ""
+	if item.ItemType == "feature" && item.PRURL != "" {
+		// Show PR status indicators
+		indicators := []string{}
+		if item.PRChecksPassing {
+			indicators = append(indicators, fmt.Sprintf("%s✓checks%s", green, reset))
+		} else {
+			indicators = append(indicators, fmt.Sprintf("%s✗checks%s", red, reset))
+		}
+		if item.PRApproved {
+			indicators = append(indicators, fmt.Sprintf("%s✓approved%s", green, reset))
+		}
+		if item.PRMergeable {
+			indicators = append(indicators, fmt.Sprintf("%s✓mergeable%s", green, reset))
+		} else {
+			indicators = append(indicators, fmt.Sprintf("%s✗conflicts%s", red, reset))
+		}
+		if len(indicators) > 0 {
+			completionStr = fmt.Sprintf(" %s[%s]%s", dim, strings.Join(indicators, " "), reset)
+		}
+	}
+
+	// Print: connector shape ID subject [progress] [ticket] [completion]
 	paddedID := padRight(item.ID, idWidth)
 	// Sanitize subject: replace newlines with spaces, collapse multiple spaces, truncate
 	subject := strings.ReplaceAll(item.Subject, "\n", " ")
 	subject = strings.ReplaceAll(subject, "\r", "")
 	subject = strings.Join(strings.Fields(subject), " ")
 	subject = truncate(subject, 80) // Limit width to prevent wrapping
-	fmt.Printf("%s%s%s%s%s%s %s%s%s %s%s%s%s%s%s\n",
+	fmt.Printf("%s%s%s%s%s%s %s%s%s %s%s%s%s%s%s%s\n",
 		gray, prefix, connector, reset,
 		shapeColor, shape, reset,
 		idStyle, paddedID, reset,
 		textStyle, subject, reset,
-		ticketStr, progressStr)
+		ticketStr, progressStr, completionStr)
 
 	// Children
 	childItems := children[item.ID]

@@ -1162,9 +1162,12 @@ type WorkItemInfo struct {
 	Priority    int    `json:"priority"`    // 0=critical, 1=high, 2=normal, 3=low
 
 	// Feature-specific
-	WorktreePath string `json:"worktree_path,omitempty"` // linked worktree
-	TicketID     string `json:"ticket_id,omitempty"`     // external ticket (ENG-123)
-	PRURL        string `json:"pr_url,omitempty"`        // PR URL if published
+	WorktreePath    string `json:"worktree_path,omitempty"` // linked worktree
+	TicketID        string `json:"ticket_id,omitempty"`     // external ticket (ENG-123)
+	PRURL           string `json:"pr_url,omitempty"`        // PR URL if published
+	PRChecksPassing bool   `json:"pr_checks_passing,omitempty"` // CI checks passing
+	PRApproved      bool   `json:"pr_approved,omitempty"`       // PR approved
+	PRMergeable     bool   `json:"pr_mergeable,omitempty"`      // Ready to merge
 
 	// Assignment
 	AgentID string `json:"agent_id,omitempty"` // current agent
@@ -1295,6 +1298,27 @@ func (c *Client) GetReadyItems(project string) ([]*WorkItemInfo, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+// UpdateWorkItemPRStatus updates the PR status fields for a work item.
+func (c *Client) UpdateWorkItemPRStatus(id string, checksPassing, approved, mergeable bool) (*WorkItemInfo, error) {
+	var item WorkItemInfo
+	err := c.callAndDecode("update_work_item_pr_status", map[string]any{
+		"id":              id,
+		"checks_passing":  checksPassing,
+		"approved":        approved,
+		"mergeable":       mergeable,
+	}, &item)
+	return &item, err
+}
+
+// CheckFeatureComplete checks if a feature is complete and ready to merge.
+func (c *Client) CheckFeatureComplete(id string) (bool, error) {
+	var result map[string]bool
+	if err := c.callAndDecode("check_feature_complete", map[string]string{"id": id}, &result); err != nil {
+		return false, err
+	}
+	return result["complete"], nil
 }
 
 // ============================================================================

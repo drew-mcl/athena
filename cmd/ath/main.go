@@ -177,6 +177,26 @@ Examples:
 }
 
 // Task commands
+var featStatusCmd = &cobra.Command{
+	Use:   "status <feature-id>",
+	Short: "Show completion status of a feature",
+	Long: `Show the completion status of a feature, including PR checks, approval, and mergeability.
+
+This command displays whether a feature is ready to merge based on:
+- All child tasks completed
+- PR created
+- CI checks passing
+- PR approved (if configured)
+- No merge conflicts
+
+Examples:
+  ath feat status wi-a3f8.1`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runFeatStatus(args[0])
+	},
+}
+
 var tskCmd = &cobra.Command{
 	Use:     "tsk [subject...]",
 	Aliases: []string{"t", "task"},
@@ -578,7 +598,7 @@ func init() {
 	// Feature flags
 	featNewCmd.Flags().StringP("ticket", "t", "", "External ticket ID (e.g., ENG-123)")
 	featNewCmd.Flags().StringP("description", "d", "", "Feature description")
-	featCmd.AddCommand(featNewCmd)
+	featCmd.AddCommand(featNewCmd, featStatusCmd)
 
 	// Task flags
 	tskCmd.Flags().StringP("feature", "f", "", "Parent feature ID")
