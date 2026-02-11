@@ -86,6 +86,34 @@ func worktreeID(wt *control.WorktreeInfo, maxWidth int) string {
 	return truncate(id, maxWidth)
 }
 
+// worktreeStatusPlain builds a plain status string without ANSI codes.
+func worktreeStatusPlain(wt *control.WorktreeInfo, ab AheadBehind, hasAB bool, stats *[4]int) string {
+	var parts []string
+
+	if hasAB {
+		if ab.Behind > 0 {
+			parts = append(parts, fmt.Sprintf("↓%d", ab.Behind))
+		}
+		if ab.Ahead > 0 {
+			parts = append(parts, fmt.Sprintf("↑%d", ab.Ahead))
+		}
+	}
+
+	switch {
+	case wt.Status == "" || wt.Status == "clean":
+		parts = append(parts, checkMark)
+		stats[0]++ // clean
+	case strings.Contains(wt.Status, "untracked"):
+		parts = append(parts, "?")
+		stats[1]++ // untracked
+	default:
+		parts = append(parts, bullet)
+		stats[2]++ // changes
+	}
+
+	return strings.Join(parts, " ")
+}
+
 // worktreeStatus builds a status string with ahead/behind and git status indicators.
 func worktreeStatus(wt *control.WorktreeInfo, ab AheadBehind, hasAB bool, stats *[4]int) string {
 	var parts []string
@@ -150,23 +178,46 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 	var rows [][]string
 	for _, wt := range filtered {
 		id := worktreeID(wt, 14)
-		branch := truncate(wt.Branch, 45)
+		branch := truncate(wt.Branch, 30)
 
 		queueStr := ""
 		if pos, ok := queuePositions[wt.Path]; ok {
-			queueStr = cyan + fmt.Sprintf("#%d", pos) + reset
+			queueStr = fmt.Sprintf("#%d", pos)
 			stats[3]++
 		}
 
 		ab, hasAB := aheadBehind[wt.Path]
-		status := worktreeStatus(wt, ab, hasAB, &stats)
+		status := worktreeStatusPlain(wt, ab, hasAB, &stats)
 
-		rows = append(rows, []string{queueStr, dim + magenta + id + reset, cyan + branch + reset, status})
+		rows = append(rows, []string{queueStr, id, branch, status})
 	}
 
+	// Define column styles
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	cellStyle := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
-	headerStyle := cellStyle.Foreground(lipgloss.Color("240"))
+	headerStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(lipgloss.Color("240"))
+
+	queueStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(lipgloss.Color("36")).
+		Align(lipgloss.Right)
+
+	idStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(lipgloss.Color("35"))
+
+	branchStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(lipgloss.Color("36"))
+
+	statusStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1)
 
 	t := table.New().
 		Headers("Q", "ID", "BRANCH", "STATUS").
@@ -177,7 +228,18 @@ func printWorktreeTableWithQueue(worktrees []*control.WorktreeInfo, queuePositio
 			if row == table.HeaderRow {
 				return headerStyle
 			}
-			return cellStyle
+			switch col {
+			case 0:
+				return queueStyle
+			case 1:
+				return idStyle
+			case 2:
+				return branchStyle
+			case 3:
+				return statusStyle
+			default:
+				return lipgloss.NewStyle()
+			}
 		})
 
 	for _, row := range rows {
