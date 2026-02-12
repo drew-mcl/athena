@@ -243,7 +243,7 @@ func DefaultConfig() *Config {
 			MaxRestarts:       3,
 			RestartBackoff:    BackoffConfig{Initial: 5 * time.Second, Max: 5 * time.Minute, Multiplier: 2.0},
 			Provider:          "claude",
-			Model:             "sonnet",
+			Model:             "opus",
 			Budget:            BudgetConfig{MaxPerAgent: 5.0, MaxPerDay: 50.0, WarnThreshold: 0.8},
 			ContextRetention:  7 * 24 * time.Hour,
 			MaxContextTokens:  100000,
