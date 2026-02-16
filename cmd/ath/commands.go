@@ -97,11 +97,11 @@ func selectArchetype() (string, error) {
 		if opt.source == "built-in" {
 			source = dim + opt.source + reset
 		}
-		fmt.Printf("  %s%2d%s. %s%-20s%s %s[%s]%s\n",
+		fmt.Printf("  %s%2d%s. %s%-20s%s %s [%s]\n",
 			cyan, i+1, reset,
 			bold, opt.name, reset,
 			opt.description,
-			gray, source, reset)
+			source)
 	}
 	fmt.Printf("\n%sEnter number (or 0 to cancel):%s ", dim, reset)
 
