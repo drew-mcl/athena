@@ -348,10 +348,10 @@ func nilIfEmpty(s string) *string {
 
 func (d *Daemon) handleUpdateWorkItemPRStatus(params json.RawMessage) (any, error) {
 	var req struct {
-		ID              string `json:"id"`
-		ChecksPassing   bool   `json:"checks_passing"`
-		Approved        bool   `json:"approved"`
-		Mergeable       bool   `json:"mergeable"`
+		ID            string `json:"id"`
+		ChecksPassing bool   `json:"checks_passing"`
+		Approved      bool   `json:"approved"`
+		Mergeable     bool   `json:"mergeable"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err

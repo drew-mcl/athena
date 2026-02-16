@@ -985,12 +985,12 @@ type WorkItem struct {
 	Status      WorkItemStatus
 
 	// Feature-specific fields
-	WorktreePath     *string // linked worktree (features only)
-	TicketID         *string // external ticket ID (e.g., ENG-123)
-	PRURL            *string // PR URL if published
-	PRChecksPassing  bool    // CI checks passing on PR
-	PRApproved       bool    // PR has required approvals
-	PRMergeable      bool    // PR ready to merge (no conflicts)
+	WorktreePath    *string // linked worktree (features only)
+	TicketID        *string // external ticket ID (e.g., ENG-123)
+	PRURL           *string // PR URL if published
+	PRChecksPassing bool    // CI checks passing on PR
+	PRApproved      bool    // PR has required approvals
+	PRMergeable     bool    // PR ready to merge (no conflicts)
 
 	// Assignment
 	AgentID *string // current agent working on it
