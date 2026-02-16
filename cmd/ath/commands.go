@@ -47,7 +47,85 @@ func isWorkItemID(id string) bool {
 	return strings.HasPrefix(id, "wi-")
 }
 
+// selectArchetype shows an interactive menu to select an agent archetype.
+func selectArchetype() (string, error) {
+	type archetypeOption struct {
+		name        string
+		description string
+		source      string // "built-in" or "installed"
+	}
+
+	var options []archetypeOption
+
+	// Built-in archetypes (from internal/config/config.go)
+	builtIn := []archetypeOption{
+		{"orchestrator", "Goal-level coordination and feature breakdown", "built-in"},
+		{"executor", "Feature implementation and commits", "built-in"},
+		{"planner", "Exploration and planning without changes", "built-in"},
+		{"reviewer", "Code review and quality checks", "built-in"},
+		{"brainstorm", "Interactive ideation and exploration", "built-in"},
+		{"reconciler", "Branch cleanup, queue reconciliation", "built-in"},
+		{"mapper", "Codebase documentation and mapping", "built-in"},
+	}
+	options = append(options, builtIn...)
+
+	// Installed archetypes (from .claude/agents/)
+	root, err := detectProjectRoot()
+	if err == nil {
+		agentsDir := filepath.Join(root, ".claude", "agents")
+		entries, err := os.ReadDir(agentsDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+					name := strings.TrimSuffix(entry.Name(), ".md")
+					// Simple descriptions - could parse from frontmatter if needed
+					desc := "Custom agent archetype"
+					options = append(options, archetypeOption{name, desc, "installed"})
+				}
+			}
+		}
+	}
+
+	if len(options) == 0 {
+		return "", fmt.Errorf("no archetypes available")
+	}
+
+	// Display menu
+	fmt.Printf("\n%sSelect Agent Archetype:%s\n\n", bold, reset)
+	for i, opt := range options {
+		source := gray + opt.source + reset
+		if opt.source == "built-in" {
+			source = dim + opt.source + reset
+		}
+		fmt.Printf("  %s%2d%s. %s%-20s%s %s [%s]\n",
+			cyan, i+1, reset,
+			bold, opt.name, reset,
+			opt.description,
+			source)
+	}
+	fmt.Printf("\n%sEnter number (or 0 to cancel):%s ", dim, reset)
+
+	var choice int
+	_, err = fmt.Scanln(&choice)
+	if err != nil || choice <= 0 || choice > len(options) {
+		return "", fmt.Errorf("invalid selection")
+	}
+
+	selected := options[choice-1].name
+	fmt.Printf("%s%s%s Selected: %s%s%s\n\n", green, checkMark, reset, magenta, selected, reset)
+	return selected, nil
+}
+
 func runSpawn(featureID, id, archetype string, retrieve, headless, worktree, parallel bool) error {
+	// If archetype is "select" or empty with interactive selection requested, prompt user
+	if archetype == "select" || archetype == "?" {
+		selected, err := selectArchetype()
+		if err != nil {
+			return fmt.Errorf("archetype selection cancelled or failed: %w", err)
+		}
+		archetype = selected
+	}
+
 	client, err := getClient()
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon: %w", err)

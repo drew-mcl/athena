@@ -214,6 +214,37 @@ func TestBuildSpawnPrompt(t *testing.T) {
 			t.Error("expected goal prompt to contain When Done section")
 		}
 	})
+
+	t.Run("GoalHasOrchestratorGuidance", func(t *testing.T) {
+		wi := &store.WorkItem{
+			ID:       "wi-orch-test",
+			Project:  "myproject",
+			ItemType: store.WorkItemTypeGoal,
+			Subject:  "Implement new feature",
+		}
+
+		prompt := d.buildSpawnPrompt(wi, nil, "", "wi-orch-test", false)
+
+		// Should contain orchestrator-specific sections
+		if !strings.Contains(prompt, "## Goal Orchestration") {
+			t.Error("expected goal prompt to contain Goal Orchestration section")
+		}
+		if !strings.Contains(prompt, "Break Down into Features") {
+			t.Error("expected goal prompt to contain feature breakdown guidance")
+		}
+		if !strings.Contains(prompt, "TaskCreate") {
+			t.Error("expected goal prompt to mention TaskCreate for features")
+		}
+		if !strings.Contains(prompt, "TeamCreate") {
+			t.Error("expected goal prompt to mention TeamCreate for team approach")
+		}
+		if !strings.Contains(prompt, "Work solo if:") {
+			t.Error("expected goal prompt to contain solo approach criteria")
+		}
+		if !strings.Contains(prompt, "Create a team if:") {
+			t.Error("expected goal prompt to contain team approach criteria")
+		}
+	})
 }
 
 func TestBuildInteractiveExec(t *testing.T) {

@@ -42,7 +42,13 @@ func (d *Daemon) handleSpawn(params json.RawMessage) (any, error) {
 
 	archetype := req.Archetype
 	if archetype == "" {
-		archetype = "executor"
+		// Default archetype selection based on work item type
+		if workItem.ItemType == store.WorkItemTypeGoal {
+			archetype = "orchestrator"
+		} else {
+			archetype = "executor"
+		}
+		// Retrieve mode overrides to use planner
 		if req.Retrieve {
 			archetype = "planner"
 		}
@@ -646,30 +652,48 @@ func (d *Daemon) buildSpawnPrompt(workItem *store.WorkItem, parentGoal *store.Wo
 
 	// Goal-based development guidance (for goal work items)
 	if workItem.ItemType == store.WorkItemTypeGoal {
-		b.WriteString("## Goal-Based Development\n\n")
-		b.WriteString("You have been spawned with a high-level goal. Your first step is to evaluate its complexity:\n\n")
+		b.WriteString("## Goal Orchestration\n\n")
+		b.WriteString("You are an orchestrator for this goal. Follow this workflow:\n\n")
+		b.WriteString("### 1. Analyze & Explore\n")
+		b.WriteString("- Explore the codebase to understand current architecture\n")
+		b.WriteString("- Identify what needs to change to achieve this goal\n")
+		b.WriteString("- Determine complexity and whether work can be parallelized\n\n")
+		b.WriteString("### 2. Break Down into Features\n")
+		b.WriteString("Break the goal into discrete features. **Always create Feature work items** - don't work directly on the goal.\n\n")
+		b.WriteString("Use TaskCreate to create features (features are tasks under the goal):\n")
+		b.WriteString("```\nTaskCreate:\n")
+		b.WriteString("- subject: \"Feature name\" (imperative, e.g., \"Add user authentication\")\n")
+		b.WriteString("- description: Clear scope and acceptance criteria\n")
+		b.WriteString("- activeForm: Present continuous (e.g., \"Adding user authentication\")\n")
+		b.WriteString("```\n\n")
+		b.WriteString("### 3. Choose Your Approach\n\n")
 		b.WriteString("**Work solo if:**\n")
-		b.WriteString("- Goal is well-defined and accomplishable in a focused session\n")
-		b.WriteString("- Changes are localized to a few files (< 5)\n")
-		b.WriteString("- No obvious need for parallel workstreams\n")
-		b.WriteString("- Estimated work is < 10 tasks\n\n")
+		b.WriteString("- Goal has < 5 features\n")
+		b.WriteString("- Features are sequential with dependencies\n")
+		b.WriteString("- Changes are localized to a few files\n")
+		b.WriteString("- Estimated work is < 10 tasks total\n\n")
 		b.WriteString("**Create a team if:**\n")
-		b.WriteString("- Goal is complex with multiple independent subtasks\n")
-		b.WriteString("- Multiple areas of codebase need significant changes\n")
-		b.WriteString("- Work can be parallelized (e.g., frontend + backend, multiple services)\n")
+		b.WriteString("- Goal has 5+ independent features\n")
+		b.WriteString("- Multiple areas of codebase need changes\n")
+		b.WriteString("- Work can be parallelized (frontend + backend, multiple services)\n")
 		b.WriteString("- Estimated work is > 10 tasks or spans multiple days\n\n")
-		b.WriteString("**Solo workflow:**\n")
-		b.WriteString("1. Explore the codebase to understand current architecture\n")
-		b.WriteString("2. Break down goal with TaskCreate\n")
-		b.WriteString("3. Work through tasks sequentially\n")
-		b.WriteString("4. Update task status as you progress\n\n")
-		b.WriteString("**Team workflow:**\n")
-		b.WriteString("1. Explore the codebase and identify parallel workstreams\n")
-		b.WriteString("2. Break down goal with TaskCreate\n")
-		b.WriteString("3. Use TeamCreate to create a coordinated team\n")
-		b.WriteString("4. Spawn teammates for each workstream using the Task tool\n")
-		b.WriteString("5. Coordinate their work and integrate results\n\n")
-		b.WriteString("Start by exploring the codebase to understand what needs to change, then decide on your approach.\n\n")
+		b.WriteString("### 4. Execute\n\n")
+		b.WriteString("**Solo approach:**\n")
+		b.WriteString("1. Work through features sequentially\n")
+		b.WriteString("2. For each feature: explore, plan, implement, commit\n")
+		b.WriteString("3. Mark tasks completed as you finish\n\n")
+		b.WriteString("**Team approach:**\n")
+		b.WriteString("1. Use TeamCreate to create a team\n")
+		b.WriteString("2. For each feature, spawn a teammate:\n")
+		b.WriteString("   ```\n")
+		b.WriteString("   Task tool with:\n")
+		b.WriteString("   - subagent_type: \"general-purpose\"\n")
+		b.WriteString("   - prompt: \"Implement [feature name]: [clear scope]\"\n")
+		b.WriteString("   - team_name: your team name\n")
+		b.WriteString("   - name: descriptive name (e.g., \"auth-implementer\")\n")
+		b.WriteString("   ```\n")
+		b.WriteString("3. Assign features to teammates using TaskUpdate (set owner to teammate name)\n")
+		b.WriteString("4. Coordinate work, handle blockers, integrate results\n\n")
 	}
 
 	// Mode-specific instructions

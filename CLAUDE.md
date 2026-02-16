@@ -145,6 +145,49 @@ All goroutines use `safeGo()` or `safeLoop()` for panic recovery.
 | Questions | Quick Q&A history |
 | Notes | Idea capture, promote to features |
 
+## Goal Spawning Workflow
+
+Athena uses an **orchestrator archetype** for goal-level work. Goals are high-level objectives that get broken down into features.
+
+### How It Works
+
+1. **Spawn from a goal**: `ath spawn --goal "Build user authentication system"`
+2. **Orchestrator agent activates**: Automatically uses the "orchestrator" archetype (opus model)
+3. **Agent workflow**:
+   - Analyzes the goal and explores the codebase
+   - Breaks down the goal into discrete features
+   - Creates Feature work items under the goal
+   - Decides: work solo (sequential) or create a team (parallel)
+   - If team: spawns teammates on each feature
+   - Coordinates implementation and integration
+
+### Orchestrator Archetype
+
+The orchestrator is designed specifically for goal-level work:
+- **Model**: opus (needs planning and coordination capability)
+- **Workflow**: Analyze → Break down → Evaluate complexity → Execute
+- **Solo approach**: < 5 features, sequential work, localized changes
+- **Team approach**: 5+ features, parallel work, multiple areas of codebase
+
+### CLI Commands
+
+```bash
+ath spawn --goal "Goal description"           # Create and spawn on a goal
+ath spawn --work-item wi-abc123               # Spawn on existing goal
+ath tree                                      # View goal → features hierarchy
+```
+
+### For Orchestrator Agents
+
+When spawned on a goal:
+- Use `TaskCreate` to create Feature work items (tasks under the goal)
+- If working solo: implement features sequentially
+- If creating a team:
+  - Use `TeamCreate` to create a coordinated team
+  - Use Task tool to spawn teammates on each feature
+  - Assign features with `TaskUpdate` (set owner to teammate name)
+  - Coordinate work and handle blockers
+
 ## Merge Queue Workflow
 
 Athena uses a **merge queue** to coordinate multiple in-flight features. Features develop in parallel but merge sequentially, ensuring clean integration.
@@ -191,13 +234,76 @@ The queue ensures features integrate cleanly in sequence, even though they devel
 | `internal/daemon/merge_queue.go` | Queue API handlers, auto-rebase |
 | `cmd/ath/commands.go` | CLI commands (runQueue*) |
 
-## Future Ideas
+## Agent Archetypes
 
-### Multi-Agent Orchestration
+Athena provides specialized archetypes for different types of work. Install them with `ath enable`.
 
-For large features that are too big for a single agent:
-- Sub-worktrees with hash suffix feeding into orchestrator agent
-- Parent agent coordinates, child agents do focused work
-- Core infrastructure work - not MVP scope
+### Built-in Archetypes (Always Available)
 
-This is a significant architectural addition - explore when base system is stable.
+| Archetype | Purpose | Model | Use Case |
+|-----------|---------|-------|----------|
+| `orchestrator` | Goal-level coordination and feature breakdown | opus | Goals (automatic for goal work items) |
+| `executor` | Feature implementation and commits | sonnet | Features (automatic for feature work items) |
+| `planner` | Exploration and planning without changes | opus | Research, architecture analysis |
+| `reviewer` | Code review and quality checks | sonnet | PR reviews, validation |
+| `brainstorm` | Interactive ideation and exploration | opus | User collaboration, design discussions |
+| `reconciler` | Branch cleanup, queue reconciliation | sonnet | Maintenance tasks |
+| `mapper` | Codebase documentation and mapping | sonnet | Documentation generation |
+
+### Claude Code Subagents (Installed by `ath enable`)
+
+These specialized subagents are installed to `.claude/agents/` and work alongside built-in archetypes:
+
+| Archetype | Purpose | Model | When Claude Uses It |
+|-----------|---------|-------|---------------------|
+| `code-reducer` | Reduce code size, remove duplication, simplify | sonnet | After features to clean up and consolidate |
+| `code-reviewer` | Architecture and code quality review | sonnet | Before merging, after code changes |
+| `test-coverer` | Add test coverage, identify untested paths | sonnet | When test coverage is lacking |
+| `security-reviewer` | Security audit, vulnerability scanning | sonnet | Before merging security-sensitive changes |
+| `performance-optimizer` | Performance analysis and optimization | sonnet | When performance issues are identified |
+| `doc-generator` | Documentation generation for code and APIs | sonnet | After features, when docs are missing |
+
+### Installation
+
+```bash
+ath enable          # Install lifecycle hooks + agent archetypes
+ath disable         # Remove hooks only (preserve archetypes)
+ath disable --agents # Remove hooks AND archetypes
+```
+
+**What gets installed:**
+- Lifecycle hooks in `.claude/settings.json` (SessionStart, Stop, SessionEnd)
+- Agent archetypes in `.claude/agents/` (markdown files with YAML frontmatter)
+
+**Customization:**
+- Archetypes are only written if they don't already exist (preserves your customizations)
+- Edit any archetype file in `.claude/agents/` to customize behavior
+- Claude Code automatically loads archetypes from `.claude/agents/`
+
+### Usage Examples
+
+```bash
+# Spawn with interactive archetype selector
+ath spawn -a select     # Interactive menu of all archetypes
+ath spawn -a ?          # Alternative syntax
+
+# Spawn with specific archetype
+ath spawn -a planner         # Use planner archetype
+ath spawn -a code-reviewer   # Use code-reviewer archetype
+
+# Claude uses archetypes automatically based on descriptions
+"Review this code for security issues"  # Uses security-reviewer
+"Add test coverage for this module"     # Uses test-coverer
+"Reduce duplication in these files"     # Uses code-reducer
+
+# Or request a specific archetype explicitly
+"Use the code-reviewer subagent to analyze this PR"
+"Have the performance-optimizer look at this slow function"
+```
+
+**Interactive Selector**: When you use `-a select` or `-a ?`, Athena displays an interactive menu showing:
+- All built-in archetypes (orchestrator, executor, planner, etc.)
+- All installed archetypes from `.claude/agents/`
+- Description and source for each option
+
+Archetypes integrate seamlessly with the orchestrator workflow - the orchestrator can spawn specialized subagents for specific tasks.
