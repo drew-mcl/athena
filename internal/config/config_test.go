@@ -20,7 +20,7 @@ func TestDefaultConfig(t *testing.T) {
 		want any
 	}{
 		{"agents provider", cfg.Agents.Provider, "claude"},
-		{"agents model", cfg.Agents.Model, "sonnet"},
+		{"agents model", cfg.Agents.Model, "opus"},
 		{"agents restart policy", cfg.Agents.RestartPolicy, "on-failure"},
 		{"agents max restarts", cfg.Agents.MaxRestarts, 3},
 		{"budget max per agent", cfg.Agents.Budget.MaxPerAgent, 5.0},
