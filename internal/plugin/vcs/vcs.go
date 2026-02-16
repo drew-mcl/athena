@@ -51,10 +51,10 @@ type CIRun struct {
 
 // MergeReadiness summarizes whether a PR is ready to auto-merge.
 type MergeReadiness struct {
-	Mergeable bool     // No conflicts
-	CIGreen   bool     // All required checks passed
-	Ready     bool     // Mergeable && CIGreen
-	Reason    string   // Human-readable explanation when not ready
+	Mergeable bool   // No conflicts
+	CIGreen   bool   // All required checks passed
+	Ready     bool   // Mergeable && CIGreen
+	Reason    string // Human-readable explanation when not ready
 }
 
 // MergeMethod controls how a PR is merged.

@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Athena — Growth</title>
+<style>
+  :root {
+    --bg: #06060b;
+    --surface: #0e0e16;
+    --border: #1a1a28;
+    --text: #d8d8e4;
+    --text-dim: #6e6e84;
+    --text-muted: #3e3e52;
+    --done: #22c088;
+    --active: #5a7aee;
+    --active-glow: rgba(90, 122, 238, 0.35);
+    --pending: #d4944a;
+    --open: #555568;
+    --seed: #b090f0;
+    --grow-hover: rgba(176, 144, 240, 0.15);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Menlo', monospace;
+    font-size: 13px;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 16px; }
+
+  .logo { font-size: 12px; font-weight: 700; color: var(--seed); letter-spacing: 0.12em; }
+
+  .depth-legend {
+    display: flex; gap: 14px; font-size: 10px; color: var(--text-muted); letter-spacing: 0.03em;
+  }
+  .depth-legend .dl-item { display: flex; align-items: center; gap: 5px; }
+
+  .stats { font-size: 11px; color: var(--text-muted); }
+  .stats strong { color: var(--text-dim); }
+
+  .content { flex: 1; display: flex; overflow: hidden; }
+
+  .canvas-area { flex: 1; overflow: auto; position: relative; }
+
+  .canvas-inner {
+    min-width: 100%; min-height: 100%;
+    display: flex; justify-content: center; align-items: center;
+    padding: 60px;
+  }
+
+  svg.tree { overflow: visible; display: block; }
+
+  .node-g { cursor: pointer; }
+  .node-g:hover .grow-ring { opacity: 1; }
+  .grow-ring { fill: var(--grow-hover); opacity: 0; transition: opacity 0.15s; }
+
+  .label-text {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    pointer-events: none;
+  }
+
+  .type-tag {
+    font-family: inherit; font-size: 8px;
+    letter-spacing: 0.1em; text-transform: uppercase; pointer-events: none;
+  }
+
+  @keyframes pulse-ring {
+    0%, 100% { opacity: 0; }
+    50% { opacity: 0.4; }
+  }
+  .active-pulse { fill: none; animation: pulse-ring 2s ease-in-out infinite; }
+
+  @keyframes seed-glow {
+    0%, 100% { opacity: 0.15; }
+    50% { opacity: 0.4; }
+  }
+  .seed-glow { animation: seed-glow 3s ease-in-out infinite; }
+
+  @keyframes tip-bob {
+    0%, 100% { transform: translateY(0); opacity: 0.4; }
+    50% { transform: translateY(-5px); opacity: 0.9; }
+  }
+  .growth-tip { animation: tip-bob 2.5s ease-in-out infinite; }
+
+  /* Detail panel */
+  .detail-panel {
+    width: 260px; border-left: 1px solid var(--border);
+    background: var(--surface); padding: 14px;
+    flex-shrink: 0; overflow-y: auto; font-size: 12px;
+  }
+
+  .dp-type { font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+  .dp-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+  .dp-id { font-size: 10px; color: var(--text-muted); margin-bottom: 14px; }
+  .dp-section { margin-bottom: 14px; }
+  .dp-section-title {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); margin-bottom: 5px;
+  }
+  .dp-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .dp-bar { flex: 1; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .dp-bar-fill { height: 100%; border-radius: 2px; background: var(--done); }
+  .dp-bar-label { font-size: 10px; color: var(--text-muted); }
+  .dp-list { list-style: none; }
+  .dp-list li {
+    display: flex; align-items: flex-start; gap: 7px;
+    padding: 2px 0; font-size: 11px; color: var(--text-dim); line-height: 1.4;
+  }
+  .dp-li-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+  .dp-grow-btn {
+    display: block; width: 100%; padding: 8px; margin-top: 12px;
+    background: var(--grow-hover); border: 1px dashed var(--seed);
+    border-radius: 6px; color: var(--seed); font-family: inherit;
+    font-size: 11px; cursor: pointer; text-align: center;
+  }
+  .dp-grow-btn:hover { background: rgba(176, 144, 240, 0.25); }
+
+  .legend {
+    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 16px; padding: 5px 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 5px; font-size: 9px; color: var(--text-muted); z-index: 10;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 5px; height: 5px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">ATHENA</div>
+      <div class="depth-legend">
+        <div class="dl-item"><svg width="10" height="10"><rect x="2" y="2" width="6" height="6" rx="1" transform="rotate(45,5,5)" fill="#b090f0"/></svg> seed</div>
+        <div class="dl-item"><svg width="10" height="3"><line x1="0" y1="1.5" x2="10" y2="1.5" stroke="#8070c0" stroke-width="3" stroke-linecap="round"/></svg> stem</div>
+        <div class="dl-item"><svg width="10" height="2"><line x1="0" y1="1" x2="10" y2="1" stroke="#6e6e84" stroke-width="1.5" stroke-linecap="round"/></svg> branch</div>
+        <div class="dl-item"><svg width="6" height="6"><circle cx="3" cy="3" r="2.5" fill="#6e6e84"/></svg> leaf</div>
+      </div>
+    </div>
+    <div class="stats">
+      <strong>61</strong> items &middot;
+      <strong>36</strong> done &middot;
+      <strong>8</strong> active &middot;
+      <strong>17</strong> pending
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="canvas-area">
+      <div class="canvas-inner" id="canvas">
+        <svg class="tree" id="tree-svg"></svg>
+      </div>
+    </div>
+    <div class="detail-panel" id="detail-panel">
+      <div class="dp-type" id="dp-type" style="color:var(--seed)">seed</div>
+      <div class="dp-title" id="dp-title" style="color:var(--seed)">athena</div>
+      <div class="dp-id" id="dp-id">root</div>
+      <div class="dp-section">
+        <div class="dp-section-title">Progress</div>
+        <div class="dp-bar-wrap">
+          <div class="dp-bar"><div class="dp-bar-fill" id="dp-bar" style="width:59%"></div></div>
+          <div class="dp-bar-label" id="dp-bar-label">36/61</div>
+        </div>
+      </div>
+      <div class="dp-section" id="dp-children-section">
+        <div class="dp-section-title" id="dp-children-title">Stems</div>
+        <ul class="dp-list" id="dp-children"></ul>
+      </div>
+      <button class="dp-grow-btn" id="dp-grow-btn">+ grow from here</button>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--done)"></div> done</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--active)"></div> active</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--pending)"></div> pending</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--open)"></div> open</div>
+  </div>
+</div>
+
+<script>
+const COLORS = {
+  done:    { n: '#22c088', e: '#22c088', t: '#22c088' },
+  active:  { n: '#5a7aee', e: '#5a7aee', t: '#5a7aee' },
+  pending: { n: '#d4944a', e: '#d4944a', t: '#d4944a' },
+  open:    { n: '#555568', e: '#444458', t: '#7a7a90' },
+  root:    { n: '#b090f0', e: '#b090f0', t: '#b090f0' },
+};
+
+const DEPTH_NAMES = ['seed', 'stem', 'branch', 'leaf'];
+
+const TREE = {
+  id: "athena", label: "athena", status: "root",
+  children: [
+    {
+      id: "wi-dad3", label: "docs", status: "done", done: 3, total: 3,
+      children: [
+        { id: "wi-dad3.1", label: "clean up readme", status: "done" },
+        { id: "wi-dad3.2", label: "remove active badge", status: "done" },
+        { id: "wi-dad3.3", label: "clean up old goals", status: "done" },
+      ]
+    },
+    {
+      id: "wi-d836", label: "agent sysprompt", status: "done", done: 5, total: 5,
+      children: [
+        {
+          id: "wi-d836.1", label: "completion workflow", status: "done", done: 4, total: 4,
+          children: [
+            { id: "wi-d836.1.1", label: "spawn + queue", status: "done" },
+            { id: "wi-d836.1.2", label: "prompt workflow", status: "done" },
+            { id: "wi-d836.1.3", label: "add to prompt", status: "done" },
+            { id: "wi-d836.1.4", label: "test e2e", status: "done" },
+          ]
+        },
+      ]
+    },
+    {
+      id: "wi-c5a6", label: "workflow improvements", status: "active", done: 9, total: 14,
+      children: [
+        { id: "wi-c5a6.1", label: "autolink ci", status: "done" },
+        { id: "wi-c5a6.2", label: "feature w/o goal", status: "done" },
+        { id: "wi-c5a6.3", label: "cli review", status: "done" },
+        { id: "wi-c5a6.4", label: "auto-spawn wt", status: "done" },
+        { id: "wi-c5a6.5", label: "pass prompt", status: "done" },
+        { id: "wi-c5a6.6", label: "auto trust", status: "done" },
+        { id: "wi-c5a6.7", label: "skip perms", status: "done" },
+        { id: "wi-c5a6.8", label: "wt = queue", status: "done" },
+        { id: "wi-c5a6.9", label: "task lists", status: "done" },
+        {
+          id: "wi-c5a6.10", label: "tree display", status: "active", done: 2, total: 4,
+          children: [
+            { id: "wi-c5a6.10.1", label: "investigate", status: "done" },
+            { id: "wi-c5a6.10.2", label: "debug", status: "done" },
+            { id: "wi-c5a6.10.3", label: "fix issue", status: "pending" },
+            { id: "wi-c5a6.10.4", label: "test", status: "open" },
+          ]
+        },
+      ]
+    },
+    {
+      id: "wi-266d", label: "cli design", status: "active", done: 6, total: 11,
+      children: [
+        { id: "wi-266d.1", label: "wt table", status: "done" },
+        {
+          id: "wi-266d.2", label: "spawn goals", status: "active", done: 4, total: 5,
+          children: [
+            { id: "wi-266d.2.1", label: "understand", status: "done" },
+            { id: "wi-266d.2.2", label: "design flow", status: "done" },
+            { id: "wi-266d.2.3", label: "sys prompt", status: "done" },
+            { id: "wi-266d.2.4", label: "update cmd", status: "done" },
+            { id: "wi-266d.2.5", label: "test", status: "pending" },
+          ]
+        },
+        { id: "wi-266d.3", label: "session id", status: "done" },
+        { id: "wi-266d.4", label: "queue hooks", status: "open" },
+        { id: "wi-266d.5", label: "agent id", status: "open" },
+        { id: "wi-266d.6", label: "normalize", status: "open" },
+      ]
+    },
+    {
+      id: "wi-3e9c", label: "agent archetypes", status: "active", done: 10, total: 11,
+      children: [
+        { id: "wi-3e9c.1", label: "orch config", status: "done" },
+        { id: "wi-3e9c.2", label: "spawn orch", status: "done" },
+        { id: "wi-3e9c.3", label: "buildPrompt", status: "done" },
+        { id: "wi-3e9c.4", label: "arch tests", status: "done" },
+        { id: "wi-3e9c.5", label: "goal docs", status: "done" },
+        { id: "wi-3e9c.6", label: "more archetypes", status: "done" },
+        { id: "wi-3e9c.7", label: "enable install", status: "done" },
+        { id: "wi-3e9c.8", label: "disable remove", status: "done" },
+        { id: "wi-3e9c.9", label: "install tests", status: "pending" },
+        { id: "wi-3e9c.10", label: "enable docs", status: "done" },
+        { id: "wi-3e9c.11", label: "arch selector", status: "done" },
+      ]
+    },
+    {
+      id: "wi-9dca", label: "self build loops", status: "active", done: 3, total: 8,
+      children: [
+        { id: "wi-9dca.1", label: "yolo mode", status: "done" },
+        { id: "wi-9dca.2", label: "completion", status: "done" },
+        { id: "wi-9dca.3", label: "auto-merge", status: "done" },
+        { id: "wi-9dca.4", label: "PR feedback", status: "active" },
+        { id: "wi-9dca.5", label: "rebase queue", status: "open" },
+        { id: "wi-9dca.6", label: "cron agents", status: "open" },
+        { id: "wi-9dca.7", label: "queue preset", status: "open" },
+        { id: "wi-9dca.8", label: "mapper", status: "open" },
+      ]
+    },
+    {
+      id: "wi-6b09", label: "github automation", status: "open", done: 0, total: 2,
+      children: [
+        { id: "wi-6b09.1", label: "auto merge", status: "open" },
+        { id: "wi-6b09.2", label: "reconcile", status: "open" },
+      ]
+    },
+    {
+      id: "wi-new", label: "workstream paradigm", status: "active", done: 0, total: 0,
+      isNew: true, children: []
+    },
+  ]
+};
+
+// --- Radial fan layout ---
+// Each stem fans its branches outward at angles. Parallel work = same distance from stem.
+// Done branches are shorter/closer. Active branches reach further. Open branches are dotted outlines.
+
+function layout(tree) {
+  const nodes = [];
+  const edges = [];
+  const stems = tree.children || [];
+
+  const rootX = 0, rootY = 0;
+  nodes.push({ ...tree, x: rootX, y: rootY, depth: 0 });
+
+  // Position stems radially around the seed - full 360 mind map
+  const stemCount = stems.length;
+  const arcSpan = Math.PI * 2;
+  const arcStart = -Math.PI / 2; // start at top, go clockwise
+  const stemDist = 130;
+
+  stems.forEach((stem, si) => {
+    const angle = arcStart + (si / stemCount) * arcSpan;
+    const sx = rootX + Math.cos(angle) * stemDist;
+    const sy = rootY + Math.sin(angle) * stemDist;
+
+    nodes.push({ ...stem, x: sx, y: sy, depth: 1, angle });
+    edges.push({ from: { x: rootX, y: rootY }, to: { x: sx, y: sy }, status: stem.status, depth: 0 });
+
+    // Branches fan out from the stem
+    const branches = stem.children || [];
+    if (branches.length === 0 && stem.isNew) {
+      // New stem - just a growth tip
+      const tipDist = 35;
+      const tx = sx + Math.cos(angle) * tipDist;
+      const ty = sy + Math.sin(angle) * tipDist;
+      nodes.push({ id: stem.id + '-tip', x: tx, y: ty, depth: -1, status: stem.status, isTip: true, isNew: true });
+      edges.push({ from: { x: sx, y: sy }, to: { x: tx, y: ty }, status: stem.status, depth: 0.5, isTrunk: true });
+      return;
+    }
+
+    // Sort branches: done first (inner ring), active middle, open/pending outer
+    const statusOrder = { done: 0, active: 1, pending: 2, open: 3 };
+    const sorted = branches.map((b, i) => ({ ...b, origIdx: i }))
+      .sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+
+    // Group by status tier
+    const tiers = {};
+    sorted.forEach(b => {
+      const tier = statusOrder[b.status];
+      if (!tiers[tier]) tiers[tier] = [];
+      tiers[tier].push(b);
+    });
+
+    const tierKeys = Object.keys(tiers).map(Number).sort();
+
+    // Each tier is a ring at a different distance from the stem
+    const baseR = 55;
+    const tierGap = 40;
+
+    // Fan angle for branches around this stem's direction
+    const branchArcSpan = Math.min(Math.PI * 0.7, branches.length * 0.18);
+    const branchArcStart = angle - branchArcSpan / 2;
+
+    let globalBranchIdx = 0;
+
+    tierKeys.forEach((tierKey, ti) => {
+      const tierBranches = tiers[tierKey];
+      const tierR = baseR + ti * tierGap;
+
+      tierBranches.forEach((branch, bi) => {
+        // Spread within the tier's sub-arc
+        const subArc = branchArcSpan * 0.9;
+        const subStart = angle - subArc / 2;
+        const ba = tierBranches.length > 1
+          ? subStart + (bi / (tierBranches.length - 1)) * subArc
+          : angle;
+
+        // Add slight jitter for organic feel
+        const jitter = (Math.sin(globalBranchIdx * 2.7) * 0.08);
+        const finalAngle = ba + jitter;
+        const distJitter = Math.cos(globalBranchIdx * 1.3) * 8;
+
+        const bx = sx + Math.cos(finalAngle) * (tierR + distJitter);
+        const by = sy + Math.sin(finalAngle) * (tierR + distJitter);
+
+        nodes.push({ ...branch, x: bx, y: by, depth: 2, stemX: sx, stemY: sy });
+        edges.push({ from: { x: sx, y: sy }, to: { x: bx, y: by }, status: branch.status, depth: 1 });
+
+        // Leaves fan out further from the branch
+        const subs = branch.children || [];
+        if (subs.length > 0) {
+          const leafR = 30;
+          const leafArc = Math.min(Math.PI * 0.5, subs.length * 0.3);
+          const leafStart = finalAngle - leafArc / 2;
+
+          subs.forEach((sub, li) => {
+            const la = subs.length > 1
+              ? leafStart + (li / (subs.length - 1)) * leafArc
+              : finalAngle;
+            const lx = bx + Math.cos(la) * leafR;
+            const ly = by + Math.sin(la) * leafR;
+
+            nodes.push({ ...sub, x: lx, y: ly, depth: 3, stemX: bx, stemY: by });
+            edges.push({ from: { x: bx, y: by }, to: { x: lx, y: ly }, status: sub.status, depth: 2 });
+          });
+        }
+
+        globalBranchIdx++;
+      });
+    });
+
+    // Growth tip at the outer edge
+    const tipAngle = angle;
+    const tipR = baseR + tierKeys.length * tierGap + 15;
+    const tx = sx + Math.cos(tipAngle) * tipR;
+    const ty = sy + Math.sin(tipAngle) * tipR;
+    nodes.push({ id: stem.id + '-tip', x: tx, y: ty, depth: -1, status: stem.status, isTip: true });
+  });
+
+  return { nodes, edges };
+}
+
+function render() {
+  const { nodes, edges } = layout(TREE);
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  nodes.forEach(n => {
+    minX = Math.min(minX, n.x - 80);
+    maxX = Math.max(maxX, n.x + 80);
+    minY = Math.min(minY, n.y - 30);
+    maxY = Math.max(maxY, n.y + 30);
+  });
+
+  const pad = 60;
+  const w = maxX - minX + pad * 2;
+  const h = maxY - minY + pad * 2;
+
+  const svg = document.getElementById('tree-svg');
+  svg.setAttribute('width', w);
+  svg.setAttribute('height', h);
+  svg.setAttribute('viewBox', `${minX - pad} ${minY - pad} ${w} ${h}`);
+
+  let html = '';
+
+  // Edges
+  edges.forEach(e => {
+    const c = COLORS[e.status] || COLORS.open;
+    const x1 = e.from.x, y1 = -e.from.y;
+    const x2 = e.to.x, y2 = -e.to.y;
+
+    const isDone = e.status === 'done';
+    const isOpen = e.status === 'open';
+    const isPending = e.status === 'pending';
+
+    if (e.isTrunk) {
+      const op = isDone ? 0.12 : isOpen ? 0.06 : 0.2;
+      const dash = isOpen ? 'stroke-dasharray="4,4"' : '';
+      html += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="${c.e}" stroke-width="2.5" opacity="${op}" stroke-linecap="round" ${dash}/>`;
+    } else if (e.depth === 0) {
+      // Seed to stem - thick curved
+      const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+      const op = isDone ? 0.1 : isOpen ? 0.05 : 0.18;
+      const dash = isOpen ? 'stroke-dasharray="4,4"' : '';
+      html += `<path d="M${x1},${y1} Q${midX},${y1} ${x2},${y2}"
+        fill="none" stroke="${c.e}" stroke-width="2.5" opacity="${op}" stroke-linecap="round" ${dash}/>`;
+    } else if (e.depth === 1) {
+      // Stem to branch
+      const op = isDone ? 0.1 : isOpen ? 0.06 : 0.25;
+      const dash = (isOpen || isPending) ? 'stroke-dasharray="3,3"' : '';
+      const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+      html += `<path d="M${x1},${y1} Q${x1},${midY} ${x2},${y2}"
+        fill="none" stroke="${c.e}" stroke-width="1.5" opacity="${op}" ${dash} stroke-linecap="round"/>`;
+    } else {
+      // Branch to leaf
+      const op = isDone ? 0.08 : isOpen ? 0.05 : 0.18;
+      const dash = (isOpen || isPending) ? 'stroke-dasharray="2,2"' : '';
+      html += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="${c.e}" stroke-width="0.8" opacity="${op}" ${dash} stroke-linecap="round"/>`;
+    }
+  });
+
+  // Nodes
+  nodes.forEach(n => {
+    const c = COLORS[n.status] || COLORS.open;
+    const ny = -n.y;
+
+    if (n.isTip) {
+      html += `<g class="growth-tip" transform="translate(${n.x}, ${ny})">
+        <polygon points="0,-5 -3,2 3,2" fill="${c.n}" opacity="0.4"/>
+      </g>`;
+      if (n.isNew) {
+        html += `<text x="${n.x}" y="${ny - 10}" text-anchor="middle"
+          fill="${c.t}" font-size="9" opacity="0.5"
+          font-family="'SF Mono', monospace">new stem</text>`;
+      }
+      return;
+    }
+
+    html += `<g class="node-g" data-id="${n.id}" onclick="selectNode('${n.id}')">`;
+
+    const hoverR = n.depth === 0 ? 20 : n.depth === 1 ? 15 : n.depth === 2 ? 10 : 8;
+    html += `<circle class="grow-ring" cx="${n.x}" cy="${ny}" r="${hoverR}"/>`;
+
+    if (n.status === 'active') {
+      const pr = n.depth === 1 ? 13 : n.depth === 2 ? 9 : 6;
+      html += `<circle class="active-pulse" cx="${n.x}" cy="${ny}" r="${pr}"
+        stroke="${c.n}" stroke-width="1"/>`;
+    }
+
+    if (n.depth === 0) {
+      html += `<circle class="seed-glow" cx="${n.x}" cy="${ny}" r="22" fill="${c.n}"/>`;
+      html += `<rect x="${n.x - 9}" y="${ny - 9}" width="18" height="18" rx="2"
+        transform="rotate(45,${n.x},${ny})" fill="${c.n}"/>`;
+      html += `<text class="label-text" x="${n.x}" y="${ny + 28}"
+        text-anchor="middle" fill="${c.t}" font-size="13" font-weight="600">${n.label}</text>`;
+      html += `<text class="type-tag" x="${n.x}" y="${ny + 40}"
+        text-anchor="middle" fill="${c.t}" opacity="0.4">SEED</text>`;
+
+    } else if (n.depth === 1) {
+      const r = 7;
+      const fo = n.status === 'open' ? 0.2 : 0.9;
+      const sd = n.status === 'open' ? 'stroke-dasharray="2,2"' : '';
+      html += `<circle cx="${n.x}" cy="${ny}" r="${r}"
+        fill="${c.n}" fill-opacity="${fo}"
+        stroke="${n.status === 'open' ? c.n : 'none'}" stroke-width="1" ${sd}/>`;
+
+      // Label: position away from seed center
+      const dx = n.x - 0;
+      const dy = n.y - 0;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const lx = n.x + (dx / dist) * 14;
+      const ly = ny - (dy / dist) * 14;
+      const ta = n.x < -50 ? 'end' : n.x > 50 ? 'start' : 'middle';
+      const op = n.status === 'done' ? 0.45 : 1;
+      html += `<text class="label-text" x="${lx}" y="${ly}"
+        text-anchor="${ta}" fill="${c.t}" font-size="11" font-weight="500" opacity="${op}">${n.label}</text>`;
+      if (n.total) {
+        const tagY = ly - (n.y > 60 ? 12 : -12);
+        html += `<text class="type-tag" x="${lx}" y="${tagY}"
+          text-anchor="${ta}" fill="${c.t}" opacity="0.3">[${n.done}/${n.total}]</text>`;
+      }
+
+    } else if (n.depth === 2) {
+      const r = 4;
+      const fo = n.status === 'open' ? 0.2 : 0.8;
+      const sd = n.status === 'open' ? 'stroke-dasharray="2,2"' : '';
+      html += `<circle cx="${n.x}" cy="${ny}" r="${r}"
+        fill="${c.n}" fill-opacity="${fo}"
+        stroke="${n.status === 'open' ? c.n : 'none'}" stroke-width="0.8" ${sd}/>`;
+
+      const dx = n.x - (n.stemX || 0);
+      const side = dx >= 0 ? 1 : -1;
+      const tx = n.x + side * 8;
+      const ta = side > 0 ? 'start' : 'end';
+      const op = n.status === 'done' ? 0.3 : 0.8;
+      html += `<text class="label-text" x="${tx}" y="${ny + 3}"
+        text-anchor="${ta}" fill="${c.t}" font-size="9" opacity="${op}">${n.label}</text>`;
+      if (n.total) {
+        html += `<text class="type-tag" x="${tx}" y="${ny + 13}"
+          text-anchor="${ta}" fill="${c.t}" opacity="0.25">[${n.done}/${n.total}]</text>`;
+      }
+
+    } else {
+      const r = 2;
+      const fo = n.status === 'done' ? 0.4 : n.status === 'open' ? 0.15 : 0.6;
+      html += `<circle cx="${n.x}" cy="${ny}" r="${r}" fill="${c.n}" fill-opacity="${fo}"/>`;
+
+      const dx = n.x - (n.stemX || 0);
+      const side = dx >= 0 ? 1 : -1;
+      const tx = n.x + side * 5;
+      const ta = side > 0 ? 'start' : 'end';
+      const op = n.status === 'done' ? 0.2 : 0.5;
+      html += `<text class="label-text" x="${tx}" y="${ny + 3}"
+        text-anchor="${ta}" fill="${c.t}" font-size="8" opacity="${op}">${n.label}</text>`;
+    }
+
+    html += `</g>`;
+  });
+
+  svg.innerHTML = html;
+
+  // Scroll to center the seed
+  const canvas = document.getElementById('canvas');
+  requestAnimationFrame(() => {
+    canvas.scrollLeft = (canvas.scrollWidth - canvas.clientWidth) / 2;
+    canvas.scrollTop = (canvas.scrollHeight - canvas.clientHeight) / 2;
+  });
+
+  window._tree = TREE;
+}
+
+function selectNode(id) {
+  const node = findNode(TREE, id);
+  if (!node) return;
+
+  const depth = findDepth(TREE, id);
+  const c = COLORS[node.status] || COLORS.open;
+  const typeName = DEPTH_NAMES[depth] || 'node';
+
+  document.getElementById('dp-type').textContent = typeName;
+  document.getElementById('dp-type').style.color = depth === 0 ? '#b090f0' : c.t;
+  document.getElementById('dp-title').textContent = node.label;
+  document.getElementById('dp-title').style.color = c.t;
+  document.getElementById('dp-id').textContent = node.id;
+
+  if (node.total) {
+    const pct = Math.round((node.done / node.total) * 100);
+    document.getElementById('dp-bar').style.width = pct + '%';
+    document.getElementById('dp-bar-label').textContent = node.done + '/' + node.total;
+  } else if (depth === 0) {
+    document.getElementById('dp-bar').style.width = '59%';
+    document.getElementById('dp-bar-label').textContent = '36/61';
+  } else {
+    document.getElementById('dp-bar').style.width = '0%';
+    document.getElementById('dp-bar-label').textContent = '-';
+  }
+
+  const section = document.getElementById('dp-children-section');
+  const list = document.getElementById('dp-children');
+  const title = document.getElementById('dp-children-title');
+
+  if (node.children && node.children.length > 0) {
+    section.style.display = '';
+    title.textContent = (DEPTH_NAMES[depth + 1] || 'item') + 's';
+    list.innerHTML = node.children.map(ch => {
+      const cc = COLORS[ch.status] || COLORS.open;
+      const badge = ch.total ? ` <span style="color:var(--text-muted)">[${ch.done}/${ch.total}]</span>` : '';
+      return `<li><div class="dp-li-dot" style="background:${cc.n}"></div><span>${ch.label}${badge}</span></li>`;
+    }).join('');
+  } else {
+    section.style.display = 'none';
+  }
+
+  const btn = document.getElementById('dp-grow-btn');
+  btn.textContent = `+ grow ${DEPTH_NAMES[depth + 1] || 'node'} from here`;
+}
+
+function findNode(tree, id) {
+  if (tree.id === id) return tree;
+  for (const ch of (tree.children || [])) {
+    const f = findNode(ch, id);
+    if (f) return f;
+  }
+  return null;
+}
+
+function findDepth(tree, id, d = 0) {
+  if (tree.id === id) return d;
+  for (const ch of (tree.children || [])) {
+    const f = findDepth(ch, id, d + 1);
+    if (f !== -1) return f;
+  }
+  return -1;
+}
+
+render();
+selectNode('athena');
+</script>
+
+</body>
+</html>
