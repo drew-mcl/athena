@@ -177,6 +177,26 @@ Examples:
 }
 
 // Task commands
+var featStatusCmd = &cobra.Command{
+	Use:   "status <feature-id>",
+	Short: "Show completion status of a feature",
+	Long: `Show the completion status of a feature, including PR checks, approval, and mergeability.
+
+This command displays whether a feature is ready to merge based on:
+- All child tasks completed
+- PR created
+- CI checks passing
+- PR approved (if configured)
+- No merge conflicts
+
+Examples:
+  ath feat status wi-a3f8.1`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runFeatStatus(args[0])
+	},
+}
+
 var tskCmd = &cobra.Command{
 	Use:     "tsk [subject...]",
 	Aliases: []string{"t", "task"},
@@ -578,7 +598,7 @@ func init() {
 	// Feature flags
 	featNewCmd.Flags().StringP("ticket", "t", "", "External ticket ID (e.g., ENG-123)")
 	featNewCmd.Flags().StringP("description", "d", "", "Feature description")
-	featCmd.AddCommand(featNewCmd)
+	featCmd.AddCommand(featNewCmd, featStatusCmd)
 
 	// Task flags
 	tskCmd.Flags().StringP("feature", "f", "", "Parent feature ID")
@@ -607,6 +627,11 @@ func init() {
 	runCmd.Flags().StringP("project", "p", "", "Project name")
 	runCmd.AddCommand(runStatusCmd, runStopCmd)
 
+	// Yolo flags (same as run)
+	yoloCmd.Flags().Bool("once", false, "Run one task and stop")
+	yoloCmd.Flags().StringP("project", "p", "", "Project name")
+	yoloCmd.AddCommand(yoloStatusCmd, yoloStopCmd)
+
 	// Tidy flags
 	tidyCmd.Flags().Bool("headless", false, "Run reconciler in background")
 
@@ -629,7 +654,7 @@ func init() {
 	// Hooks subcommands (hidden, internal plumbing)
 	hooksCmd.AddCommand(hooksSessionStartCmd, hooksStopCmd, hooksSessionEndCmd)
 
-	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, sessionCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, rateCmd, enableCmd, disableCmd, hooksCmd)
+	rootCmd.AddCommand(goalCmd, featCmd, tskCmd, treeCmd, wtCmd, spawnCmd, queueCmd, pluginCmd, agentCmd, sessionCmd, interactiveCmd, tidyCmd, mapCmd, runCmd, yoloCmd, rateCmd, enableCmd, disableCmd, hooksCmd)
 }
 
 // Spawn command - unified agent launch
@@ -803,6 +828,49 @@ var runStatusCmd = &cobra.Command{
 var runStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the auto-run loop",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runAutoRunStop()
+	},
+}
+
+// Yolo command - alias for run
+var yoloCmd = &cobra.Command{
+	Use:   "yolo",
+	Short: "Yolo mode: continuously work through tasks (alias for 'run')",
+	Long: `Start yolo mode - a continuous loop that picks tasks and spawns agents.
+
+This is an alias for 'ath run'. Yolo mode:
+1. Finds the next ready work item (features first, then tasks)
+2. Spawns a headless agent to work on it
+3. Waits for the agent to complete
+4. Handles rate limits automatically (pauses and resumes)
+5. Picks the next item and repeats
+
+Use --once to run just one task. Use 'ath yolo stop' to halt the loop.
+
+Examples:
+  ath yolo               # Start yolo mode
+  ath yolo --once        # Run one task and stop
+  ath yolo status        # Check yolo mode status
+  ath yolo stop          # Stop yolo mode`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		once, _ := cmd.Flags().GetBool("once")
+		project, _ := cmd.Flags().GetString("project")
+		return runAutoRun(project, once)
+	},
+}
+
+var yoloStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show yolo mode status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runAutoRunStatus()
+	},
+}
+
+var yoloStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop yolo mode",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runAutoRunStop()
 	},

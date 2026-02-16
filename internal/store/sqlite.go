@@ -210,6 +210,58 @@ func (s *Store) migrateMetricsColumns() error {
 	return nil
 }
 
+// migrateWorkItemColumns adds new columns to the work_items table if they don't exist.
+func (s *Store) migrateWorkItemColumns() error {
+	// Check if work_items table exists
+	var tableName string
+	err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='work_items'").Scan(&tableName)
+	if err != nil {
+		// Table doesn't exist yet, will be created by migrateWorkItems
+		return nil
+	}
+
+	// Get existing columns
+	rows, err := s.db.Query("PRAGMA table_info(work_items)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultVal *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		existingCols[name] = true
+	}
+
+	// Define new completion tracking columns
+	newColumns := []struct {
+		name       string
+		definition string
+	}{
+		{"pr_checks_passing", "BOOLEAN DEFAULT FALSE"},
+		{"pr_approved", "BOOLEAN DEFAULT FALSE"},
+		{"pr_mergeable", "BOOLEAN DEFAULT FALSE"},
+	}
+
+	// Add missing columns
+	for _, col := range newColumns {
+		if !existingCols[col.name] {
+			query := "ALTER TABLE work_items ADD COLUMN " + col.name + " " + col.definition
+			if _, err := s.db.Exec(query); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // migrateWorkItems creates the work_items table if it doesn't exist.
 // This table stores the hierarchical work item model (goal/feature/task).
 func (s *Store) migrateWorkItems() error {
@@ -228,6 +280,9 @@ func (s *Store) migrateWorkItems() error {
 		worktree_path TEXT,                           -- linked worktree
 		ticket_id TEXT,                               -- ENG-123
 		pr_url TEXT,
+		pr_checks_passing BOOLEAN DEFAULT FALSE,      -- CI checks passing on PR
+		pr_approved BOOLEAN DEFAULT FALSE,            -- PR has required approvals
+		pr_mergeable BOOLEAN DEFAULT FALSE,           -- PR ready to merge (no conflicts)
 
 		-- Assignment
 		agent_id TEXT,                                -- current agent working on it
@@ -308,6 +363,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.migrateWorkItems(); err != nil {
+		return err
+	}
+	if err := s.migrateWorkItemColumns(); err != nil {
 		return err
 	}
 	if err := s.migrateMergeQueue(); err != nil {
@@ -927,9 +985,12 @@ type WorkItem struct {
 	Status      WorkItemStatus
 
 	// Feature-specific fields
-	WorktreePath *string // linked worktree (features only)
-	TicketID     *string // external ticket ID (e.g., ENG-123)
-	PRURL        *string // PR URL if published
+	WorktreePath    *string // linked worktree (features only)
+	TicketID        *string // external ticket ID (e.g., ENG-123)
+	PRURL           *string // PR URL if published
+	PRChecksPassing bool    // CI checks passing on PR
+	PRApproved      bool    // PR has required approvals
+	PRMergeable     bool    // PR ready to merge (no conflicts)
 
 	// Assignment
 	AgentID *string // current agent working on it

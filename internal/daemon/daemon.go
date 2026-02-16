@@ -516,6 +516,8 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("get_work_item_children", d.handleGetWorkItemChildren)
 	d.server.Handle("get_work_item_ancestors", d.handleGetWorkItemAncestors)
 	d.server.Handle("get_ready_items", d.handleGetReadyItems)
+	d.server.Handle("update_work_item_pr_status", d.handleUpdateWorkItemPRStatus)
+	d.server.Handle("check_feature_complete", d.handleCheckFeatureComplete)
 	// Merge Queue
 	d.registerMergeQueueHandlers()
 	// Auto-run loop
