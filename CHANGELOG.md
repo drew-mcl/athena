@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/drew-mcl/athena/compare/athena-v1.1.0...athena-v1.2.0) (2026-02-16)
+
+
+### Features
+
+* agent archetypes for specialized workflows ([#79](https://github.com/drew-mcl/athena/issues/79)) ([7795ff7](https://github.com/drew-mcl/athena/commit/7795ff7b1bb4b49a6a0423b66f49db6c33d6514e))
+
 ## [1.1.0](https://github.com/drew-mcl/athena/compare/athena-v1.0.0...athena-v1.1.0) (2026-02-11)
 
 
