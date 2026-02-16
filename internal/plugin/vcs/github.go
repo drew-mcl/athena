@@ -214,8 +214,8 @@ func (g *GitHub) GetMergeReadiness(ctx context.Context, repo, branch string) (*M
 	}
 
 	var result struct {
-		Mergeable        string `json:"mergeable"`
-		MergeStateStatus string `json:"mergeStateStatus"`
+		Mergeable         string `json:"mergeable"`
+		MergeStateStatus  string `json:"mergeStateStatus"`
 		StatusCheckRollup []struct {
 			State      string `json:"state"`
 			Status     string `json:"status"`
